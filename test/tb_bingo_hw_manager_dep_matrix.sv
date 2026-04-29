@@ -15,9 +15,9 @@ module tb_bingo_hw_manager_dep_matrix();
     logic [N-1:0]                      dep_check_result_o;
     logic [N-1:0]                      dep_set_valid_i;
     logic [N-1:0]                      dep_set_ready_o;
-    // arrays of vectors: indexed by row/column, each element is N-bit wide
-    logic [N-1:0]                      dep_check_code_i [N-1:0];
-    logic [N-1:0]                      dep_set_code_i   [N-1:0];
+    // 2D code vectors: first index selects row/column, second index selects bit.
+    logic [N-1:0][N-1:0]               dep_check_code_i;
+    logic [N-1:0][N-1:0]               dep_set_code_i;
 
     // helper variables
     logic [INPUT_WIDTH-1:0] col;
@@ -83,7 +83,8 @@ module tb_bingo_hw_manager_dep_matrix();
 
         @(posedge clk_i);
         dep_check_code_i[row]   <= expected_code;
-        dep_check_valid_i       <= '0; // Non-destructive
+        dep_check_valid_i       <= '0;
+        dep_check_valid_i[row]  <= 1'b1; // Pulse between edges for non-destructive read
 
         // allow combinational result to settle within the same cycle
         #1;
@@ -93,6 +94,8 @@ module tb_bingo_hw_manager_dep_matrix();
         end else begin
             $display("CHECK OK: row=%0d code=%b result=%0d", row, expected_code, dep_check_result_o[row]);
         end
+        dep_check_valid_i[row] <= 1'b0;
+        dep_check_code_i[row]  <= '0;
     end
     endtask
 
@@ -163,19 +166,19 @@ module tb_bingo_hw_manager_dep_matrix();
             check_row(i, expected_row, 1'b1);
         end
 
-        // Test Overlap / Ready Logic
-        $display("Testing Overlap/Ready logic...");
+        // Test Counter-Based Overlap / Ready Logic
+        $display("Testing counter-based overlap/ready logic...");
         // Try to set the same pattern again on the same column.
         // Matrix already has 1s where pattern has 1s.
-        // Ready should be LOW.
+        // Counter-based matrix always accepts duplicate sets.
         @(posedge clk_i);
         dep_set_code_i[col]  <= pattern;
         dep_set_valid_i[col] <= 1'b1;
         #1;
-        if (dep_set_ready_o[col] !== 1'b0) begin
-             $error("READY CHECK FAILED: Expected ready=0 for overlap, got %b", dep_set_ready_o[col]);
+        if (dep_set_ready_o[col] !== 1'b1) begin
+             $error("READY CHECK FAILED: Expected ready=1 for counter overlap, got %b", dep_set_ready_o[col]);
         end else begin
-             $display("READY CHECK OK: Overlap correctly detected.");
+             $display("READY CHECK OK: Duplicate set accepted.");
         end
         @(posedge clk_i);
         dep_set_valid_i[col] <= 1'b0;
@@ -210,24 +213,30 @@ module tb_bingo_hw_manager_dep_matrix();
         check_row(1, 4'b1010, 1'b0);
 
         // Test Clearing Logic
-        $display("Testing Clearing Check logic...");
-        // At this point, Row 1 has col 1 and col 2 set. Row 1 = [0 1 1 0].
-        // We will consume (clear) col 1 (bit 1).
+        $display("Testing counter clearing logic...");
+        // At this point, Row 1 has col 1 count=2 (duplicate set) and col 2 count=1.
+        // Consume col 1 once: counter decrements from 2 to 1, so it should still pass.
         consume_row(1, 4'b0010);
 
-        // Now Row 1 should be [0 1 0 0] (bit 1 cleared).
-        // Check col 1 -> Should fail (already consumed)
-        check_row(1, 4'b0010, 1'b0);
-        
+        // Check col 1 -> Should still pass (one pending signal remains)
+        check_row(1, 4'b0010, 1'b1);
+
         // Check col 2 -> Should still pass (not consumed yet)
         check_row(1, 4'b0100, 1'b1);
-        
+
+        // Check col 1 | col 2 combined -> Should still pass
+        check_row(1, 4'b0110, 1'b1);
+
+        // Consume col 1 again: now its counter reaches zero.
+        consume_row(1, 4'b0010);
+        check_row(1, 4'b0010, 1'b0);
+
         // Check col 1 | col 2 combined -> Should fail because col 1 is missing
         check_row(1, 4'b0110, 1'b0);
 
         // Consume col 2
         consume_row(1, 4'b0100);
-        
+
         // Now Row 1 should be [0 0 0 0] (empty)
         check_row(1, 4'b0100, 1'b0);
         check_row(1, 4'b0110, 1'b0);
