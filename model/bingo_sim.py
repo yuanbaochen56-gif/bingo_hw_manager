@@ -6,6 +6,7 @@ This eliminates the batch-processing artifacts of the event-driven model.
 
 Config options:
   done_queue_mode: "single" (RTL default) or "per_core" (proposed fix)
+  allow_core_remap: remap tasks from dead logical cores to alive execution cores
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ class SimConfig:
     push_interval: int = 5  # cycles between task pushes per chiplet
     random_seed: int = 0
     done_queue_mode: Literal["single", "per_core"] = "single"
+    allow_core_remap: bool = False
+    core_alive: Optional[dict[int, list[list[bool]]]] = None
 
 
 @dataclass
@@ -75,6 +78,8 @@ class BingoSimulator:
                 checkout_queue_depth=config.queue_depths.checkout,
                 done_queue_depth=config.queue_depths.done,
                 done_queue_mode=config.done_queue_mode,
+                core_alive=(config.core_alive or {}).get(chip_id),
+                allow_core_remap=config.allow_core_remap,
             )
 
         # Per-chiplet task lists to push
