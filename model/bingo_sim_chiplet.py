@@ -48,6 +48,8 @@ class TaskDescriptor:
     cerf_write_mask: int = 0
     # Bitmask: all CERF groups this gating task controls (for clear-before-set)
     cerf_controlled_mask: int = 0
+    # Runtime-only: physical core selected for execution. assigned_core_id stays logical.
+    exec_core_id: Optional[int] = None
 
 
 @dataclass
@@ -79,6 +81,8 @@ class ChipletModel:
         checkout_queue_depth: int = 8,
         done_queue_depth: int = 32,
         done_queue_mode: Literal["single", "per_core"] = "single",
+        core_alive: Optional[list[list[bool]]] = None,
+        allow_core_remap: bool = False,
     ):
         self.chiplet_id = chiplet_id
         self.num_clusters = num_clusters
@@ -100,6 +104,7 @@ class ChipletModel:
         self.dep_check_fsm: list[DepCheckState] = [
             DepCheckState.IDLE for _ in range(num_cores)
         ]
+
 
         # Per-cluster dep matrices
         self.dep_matrices: list[DepMatrix] = [
@@ -150,6 +155,16 @@ class ChipletModel:
 
         # Flux Tier 1: Conditional Execution Register File (32 groups)
         self.cerf: list[bool] = [False] * 32
+
+        # Optional core alive mask for modeling core failures
+        self.allow_core_remap = allow_core_remap
+
+        if core_alive is None:
+            self.core_alive = [[True] * num_cores for _ in range(num_clusters)]
+        else:
+            self.core_alive = core_alive
+
+
 
     def cerf_write_mask(self, mask: int):
         """Write the full CERF bitmask (called by host/gating core)."""
@@ -263,8 +278,17 @@ class ChipletModel:
             # Dummy set tasks (task_type=1, dep_set_en=1) bypass ready queue
             is_dummy_set = (task.task_type == 1 and task.dep_set_en)
 
-            ready_ok = (is_dummy_check or is_dummy_set or
-                        not self.ready_queues[core][cluster].full)
+            exec_core = self._select_exec_core(cluster, core, task)
+            task.exec_core_id = exec_core
+
+            ready_ok = (
+                is_dummy_check or
+                is_dummy_set or
+                (
+                    exec_core is not None and
+                    not self.ready_queues[exec_core][cluster].full
+                )
+            )
             checkout_ok = not self.checkout_queues[core][cluster].full
 
             if ready_ok and checkout_ok:
@@ -273,10 +297,6 @@ class ChipletModel:
         elif state == DepCheckState.FINISH:
             task = wq.peek()
             cluster = task.assigned_cluster_id
-
-            # DEFER dep_matrix clear — will be applied after dep_set in tick()
-            if task.dep_check_en:
-                self._pending_clears.append((cluster, core, task.dep_check_code, task.dep_check_tag))
 
             # Flux Tier 1: CERF conditional skip check
             cond_skip = False
@@ -290,6 +310,21 @@ class ChipletModel:
             is_dummy_check = (task.task_type == 1 and task.dep_check_en)
             is_dummy_set = (task.task_type == 1 and task.dep_set_en)
 
+            if self.checkout_queues[core][cluster].full:
+                self.dep_check_fsm[core] = DepCheckState.WAIT_QUEUES
+                return events
+
+            if not cond_skip and not is_dummy_check and not is_dummy_set:
+                exec_core = task.exec_core_id
+                if exec_core is None or self.ready_queues[exec_core][cluster].full:
+                    task.exec_core_id = None
+                    self.dep_check_fsm[core] = DepCheckState.WAIT_QUEUES
+                    return events
+
+            # DEFER dep_matrix clear; apply after dep_set in tick().
+            if task.dep_check_en:
+                self._pending_clears.append((cluster, core, task.dep_check_code, task.dep_check_tag))
+
             if cond_skip:
                 # CERF skip: task enters checkout ONLY (as dummy, for dep_set propagation)
                 # Mirrors RTL: checkout_queue_data_in.task_type forced to 2'b01
@@ -300,7 +335,8 @@ class ChipletModel:
             else:
                 # Normal flow: push to ready queue (unless dummy)
                 if not is_dummy_check and not is_dummy_set:
-                    self.ready_queues[core][cluster].push(task)
+                    exec_core = task.exec_core_id
+                    self.ready_queues[exec_core][cluster].push(task)
                 # Push to checkout queue
                 self.checkout_queues[core][cluster].push(task)
                 event_type = "DEP_CHECK_PASS"
@@ -356,6 +392,40 @@ class ChipletModel:
         # No grant this cycle
         self._arbiter_idx = (self._arbiter_idx + 1) % n_candidates
         return events
+    
+    def _select_exec_core(self, cluster: int, logical_core: int, task: TaskDescriptor) -> Optional[int]:
+        """Choose the physical core that will execute a logical-core task."""
+        cluster_in_range = 0 <= cluster < self.num_clusters
+        core_in_range = 0 <= logical_core < self.num_cores
+
+        if not cluster_in_range:
+            return None
+        if not core_in_range:
+            return None
+
+        if self.core_alive[cluster][logical_core] and not self.allow_core_remap:
+            return logical_core
+
+        if not self.core_alive[cluster][logical_core] and not self.allow_core_remap:
+            return None
+
+        candidates = [
+            co for co in range(self.num_cores)
+            if self.core_alive[cluster][co]
+        ]
+        if not candidates:
+            return None
+
+        best = None
+        best_load = float("inf")
+
+        for co in candidates: # Prefer least loaded alive core in the same cluster
+            load = int(self.core_busy[cluster][co]) + self.ready_queues[co][cluster].count
+            if load < best_load:
+                best = co
+                best_load = load
+
+        return best
 
     def _try_checkout_dep_set(self, core: int, cluster: int, cycle: int) -> Optional[list[SimEvent]]:
         """Try to fire dep_set from checkout[core][cluster].
@@ -491,6 +561,7 @@ class ChipletModel:
                         # Task done
                         task_id = self.core_task_id[cl][co]
                         completed_task = self.core_task[cl][co]
+                        logical_core = completed_task.assigned_core_id if completed_task is not None else co
                         self.core_busy[cl][co] = False
                         self.core_task_id[cl][co] = -1
                         self.core_task[cl][co] = None
@@ -511,11 +582,11 @@ class ChipletModel:
                             ))
 
                         # Push to done queue
-                        done_info = DoneInfo(task_id, co, cl)
+                        done_info = DoneInfo(task_id, logical_core, cl)
                         if self.done_queue_mode == "single":
                             self.done_queues[0].push(done_info)
                         else:
-                            self.done_queues[co].push(done_info)
+                            self.done_queues[logical_core].push(done_info)
 
                         events.append(SimEvent(
                             time=cycle,
@@ -524,6 +595,10 @@ class ChipletModel:
                             cluster_id=cl,
                             core_id=co,
                             task_id=task_id,
+                            extra={
+                                "logical_core": logical_core,
+                                "exec_core": co,
+                            },
                         ))
                 else:
                     # Try dispatch from ready queue
@@ -543,6 +618,10 @@ class ChipletModel:
                             cluster_id=cl,
                             core_id=co,
                             task_id=task.task_id,
+                            extra={
+                                "logical_core": task.assigned_core_id,
+                                "exec_core": co,
+                            },
                         ))
         return events
 
