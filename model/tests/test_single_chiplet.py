@@ -162,3 +162,97 @@ class TestDummyCheckNode:
 
         assert not result.deadlock_detected
         assert result.completed_task_ids == {1, 2, 3}
+
+class TestCoreRemap:
+    """Test logical-core to physical-core remapping."""
+
+    def test_dead_logical_core_remaps_to_alive_exec_core(self):
+        config = SimConfig(
+            num_chiplets=1,
+            num_clusters_per_chiplet=1,
+            num_cores_per_cluster=2,
+            work_delay_range=(5, 5),
+            random_seed=42,
+            allow_core_remap=True,
+            core_alive={
+                0: [[False, True]],  # chiplet 0, cluster 0: core 0 dead, core 1 alive
+            },
+        )
+        sim = BingoSimulator(config)
+
+        tasks = [
+            make_task(1, 0, 0),
+        ]
+        sim.load_tasks({0: tasks})
+        result = sim.run()
+
+        assert not result.deadlock_detected
+        assert result.completed_task_ids == {1}
+
+        dispatch_events = [
+            e for e in result.trace.events
+            if e.event_type == "TASK_DISPATCHED" and e.task_id == 1
+        ]
+        done_events = [
+            e for e in result.trace.events
+            if e.event_type == "TASK_DONE" and e.task_id == 1
+        ]
+
+        assert len(dispatch_events) == 1
+        assert len(done_events) == 1
+
+        assert dispatch_events[0].core_id == 1
+        assert dispatch_events[0].extra["logical_core"] == 0
+        assert dispatch_events[0].extra["exec_core"] == 1
+
+        assert done_events[0].core_id == 1
+        assert done_events[0].extra["logical_core"] == 0
+        assert done_events[0].extra["exec_core"] == 1
+
+    def test_remapped_task_still_sets_logical_dependency(self):
+        config = SimConfig(
+            num_chiplets=1,
+            num_clusters_per_chiplet=1,
+            num_cores_per_cluster=2,
+            work_delay_range=(5, 5),
+            random_seed=42,
+            allow_core_remap=True,
+            core_alive={
+                0: [[False, True]],  # logical core 0 must execute on physical core 1
+            },
+        )
+        sim = BingoSimulator(config)
+
+        tasks = [
+            # Task 1 is logically on core 0 but will execute on physical core 1.
+            # It sets dependency for logical core 1.
+            make_task(1, 0, 0, dep_set_en=True, dep_set_code=0b010, dep_set_cluster=0),
+
+            # Task 2 is logically on core 1 and waits for logical core 0.
+            make_task(2, 0, 1, dep_check_en=True, dep_check_code=0b001),
+        ]
+        sim.load_tasks({0: tasks})
+        result = sim.run()
+
+        assert not result.deadlock_detected
+        assert result.completed_task_ids == {1, 2}
+
+        done_order = result.trace.task_completion_order()
+        assert done_order.index(1) < done_order.index(2)
+
+        task1_dispatch = [
+            e for e in result.trace.events
+            if e.event_type == "TASK_DISPATCHED" and e.task_id == 1
+        ][0]
+        task1_done = [
+            e for e in result.trace.events
+            if e.event_type == "TASK_DONE" and e.task_id == 1
+        ][0]
+
+        assert task1_dispatch.core_id == 1
+        assert task1_dispatch.extra["logical_core"] == 0
+        assert task1_dispatch.extra["exec_core"] == 1
+
+        assert task1_done.core_id == 1
+        assert task1_done.extra["logical_core"] == 0
+        assert task1_done.extra["exec_core"] == 1
