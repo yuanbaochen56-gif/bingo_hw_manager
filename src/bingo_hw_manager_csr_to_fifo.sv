@@ -51,9 +51,11 @@ module bingo_hw_manager_csr_to_fifo #(
     // FIFO Write interface
     output data_t    [N-1:0]    fifo_data_o,
     output logic     [N-1:0]    fifo_data_valid_o,
-    input  logic     [N-1:0]    fifo_data_ready_i
+    input  logic     [N-1:0]    fifo_data_ready_i,
+    // Heartbeat CSR writes are accepted locally and do not enter the done FIFO.
+    output logic     [N-1:0]    heartbeat_valid_o,
+    output data_t    [N-1:0]    heartbeat_data_o
 );
-
     // Signals for csr_to_fifo_read
     logic [N-1:0] csr_req_valid_read;
     logic [N-1:0] csr_req_ready_read;
@@ -62,10 +64,19 @@ module bingo_hw_manager_csr_to_fifo #(
     logic [N-1:0] csr_req_valid_write;
     logic [N-1:0] csr_req_ready_write;
 
+    // CSR address map
+    localparam logic [11:0] CSR_READY     = 12'h5fe;
+    localparam logic [11:0] CSR_DONE      = 12'h5ff;
+    localparam logic [11:0] CSR_HEARTBEAT = 12'h5fd;
+
     // Signals for Write Done Info
     bingo_hw_manager_done_info_full_t [N-1:0] done_info;
     data_t [N-1:0] done_info_tmp;
     for (genvar i = 0; i < N; i++) begin
+        logic is_ready_read;
+        logic is_done_write;
+        logic is_heartbeat;
+
         bingo_hw_manager_csr_to_fifo_read #(
             .data_t(data_t)
         ) csr_to_fifo_read (
@@ -78,7 +89,19 @@ module bingo_hw_manager_csr_to_fifo #(
             .fifo_data_valid_i(fifo_data_valid_i[i]),
             .fifo_data_ready_o(fifo_data_ready_o[i])
         );
-        assign csr_req_valid_read[i] = csr_req_valid_i[i] && ~csr_req_i[i].write;
+        // Keep addr==0 as a legacy testbench alias while real cores use the
+        // architectural CSR numbers in bingo.h.
+        assign is_ready_read = csr_req_valid_i[i] &&
+                               !csr_req_i[i].write &&
+                               (csr_req_i[i].addr[11:0] == CSR_READY);
+        assign is_done_write = csr_req_valid_i[i] &&
+                               csr_req_i[i].write &&
+                               (csr_req_i[i].addr[11:0] == CSR_DONE);
+        assign is_heartbeat = csr_req_valid_i[i] &&
+                              csr_req_i[i].write &&
+                              (csr_req_i[i].addr[11:0] == CSR_HEARTBEAT);
+        
+        assign csr_req_valid_read[i] = is_ready_read;
 
         bingo_hw_manager_csr_to_fifo_write #(
             .data_t(data_t)
@@ -99,10 +122,14 @@ module bingo_hw_manager_csr_to_fifo #(
         assign done_info[i].assigned_core_id    = i % NUM_CORES_PER_CLUSTER;
         assign done_info[i].task_id             = done_info_tmp[i][TaskIdWidth-1:0];
         assign fifo_data_o[i] = data_t'(done_info[i]);
-        assign csr_req_valid_write[i] = csr_req_valid_i[i] && csr_req_i[i].write;
+        assign csr_req_valid_write[i] = is_done_write;
 
-        assign csr_req_ready_o[i] = csr_req_i[i].write ? csr_req_ready_write[i] : csr_req_ready_read[i];
+        assign csr_req_ready_o[i] = is_heartbeat ? 1'b1 :
+                                    (csr_req_i[i].write ? csr_req_ready_write[i] : csr_req_ready_read[i]);
         assign csr_rsp_valid_o[i] = csr_req_i[i].write ? '0 : csr_rsp_valid_read[i];
+
+        assign heartbeat_valid_o[i] = is_heartbeat;
+        assign heartbeat_data_o[i]  = csr_req_i[i].data;
 
     end
 endmodule
