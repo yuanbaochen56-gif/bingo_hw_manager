@@ -2,10 +2,6 @@ localparam int unsigned EXPECTED_TASK_COUNT      = 999;
 localparam int unsigned DEADLOCK_THRESHOLD       = 1000000;
 localparam int unsigned DEP_MATRIX_LOG_INTERVAL  = 0;
 
-localparam device_axi_lite_addr_t CSR_READY     = device_axi_lite_addr_t'(12'h5fe);
-localparam device_axi_lite_addr_t CSR_DONE      = device_axi_lite_addr_t'(12'h5ff);
-localparam device_axi_lite_addr_t CSR_HEARTBEAT = device_axi_lite_addr_t'(12'h5fd);
-
 bingo_hw_manager_task_desc_full_t long_task = pack_normal_task(
     2'b00, 16'd1, 0, 0, 0, //task info
     1'b0, '0,  //check info

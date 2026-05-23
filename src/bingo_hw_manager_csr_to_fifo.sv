@@ -89,8 +89,7 @@ module bingo_hw_manager_csr_to_fifo #(
             .fifo_data_valid_i(fifo_data_valid_i[i]),
             .fifo_data_ready_o(fifo_data_ready_o[i])
         );
-        // Keep addr==0 as a legacy testbench alias while real cores use the
-        // architectural CSR numbers in bingo.h.
+        // Decode the CSR address to determine if it's a read or write for ready/done, or a heartbeat write
         assign is_ready_read = csr_req_valid_i[i] &&
                                !csr_req_i[i].write &&
                                (csr_req_i[i].addr[11:0] == CSR_READY);
