@@ -23,6 +23,7 @@ module bingo_hw_manager_top #(
     // per-edge tags are plumbed to the tagged dep-matrix scoreboard so a
     // consumer drains only ITS producer's increment (no counter-sharing hazard).
     parameter int unsigned DepTagWidth = 4,
+    parameter int unsigned WatchdogHeartbeatTimeoutCycles = 100000, // The number of cycles for the watchdog to time out
     // AXI interface types
     // The task queue holds tasks to be scheduled to the devices
     // Host writes the task queue via 64bit AXI Lite
@@ -1306,7 +1307,7 @@ module bingo_hw_manager_top #(
         .NumCores(NUM_CORES_PER_CLUSTER),
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
         .CounterWidth(24),
-        .HeartbeatTimeoutCycles(100000)
+        .HeartbeatTimeoutCycles(WatchdogHeartbeatTimeoutCycles)
     ) i_watchdog (
         .clk_i                 ( clk_i                          ),
         .rst_ni                ( rst_ni                         ),

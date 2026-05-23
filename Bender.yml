@@ -48,6 +48,7 @@ sources:
       - test/tb_bingo_hw_manager_tagged_mc.sv   # identity-aware deps, MULTI-CLUSTER cross-cluster aliasing
       - test/tb_bingo_hw_manager_watchdog.sv
       - test/tb_bingo_hw_manager_heartbeat.sv
+      - test/tb_bingo_hw_manager_heartbeat_long_task.sv
 
   # NOTE: Generated test files in test/generated/ are NOT listed here.
   # They are picked up automatically by compile_vsim.sh via shell glob.
