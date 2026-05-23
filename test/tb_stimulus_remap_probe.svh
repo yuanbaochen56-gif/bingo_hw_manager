@@ -4,7 +4,7 @@ localparam int unsigned DEP_MATRIX_LOG_INTERVAL  = 0;
 
 bingo_hw_manager_task_desc_full_t remap_probe_task = pack_normal_task(
     2'b00, 16'd1, 0, 0, 0,//task info
-    1'b0, '0,//check info
+    1'b1, bingo_hw_manager_dep_code_t'(3'b001),  // Set a dependency code  so the task will block in the waiting queue and trigger remap selection.
     1'b0, 1'b0, 0, 0, '0// set info
 );
 
