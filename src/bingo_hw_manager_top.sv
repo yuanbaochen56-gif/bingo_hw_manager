@@ -483,9 +483,12 @@ module bingo_hw_manager_top #(
                                         cerf_group_active_for_core : !cerf_group_active_for_core);
     end
 
-    // PM signals
+    // Core status signals
     ///////////////////////////////////////
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_status_waiting_task;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect;
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//
@@ -1158,7 +1161,10 @@ module bingo_hw_manager_top #(
         device_axi_lite_data_t write_done_queue_data;
         logic                  write_done_queue_valid;
         logic                  write_done_queue_ready;
-
+        //
+        logic                  [N_CORES_TOTAL-1:0] heartbeat_valid_1d;
+        device_axi_lite_data_t [N_CORES_TOTAL-1:0] heartbeat_data_1d;
+        logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] heartbeat_valid;
 
         bingo_hw_manager_csr_to_fifo #(
             .TaskIdWidth (TaskIdWidth),
@@ -1183,8 +1189,12 @@ module bingo_hw_manager_top #(
             // FIFO Write Interface
             .fifo_data_o       (write_done_queue_data_1d ),
             .fifo_data_valid_o (write_done_queue_valid_1d),
-            .fifo_data_ready_i (write_done_queue_ready_1d)
-        );
+            .fifo_data_ready_i (write_done_queue_ready_1d),
+            // heartbeat signal
+            .heartbeat_valid_o  ( heartbeat_valid_1d     ),
+            .heartbeat_data_o   ( heartbeat_data_1d      ) // heartbeat_data_1d is reserved for future progress counters.
+            );
+
         always_comb begin : connect_ready_queue_1d_to_2d
             for (int unsigned core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
                 for (int unsigned cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
@@ -1197,6 +1207,7 @@ module bingo_hw_manager_top #(
                     read_ready_queue_data_1d[core + cluster * NUM_CORES_PER_CLUSTER] = device_axi_lite_data_t'(ready_queue_data_out[core][cluster]);
                     read_ready_queue_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER] = !ready_queue_empty[core][cluster];
                     ready_queue_pop[core][cluster] = read_ready_queue_ready_1d[core + cluster * NUM_CORES_PER_CLUSTER] && !ready_queue_empty[core][cluster];
+                    heartbeat_valid[core][cluster] = heartbeat_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER];
                 end
             end
         end
@@ -1286,6 +1297,25 @@ module bingo_hw_manager_top #(
         // Interface to Host AXI Lite
         .pm_axi_lite_req_o     (pm_axi_lite_req_o                      ),
         .pm_axi_lite_resp_i    (pm_axi_lite_resp_i                     )
+    );
+    //////////////////////////////////////////////////////////////////////
+    // watchdog fot core heartbeat monitoring
+    //////////////////////////////////////////////////////////////////////
+    bingo_hw_manager_watchdog #(
+        .NumCores(NUM_CORES_PER_CLUSTER),
+        .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
+        .CounterWidth(24),
+        .HeartbeatTimeoutCycles(100000)
+    ) i_watchdog (
+        .clk_i                 ( clk_i                          ),
+        .rst_ni                ( rst_ni                         ),
+        .task_dispatched_i     ( ready_queue_pop                 ),
+        .task_done_i           ( done_q_push                     ),
+        .heartbeat_i           ( heartbeat_valid                 ),
+        .waiting_task_i        ( core_status_waiting_task        ),
+        .core_busy_o           ( core_busy                       ),
+        .core_available_o      ( core_available                  ),
+        .core_dead_suspect_o   ( core_dead_suspect               )
     );
 
     //////////////////////////////////////////////////////////////////////
