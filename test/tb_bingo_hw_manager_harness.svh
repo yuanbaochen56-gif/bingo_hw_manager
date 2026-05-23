@@ -40,9 +40,6 @@ localparam int unsigned NUM_CLUSTERS_PER_CHIPLET   = `TB_NUM_CLUSTERS_PER_CHIPLE
 localparam int unsigned NUM_CORES_PER_CLUSTER      = `TB_NUM_CORES_PER_CLUSTER;
 localparam int unsigned READY_AGENT_NUM = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET;
 localparam int unsigned WATCHDOG_HEARTBEAT_TIMEOUT = `TB_WATCHDOG_HEARTBEAT_TIMEOUT;
-localparam device_axi_lite_addr_t CSR_READY     = device_axi_lite_addr_t'(12'h5fe);
-localparam device_axi_lite_addr_t CSR_DONE      = device_axi_lite_addr_t'(12'h5ff);
-localparam device_axi_lite_addr_t CSR_HEARTBEAT = device_axi_lite_addr_t'(12'h5fd);
 
 localparam time CyclTime = 10ns;
 localparam time ApplTime =  2ns;
@@ -61,6 +58,10 @@ typedef logic [DEV_AW-1:0]    device_axi_lite_addr_t;
 typedef logic [DEV_DW-1:0]    device_axi_lite_data_t;
 typedef logic [DEV_DW/8-1:0]  device_axi_lite_strb_t;
 typedef logic [ChipIdWidth-1:0] chip_id_t;
+
+localparam device_axi_lite_addr_t CSR_READY     = device_axi_lite_addr_t'(12'h5fe);
+localparam device_axi_lite_addr_t CSR_DONE      = device_axi_lite_addr_t'(12'h5ff);
+localparam device_axi_lite_addr_t CSR_HEARTBEAT = device_axi_lite_addr_t'(12'h5fd);
 
 localparam host_axi_lite_addr_t TASK_QUEUE_BASE      = 48'h1000_0000;
 localparam host_axi_lite_addr_t DONE_QUEUE_BASE      = 48'h2000_0000;
