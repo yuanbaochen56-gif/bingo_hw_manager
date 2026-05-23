@@ -491,6 +491,10 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect;
+
+    logic [NUM_CORES_PER_CLUSTER-1:0] remap_select_valid;
+    bingo_hw_manager_assigned_core_id_t [NUM_CORES_PER_CLUSTER-1:0] remap_physical_core;
+    bingo_hw_manager_assigned_cluster_id_t [NUM_CORES_PER_CLUSTER-1:0] remap_physical_cluster;
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//
@@ -1319,6 +1323,28 @@ module bingo_hw_manager_top #(
         .core_available_o      ( core_available                  ),
         .core_dead_suspect_o   ( core_dead_suspect               )
     );
+
+    //////////////////////////////////////////////////////////////////////
+    // Core Remapping
+    //////////////////////////////////////////////////////////////////////
+    for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin : gen_core_remap
+        bingo_hw_manager_core_remap #(
+            .NumCores(NUM_CORES_PER_CLUSTER),
+            .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
+            .CoreIdWidth(cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)),
+            .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
+        ) i_core_remap (
+            .req_valid_i(!waiting_dep_check_queue_empty[core]),
+            .logical_core_i(bingo_hw_manager_assigned_core_id_t'(core)),
+            .logical_cluster_i(waiting_dep_check_task_desc[core].assigned_cluster_id),
+            .core_available_i(core_available),
+            .core_dead_suspect_i(core_dead_suspect),
+            .ready_queue_full_i(ready_queue_full),
+            .select_valid_o(remap_select_valid[core]),
+            .physical_core_o(remap_physical_core[core]),
+            .physical_cluster_o(remap_physical_cluster[core])
+        );
+    end
 
     //////////////////////////////////////////////////////////////////////
     // DARTS Tier 3: Load Monitor
