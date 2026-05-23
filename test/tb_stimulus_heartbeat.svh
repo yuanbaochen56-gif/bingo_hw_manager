@@ -21,21 +21,18 @@ initial begin : heartbeat_path_test
             wait (gen_dut[0].i_dut.heartbeat_valid[0][0] === 1'b1);
             heartbeat_seen = 1'b1;
         end
-        begin
-            // Send heartbeat CSR write from chip 0, cluster 0, core 0.
-            csr_write(0, 0, 0, CSR_HEARTBEAT, device_axi_lite_data_t'(32'h0000_1234));
-        end
-        begin
-            repeat (20) @(posedge clk_i);
-        end
-    join_any
+    join_none
+
+    // Send heartbeat CSR write from chip 0, cluster 0, core 0. Keep this in
+    // the main thread so the task can complete and deassert csr_req_valid.
+    csr_write(0, 0, 0, CSR_HEARTBEAT, device_axi_lite_data_t'(32'h0000_1234));
+    repeat (2) @(posedge clk_i);
     disable fork;
 
     if (!heartbeat_seen) begin
         $fatal(1, "heartbeat_valid[0][0] did not assert during CSR heartbeat write");
     end
 
-    @(posedge clk_i);
     #1;
 
     if (gen_dut[0].i_dut.heartbeat_valid[0][0] !== 1'b0) begin
