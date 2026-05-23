@@ -6,8 +6,6 @@ localparam int unsigned EXPECTED_TASK_COUNT      = 999;
 localparam int unsigned DEADLOCK_THRESHOLD       = 1000000;
 localparam int unsigned DEP_MATRIX_LOG_INTERVAL  = 0;
 
-localparam device_axi_lite_addr_t CSR_HEARTBEAT = device_axi_lite_addr_t'(12'h5fd);
-
 initial begin : heartbeat_path_test
     automatic bit heartbeat_seen;
 

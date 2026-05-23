@@ -40,6 +40,9 @@ localparam int unsigned NUM_CLUSTERS_PER_CHIPLET   = `TB_NUM_CLUSTERS_PER_CHIPLE
 localparam int unsigned NUM_CORES_PER_CLUSTER      = `TB_NUM_CORES_PER_CLUSTER;
 localparam int unsigned READY_AGENT_NUM = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET;
 localparam int unsigned WATCHDOG_HEARTBEAT_TIMEOUT = `TB_WATCHDOG_HEARTBEAT_TIMEOUT;
+localparam device_axi_lite_addr_t CSR_READY     = device_axi_lite_addr_t'(12'h5fe);
+localparam device_axi_lite_addr_t CSR_DONE      = device_axi_lite_addr_t'(12'h5ff);
+localparam device_axi_lite_addr_t CSR_HEARTBEAT = device_axi_lite_addr_t'(12'h5fd);
 
 localparam time CyclTime = 10ns;
 localparam time ApplTime =  2ns;
@@ -651,7 +654,7 @@ task automatic core_worker(
             ready_queue_master[idx].read(data_addr, '0, data, resp);
         end else begin
             // CSR mode: blocking read from FIFO
-            csr_read(chip, cluster, core, '0, data);
+            csr_read(chip, cluster, core, CSR_READY, data);
         end
 
         // Task dispatched
@@ -675,7 +678,7 @@ task automatic core_worker(
             repeat ($urandom_range(20, 50)) @(posedge clk_i);
             done_queue_lock[chip] = 1'b0;
         end else begin
-            csr_write(chip, cluster, core, '0, done_payload);
+            csr_write(chip, cluster, core, CSR_DONE, done_payload);
             repeat ($urandom_range(10, 20)) @(posedge clk_i);
         end
 
