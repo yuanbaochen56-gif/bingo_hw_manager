@@ -15,7 +15,7 @@ module bingo_hw_manager_top #(
     parameter int unsigned NUM_CLUSTERS_PER_CHIPLET = 2,
     parameter int unsigned ChipIdWidth = 8,
     parameter int unsigned TaskIdWidth = 12,
-    // AXI interface types
+    parameter int unsigned WatchdogHeartbeatTimeoutCycles = 100000, // The number of cycles for the watchdog to time out
     // The task queue holds tasks to be scheduled to the devices
     // Host writes the task queue via 64bit AXI Lite
     parameter int unsigned HostAxiLiteAddrWidth = 48,
@@ -1272,7 +1272,7 @@ module bingo_hw_manager_top #(
         .NumCores(NUM_CORES_PER_CLUSTER),
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
         .CounterWidth(24),
-        .HeartbeatTimeoutCycles(100000)
+        .HeartbeatTimeoutCycles(WatchdogHeartbeatTimeoutCycles)
     ) i_watchdog (
         .clk_i                 ( clk_i                          ),
         .rst_ni                ( rst_ni                         ),

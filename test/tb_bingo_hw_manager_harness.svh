@@ -27,12 +27,19 @@ import axi_test::*;
 // ---------------------------------------------------------------------------
 // Local configuration (from defines)
 // ---------------------------------------------------------------------------
+`ifndef TB_WATCHDOG_HEARTBEAT_TIMEOUT
+  `define TB_WATCHDOG_HEARTBEAT_TIMEOUT 100000
+`endif
+`ifndef TB_DISABLE_CORE_WORKERS
+  `define TB_DISABLE_CORE_WORKERS 0
+`endif
 localparam int unsigned READY_AND_DONE_QUEUE_INTERFACE_TYPE = 1; // 1: CSR Req/Resp
 localparam int unsigned TASK_QUEUE_TYPE = 0;                     // 0: AXI Lite Slave
 localparam int unsigned NUM_CHIPLET                = `TB_NUM_CHIPLET;
 localparam int unsigned NUM_CLUSTERS_PER_CHIPLET   = `TB_NUM_CLUSTERS_PER_CHIPLET;
 localparam int unsigned NUM_CORES_PER_CLUSTER      = `TB_NUM_CORES_PER_CLUSTER;
 localparam int unsigned READY_AGENT_NUM = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET;
+localparam int unsigned WATCHDOG_HEARTBEAT_TIMEOUT = `TB_WATCHDOG_HEARTBEAT_TIMEOUT;
 
 localparam time CyclTime = 10ns;
 localparam time ApplTime =  2ns;
@@ -483,6 +490,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
     bingo_hw_manager_top #(
         .READY_AND_DONE_QUEUE_INTERFACE_TYPE ( READY_AND_DONE_QUEUE_INTERFACE_TYPE ),
         .TASK_QUEUE_TYPE                     ( TASK_QUEUE_TYPE                     ),
+        .WatchdogHeartbeatTimeoutCycles      ( WATCHDOG_HEARTBEAT_TIMEOUT          ),
         .NUM_CORES_PER_CLUSTER               ( NUM_CORES_PER_CLUSTER               ),
         .NUM_CLUSTERS_PER_CHIPLET            ( NUM_CLUSTERS_PER_CHIPLET            ),
         .HostAxiLiteAddrWidth                ( HOST_AW                             ),
@@ -687,21 +695,21 @@ initial begin : ready_queue_pollers
     wait (rst_ni);
     repeat (5) @(posedge clk_i);
     done_queue_lock = '0;
-
-    for (int chip_idx = 0; chip_idx < NUM_CHIPLET; chip_idx++) begin
-        for (int cluster_idx = 0; cluster_idx < NUM_CLUSTERS_PER_CHIPLET; cluster_idx++) begin
-            for (int core_idx = 0; core_idx < NUM_CORES_PER_CLUSTER; core_idx++) begin
-                fork
-                    automatic int c  = chip_idx;
-                    automatic int cl = cluster_idx;
-                    automatic int co = core_idx;
-                    core_worker(c, cl, co);
-                join_none
+    if (`TB_DISABLE_CORE_WORKERS == 0) begin
+        for (int chip_idx = 0; chip_idx < NUM_CHIPLET; chip_idx++) begin
+            for (int cluster_idx = 0; cluster_idx < NUM_CLUSTERS_PER_CHIPLET; cluster_idx++) begin
+                for (int core_idx = 0; core_idx < NUM_CORES_PER_CLUSTER; core_idx++) begin
+                    fork
+                        automatic int c  = chip_idx;
+                        automatic int cl = cluster_idx;
+                        automatic int co = core_idx;
+                        core_worker(c, cl, co);
+                    join_none
+                end
             end
         end
     end
 end
-
 // ---------------------------------------------------------------------------
 // Signal export from generate blocks — allows runtime indexing for monitoring
 // ---------------------------------------------------------------------------
