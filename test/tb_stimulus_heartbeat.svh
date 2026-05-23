@@ -9,18 +9,30 @@ localparam int unsigned DEP_MATRIX_LOG_INTERVAL  = 0;
 localparam device_axi_lite_addr_t CSR_HEARTBEAT = device_axi_lite_addr_t'(12'h5fd);
 
 initial begin : heartbeat_path_test
+    automatic bit heartbeat_seen;
+
     wait (rst_ni);
     repeat (20) @(posedge clk_i);
 
-    // Send heartbeat CSR write from chip 0, cluster 0, core 0.
-    csr_write(0, 0, 0, CSR_HEARTBEAT, device_axi_lite_data_t'(32'h0000_1234));
+    heartbeat_seen = 1'b0;
 
-    // csr_write returns after csr_req_ready is observed. heartbeat_valid is
-    // combinational from the CSR request, so sample immediately after return.
-    #1;
+    fork
+        begin
+            wait (gen_dut[0].i_dut.heartbeat_valid[0][0] === 1'b1);
+            heartbeat_seen = 1'b1;
+        end
+        begin
+            // Send heartbeat CSR write from chip 0, cluster 0, core 0.
+            csr_write(0, 0, 0, CSR_HEARTBEAT, device_axi_lite_data_t'(32'h0000_1234));
+        end
+        begin
+            repeat (20) @(posedge clk_i);
+        end
+    join_any
+    disable fork;
 
-    if (gen_dut[0].i_dut.heartbeat_valid[0][0] !== 1'b1) begin
-        $fatal(1, "heartbeat_valid[0][0] did not assert after CSR heartbeat write");
+    if (!heartbeat_seen) begin
+        $fatal(1, "heartbeat_valid[0][0] did not assert during CSR heartbeat write");
     end
 
     @(posedge clk_i);
