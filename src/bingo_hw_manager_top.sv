@@ -464,6 +464,7 @@ module bingo_hw_manager_top #(
 
     // Core status signals
     ///////////////////////////////////////
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] heartbeat_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_status_waiting_task;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
@@ -1136,7 +1137,6 @@ module bingo_hw_manager_top #(
         //
         logic                  [N_CORES_TOTAL-1:0] heartbeat_valid_1d;
         device_axi_lite_data_t [N_CORES_TOTAL-1:0] heartbeat_data_1d;
-        logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] heartbeat_valid;
 
         bingo_hw_manager_csr_to_fifo #(
             .TaskIdWidth (TaskIdWidth),
@@ -1236,6 +1236,7 @@ module bingo_hw_manager_top #(
         assign csr_req_ready_o = '0;
         assign csr_rsp_o = '0;
         assign csr_rsp_valid_o = '0;
+        assign heartbeat_valid = '0;
     end
 
     //////////////////////////////////////////////////////////////////////
