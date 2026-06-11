@@ -53,8 +53,8 @@ module bingo_hw_manager_csr_to_fifo #(
     output logic     [N-1:0]    fifo_data_valid_o,
     input  logic     [N-1:0]    fifo_data_ready_i,
     // Heartbeat CSR writes are accepted locally and do not enter the done FIFO.
-    output logic     [N-1:0]    heartbeat_valid_o,
-    output data_t    [N-1:0]    heartbeat_data_o
+    output data_t    [N-1:0]    heartbeat_data_o,
+    output logic     [N-1:0]    heartbeat_valid_o
 );
     // Signals for csr_to_fifo_read
     logic [N-1:0] csr_req_valid_read;

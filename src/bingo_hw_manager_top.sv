@@ -493,8 +493,11 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect;
 
     logic [NUM_CORES_PER_CLUSTER-1:0] remap_select_valid;
-    bingo_hw_manager_assigned_core_id_t [NUM_CORES_PER_CLUSTER-1:0] remap_physical_core;
+    bingo_hw_manager_assigned_core_id_t    [NUM_CORES_PER_CLUSTER-1:0] remap_physical_core;
     bingo_hw_manager_assigned_cluster_id_t [NUM_CORES_PER_CLUSTER-1:0] remap_physical_cluster;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] running_logical_valid;
+    bingo_hw_manager_assigned_core_id_t    [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] running_logical_core;
+    bingo_hw_manager_assigned_cluster_id_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] running_logical_cluster;
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//

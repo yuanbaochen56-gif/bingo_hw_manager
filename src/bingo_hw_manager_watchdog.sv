@@ -7,12 +7,12 @@ module bingo_hw_manager_watchdog #(
     input  logic clk_i,
     input  logic rst_ni,
 
-    input  logic [NumCores-1:0][NumClusters-1:0] task_dispatched_i, 
-    input  logic [NumCores-1:0][NumClusters-1:0] task_done_i,       
+    input  logic [NumCores-1:0][NumClusters-1:0] task_dispatched_i, // Signal indicating a new task has been dispatched to a core
+    input  logic [NumCores-1:0][NumClusters-1:0] task_done_i,       // Signal indicating a core has completed its current task
     input  logic [NumCores-1:0][NumClusters-1:0] heartbeat_i,       // Heartbeat signal from each core to indicate it's alive
-    input  logic [NumCores-1:0][NumClusters-1:0] waiting_task_i,    
+    input  logic [NumCores-1:0][NumClusters-1:0] waiting_task_i,    // Signal indicating a task is waiting to be dispatched to a core
 
-    output logic [NumCores-1:0][NumClusters-1:0] core_busy_o,      
+    output logic [NumCores-1:0][NumClusters-1:0] core_busy_o,      // Indicates when a core is currently executing a task
     output logic [NumCores-1:0][NumClusters-1:0] core_available_o,  // Indicates when a core is available for new tasks
     output logic [NumCores-1:0][NumClusters-1:0] core_dead_suspect_o    // Indicates when a core is suspected to be dead (no heartbeat for too long)
 );
