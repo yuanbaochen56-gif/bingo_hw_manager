@@ -495,6 +495,10 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0] remap_select_valid;
     bingo_hw_manager_assigned_core_id_t    [NUM_CORES_PER_CLUSTER-1:0] remap_physical_core;
     bingo_hw_manager_assigned_cluster_id_t [NUM_CORES_PER_CLUSTER-1:0] remap_physical_cluster;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remap_route_valid;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remap_route_fire;
+    bingo_hw_manager_assigned_core_id_t    [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remap_route_src_core;
+
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] running_logical_valid;
     bingo_hw_manager_assigned_core_id_t    [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] running_logical_core;
     bingo_hw_manager_assigned_cluster_id_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] running_logical_cluster;
@@ -765,8 +769,17 @@ module bingo_hw_manager_top #(
         );
 
         always_comb begin : connect_demux_ready_and_checkout_queue_ready_signals
-            for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin 
-                demux_ready_and_checkout_queue_oup_ready[core][cluster] = ready_queue_filter_inp_ready[core][cluster] && !checkout_queue_full[core][cluster];
+            for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
+                demux_ready_and_checkout_queue_oup_ready[core][cluster] = 1'b0;
+
+                if (remap_select_valid[core] &&
+                    (remap_physical_cluster[core] == bingo_hw_manager_assigned_cluster_id_t'(cluster)) &&
+                    (remap_route_src_core[remap_physical_core[core]][remap_physical_cluster[core]] ==
+                        bingo_hw_manager_assigned_core_id_t'(core))) begin
+
+                    demux_ready_and_checkout_queue_oup_ready[core][cluster] =
+                        remap_route_fire[remap_physical_core[core]][remap_physical_cluster[core]];
+                end
             end
         end
     end
@@ -829,7 +842,7 @@ module bingo_hw_manager_top #(
             for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
                     stream_arbiter_inp_idx = core + cluster * NUM_CORES_PER_CLUSTER;
                     stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_matrix_id = checkout_queue_data_out[core][cluster].dep_set_info.dep_set_cluster_id;
-                    stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_matrix_col= core;
+                    stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_matrix_col = checkout_queue_data_out[core][cluster].assigned_core_id;
                     stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_matrix_set_tag = checkout_queue_data_out[core][cluster].dep_set_info.dep_set_tag;
                     stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_set_code  = checkout_queue_data_out[core][cluster].dep_set_info.dep_set_code;
                     // Handshake from the checkout demux and the per-(core,cluster) done queue
@@ -909,15 +922,21 @@ module bingo_hw_manager_top #(
                 .valid_o (   ready_queue_filter_oup_valid[core][cluster]       ),
                 .ready_i (   ready_queue_filter_oup_ready[core][cluster]       )
             );
-            assign ready_queue_filter_inp_valid[core][cluster] = demux_ready_and_checkout_queue_oup_valid[core][cluster];
+            assign ready_queue_filter_inp_valid[core][cluster] =
+                remap_route_valid[core][cluster] && !checkout_queue_full[core][cluster];
+            assign remap_route_fire[core][cluster] =
+                remap_route_valid[core][cluster] &&
+                !checkout_queue_full[core][cluster] &&
+                ready_queue_filter_inp_ready[core][cluster];
             // Drop the dummy set tasks
             // Drop from ready queue if:
             // 1. Dummy set task (task_type==01, dep_set_en==1) — existing behavior
             // 2. DARTS CERF: conditionally skipped task — skip execution but propagate deps
             assign ready_queue_filter_drop[core][cluster] =
-                ((waiting_dep_check_task_desc[core].task_type == 2'b01) &&
-                 (waiting_dep_check_task_desc[core].dep_set_info.dep_set_en == 1'b1)) ||
-                cond_exec_skip[core];
+                remap_route_valid[core][cluster] &&
+                (((waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].task_type == 2'b01) &&
+                  (waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].dep_set_info.dep_set_en == 1'b1)) ||
+                 cond_exec_skip[remap_route_src_core[core][cluster]]);
             assign ready_queue_filter_oup_ready[core][cluster] = ~ready_queue_full[core][cluster];
             if (READY_AND_DONE_QUEUE_INTERFACE_TYPE==0) begin: gen_ready_queue_axi_lite_mailbox                               
                 bingo_hw_manager_read_mailbox #(
@@ -976,7 +995,8 @@ module bingo_hw_manager_top #(
             end
             assign ready_queue_base_addr[core][cluster] = ready_queue_base_addr_i +
                                                         (core + cluster * NUM_CORES_PER_CLUSTER) * ReadyQueueAddrOffset;
-            assign ready_queue_data_in[core][cluster].task_id = waiting_dep_check_task_desc[core].task_id;
+            assign ready_queue_data_in[core][cluster].task_id =
+                waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].task_id;
             assign ready_queue_data_in[core][cluster].reserved_bits = '0;
             assign ready_queue_push[core][cluster] = ready_queue_filter_oup_valid[core][cluster] & ~ready_queue_full[core][cluster];
         end
@@ -1012,12 +1032,13 @@ module bingo_hw_manager_top #(
             // DARTS CERF: if task is conditionally skipped, mark as dummy (2'b01)
             // so checkout logic fires dep_set without done_queue match
             always_comb begin
-                checkout_queue_data_in[core][cluster] = waiting_dep_check_task_desc[core];
-                if (cond_exec_skip[core]) begin
+                checkout_queue_data_in[core][cluster] =
+                    waiting_dep_check_task_desc[remap_route_src_core[core][cluster]];
+                if (cond_exec_skip[remap_route_src_core[core][cluster]]) begin
                     checkout_queue_data_in[core][cluster].task_type = 2'b01;
                 end
             end
-            assign checkout_queue_push[core][cluster] = demux_ready_and_checkout_queue_oup_valid[core][cluster] && !checkout_queue_full[core][cluster];
+            assign checkout_queue_push[core][cluster] = remap_route_fire[core][cluster];
             assign checkout_queue_pop[core][cluster] = stream_demux_checkout_queue_chiplet_dep_set_inp_ready[core][cluster] && !checkout_queue_empty[core][cluster];
 
             stream_demux #(
@@ -1347,6 +1368,28 @@ module bingo_hw_manager_top #(
             .physical_core_o(remap_physical_core[core]),
             .physical_cluster_o(remap_physical_cluster[core])
         );
+    end
+
+    always_comb begin : compose_remap_route_signals
+        remap_route_valid = '0;
+        remap_route_src_core = '0;
+
+        for (int unsigned dst_core = 0; dst_core < NUM_CORES_PER_CLUSTER; dst_core++) begin
+            for (int unsigned dst_cluster = 0; dst_cluster < NUM_CLUSTERS_PER_CHIPLET; dst_cluster++) begin
+                for (int unsigned src_core = 0; src_core < NUM_CORES_PER_CLUSTER; src_core++) begin
+                    if (!remap_route_valid[dst_core][dst_cluster] &&
+                        demux_ready_and_checkout_queue_oup_valid[src_core][dst_cluster] &&
+                        remap_select_valid[src_core] &&
+                        (remap_physical_core[src_core] == bingo_hw_manager_assigned_core_id_t'(dst_core)) &&
+                        (remap_physical_cluster[src_core] == bingo_hw_manager_assigned_cluster_id_t'(dst_cluster))) begin
+
+                        remap_route_valid[dst_core][dst_cluster] = 1'b1;
+                        remap_route_src_core[dst_core][dst_cluster] =
+                            bingo_hw_manager_assigned_core_id_t'(src_core);
+                    end
+                end
+            end
+        end
     end
 
     //////////////////////////////////////////////////////////////////////
