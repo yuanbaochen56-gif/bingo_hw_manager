@@ -50,6 +50,7 @@ sources:
       - test/tb_bingo_hw_manager_watchdog.sv
       - test/tb_bingo_hw_manager_core_remap.sv
       - test/tb_bingo_hw_manager_remap_probe.sv
+      - test/tb_bingo_hw_manager_remap_full_flow.sv
       - test/tb_bingo_hw_manager_heartbeat.sv
       - test/tb_bingo_hw_manager_heartbeat_long_task.sv
 
