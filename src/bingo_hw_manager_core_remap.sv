@@ -47,8 +47,8 @@ module bingo_hw_manager_core_remap #(
                         !ready_queue_full_i[c][logical_cluster_i]) begin
 
                         select_valid_o = 1'b1;
-                        physical_core_o = CoreIdWidth'(c);
-                        physical_cluster_o = logical_cluster_i;
+                        physical_core_o = CoreIdWidth'(c);//this is the new core to be selected
+                        physical_cluster_o = logical_cluster_i;//this is the same cluster as the requested core
                     end
                 end
             end
