@@ -70,7 +70,7 @@ for t in "${names[@]}"; do
     log="sim_$t.log"
     echo "==> Running $t"
     rm -f vsim.log
-    "$ROOT/scripts/run_vsim.sh" "$t" > /dev/null 2>&1
+    "$ROOT/scripts/run_vsim.sh" "$t" 2>&1
     [ -f vsim.log ] && mv vsim.log "$log" || echo "run_vsim.sh produced no log" > "$log"
     if grep -q "Errors: 0," "$log" && ! grep -q "Error:" "$log" && ! grep -q "Fatal:" "$log"; then
         echo "    PASS  $(grep -m1 -i "passed" "$log" | sed 's/^# //')"
