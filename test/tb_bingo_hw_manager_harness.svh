@@ -33,6 +33,18 @@ import axi_test::*;
 `ifndef TB_DISABLE_CORE_WORKERS
   `define TB_DISABLE_CORE_WORKERS 0
 `endif
+// CoreRemapAllowMask[logical][physical] of the DUT ('1: can remap to any core of the cluster)
+`ifndef TB_CORE_REMAP_ALLOW_MASK
+  `define TB_CORE_REMAP_ALLOW_MASK '1
+`endif
+// WatchdogCoreMask[core][cluster] of the DUT ('1: all slots monitored)
+`ifndef TB_WATCHDOG_CORE_MASK
+  `define TB_WATCHDOG_CORE_MASK '1
+`endif
+// Heartbeat CSR number (DUT CsrHeartbeatAddr and the CSR_HEARTBEAT used by stimuli)
+`ifndef TB_CSR_HEARTBEAT_ADDR
+  `define TB_CSR_HEARTBEAT_ADDR 12'h5fd
+`endif
 localparam int unsigned READY_AND_DONE_QUEUE_INTERFACE_TYPE = 1; // 1: CSR Req/Resp
 localparam int unsigned TASK_QUEUE_TYPE = 0;                     // 0: AXI Lite Slave
 localparam int unsigned NUM_CHIPLET                = `TB_NUM_CHIPLET;
@@ -61,7 +73,7 @@ typedef logic [ChipIdWidth-1:0] chip_id_t;
 
 localparam device_axi_lite_addr_t CSR_READY     = device_axi_lite_addr_t'(12'h5fe);
 localparam device_axi_lite_addr_t CSR_DONE      = device_axi_lite_addr_t'(12'h5ff);
-localparam device_axi_lite_addr_t CSR_HEARTBEAT = device_axi_lite_addr_t'(12'h5fd);
+localparam device_axi_lite_addr_t CSR_HEARTBEAT = device_axi_lite_addr_t'(`TB_CSR_HEARTBEAT_ADDR);
 
 localparam host_axi_lite_addr_t TASK_QUEUE_BASE      = 48'h1000_0000;
 localparam host_axi_lite_addr_t DONE_QUEUE_BASE      = 48'h2000_0000;
@@ -508,6 +520,9 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .READY_AND_DONE_QUEUE_INTERFACE_TYPE ( READY_AND_DONE_QUEUE_INTERFACE_TYPE ),
         .TASK_QUEUE_TYPE                     ( TASK_QUEUE_TYPE                     ),
         .WatchdogHeartbeatTimeoutCycles      ( WATCHDOG_HEARTBEAT_TIMEOUT          ),
+        .WatchdogCoreMask                    ( `TB_WATCHDOG_CORE_MASK              ),
+        .CoreRemapAllowMask                  ( `TB_CORE_REMAP_ALLOW_MASK           ),
+        .CsrHeartbeatAddr                    ( `TB_CSR_HEARTBEAT_ADDR              ),
         .NUM_CORES_PER_CLUSTER               ( NUM_CORES_PER_CLUSTER               ),
         .NUM_CLUSTERS_PER_CHIPLET            ( NUM_CLUSTERS_PER_CHIPLET            ),
         .DepTagWidth                         ( DEP_TAG_WIDTH                       ),
@@ -569,6 +584,38 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
 end
 
 // ---------------------------------------------------------------------------
+// Remap placement monitor (white-box, always on)
+// ---------------------------------------------------------------------------
+// A task may only leave its logical core when that core is dead_suspect (A1),
+// and tasks that never execute on a core (dummy-set, CERF-skipped) must never
+// be remapped (A2): they rely on their logical core's checkout FIFO order.
+for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_remap_monitor
+    always @(posedge clk_i) begin
+        if (rst_ni) begin
+            for (int p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
+                for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                    if (gen_dut[gi].i_dut.remap_route_fire[p][cl]) begin
+                        automatic int src = gen_dut[gi].i_dut.remap_route_src_core[p][cl];
+                        if (src != p) begin
+                            if (gen_dut[gi].i_dut.core_dead_suspect[src][cl] !== 1'b1) begin
+                                $error("[REMAP_CHECK] chip %0d: task %0d of healthy logical core %0d (cluster %0d) placed on physical core %0d",
+                                       gi, gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].task_id, src, cl, p);
+                            end
+                            if (((gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].task_type == 2'b01) &&
+                                 gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].dep_set_info.dep_set_en) ||
+                                gen_dut[gi].i_dut.cond_exec_skip[src]) begin
+                                $error("[REMAP_CHECK] chip %0d: non-executing task %0d of logical core %0d (cluster %0d) remapped to physical core %0d",
+                                       gi, gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].task_id, src, cl, p);
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+// ---------------------------------------------------------------------------
 // CSR Helper Tasks
 // ---------------------------------------------------------------------------
 task automatic reset_csr_interface();
@@ -595,6 +642,9 @@ task automatic csr_read(
     csr_req_valid[chip][core][cluster] <= 1'b1;
     csr_resp_ready[chip][core][cluster] <= 1'b1;
 
+    // Sample ready only after the new request has been visible for a clock
+    // edge; right after a previous request, ready still belongs to that one.
+    @(posedge clk_i);
     while (csr_req_ready[chip][core][cluster] !== 1'b1) @(posedge clk_i);
     while (csr_resp_valid[chip][core][cluster] !== 1'b1) @(posedge clk_i);
 
@@ -614,8 +664,35 @@ task automatic csr_write(
     csr_req_valid[chip][core][cluster] <= 1'b1;
     csr_resp_ready[chip][core][cluster] <= 1'b0;
 
+    // See csr_read: back-to-back calls must not reuse the previous ready.
+    @(posedge clk_i);
     while (csr_req_ready[chip][core][cluster] !== 1'b1) @(posedge clk_i);
     csr_req_valid[chip][core][cluster] <= 1'b0;
+endtask
+
+// Report completion of task_id from (chip, cluster, core) through the done CSR.
+task automatic csr_done(
+    input int chip, input int cluster, input int core,
+    input int unsigned task_id
+);
+    automatic bingo_hw_manager_done_info_full_t info = '0;
+    info.task_id             = bingo_hw_manager_task_id_t'(task_id);
+    info.assigned_cluster_id = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+    info.assigned_core_id    = bingo_hw_manager_assigned_core_id_t'(core);
+    csr_write(chip, cluster, core, CSR_DONE, device_axi_lite_data_t'(info));
+endtask
+
+// Model a healthy core running a long task: stay busy for `cycles` cycles and
+// write the heartbeat CSR every `period` cycles.
+task automatic busy_with_heartbeat(
+    input int chip, input int cluster, input int core,
+    input int unsigned cycles, input int unsigned period,
+    input device_axi_lite_addr_t heartbeat_addr = CSR_HEARTBEAT
+);
+    for (int unsigned t = 0; t < cycles; t += period) begin
+        repeat (period) @(posedge clk_i);
+        csr_write(chip, cluster, core, heartbeat_addr, device_axi_lite_data_t'(1));
+    end
 endtask
 
 // ---------------------------------------------------------------------------
