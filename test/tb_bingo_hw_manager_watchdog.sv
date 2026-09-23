@@ -36,6 +36,28 @@ module tb_bingo_hw_manager_watchdog;
         .core_dead_suspect_o(core_dead_suspect_o)
     );
 
+    // Same stimulus, but core 0 excluded from monitoring (CoreMask[core][cluster]).
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_busy_masked;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_dead_suspect_masked;
+
+    bingo_hw_manager_watchdog #(
+        .NumCores(NUM_CORES),
+        .NumClusters(NUM_CLUSTERS),
+        .CounterWidth(COUNTER_WIDTH),
+        .HeartbeatTimeoutCycles(TIMEOUT),
+        .CoreMask(2'b10)
+    ) dut_masked (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
+        .task_dispatched_i(task_dispatched_i),
+        .task_done_i(task_done_i),
+        .heartbeat_i(heartbeat_i),
+        .waiting_task_i(waiting_task_i),
+        .core_busy_o(core_busy_masked),
+        .core_available_o(),
+        .core_dead_suspect_o(core_dead_suspect_masked)
+    );
+
     initial clk_i = 1'b0;
     always #5 clk_i = ~clk_i;
 
@@ -143,6 +165,14 @@ module tb_bingo_hw_manager_watchdog;
         tick(1);
         expect_core_state(0, 1'b1, 1'b0, 1'b1);
         expect_core_state(1, 1'b0, 1'b1, 1'b0);
+
+        $display("Masked core is still tracked as busy but never reported dead");
+        if (core_busy_masked[0][0] !== 1'b1) begin
+            $error("masked core 0 busy mismatch: expected 1 got %0b", core_busy_masked[0][0]);
+        end
+        if (core_dead_suspect_masked[0][0] !== 1'b0) begin
+            $error("masked core 0 must never be dead_suspect, got %0b", core_dead_suspect_masked[0][0]);
+        end
 
         $display("Done should clear busy and dead_suspect");
         pulse_done(0);

@@ -2,7 +2,10 @@ module bingo_hw_manager_watchdog #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
     parameter int unsigned CounterWidth = 24,
-    parameter int unsigned HeartbeatTimeoutCycles = 100000
+    parameter int unsigned HeartbeatTimeoutCycles = 100000,
+    // Slots with CoreMask = 0 are never reported dead_suspect (e.g. a host slot
+    // that does not send heartbeats, or a tied-off slot).
+    parameter logic [NumCores-1:0][NumClusters-1:0] CoreMask = '1
 ) (
     input  logic clk_i,
     input  logic rst_ni,
@@ -17,16 +20,27 @@ module bingo_hw_manager_watchdog #(
     output logic [NumCores-1:0][NumClusters-1:0] core_dead_suspect_o    // Indicates when a core is suspected to be dead (no heartbeat for too long)
 );
 
+    // The timer saturates at 2^CounterWidth-1, so the timeout must fit in it;
+    // otherwise the truncated compare value would silently shorten the timeout.
+    if ($clog2(HeartbeatTimeoutCycles + 1) > CounterWidth) begin : gen_counter_width_check
+        initial begin
+            $error("Watchdog timeout (%0d cycles) does not fit in a %0d-bit counter",
+                   HeartbeatTimeoutCycles, CounterWidth);
+            $finish;
+        end
+    end
+
     // Internal registers to track core status and timers
     logic [CounterWidth-1:0] timer_q [NumCores][NumClusters];
     logic                    busy_q [NumCores][NumClusters];
-    
+
     // Watchdog logic: Update core status and timers
     always_comb begin
         for(int c=0; c<NumCores; c++) begin
             for(int cl=0; cl<NumClusters; cl++) begin
                 core_busy_o[c][cl] = busy_q[c][cl];
-                core_dead_suspect_o[c][cl] =busy_q[c][cl] &&(timer_q[c][cl] >= HeartbeatTimeoutCycles[CounterWidth-1:0]);
+                core_dead_suspect_o[c][cl] = CoreMask[c][cl] && busy_q[c][cl] &&
+                                             (timer_q[c][cl] >= HeartbeatTimeoutCycles[CounterWidth-1:0]);
                 core_available_o[c][cl] = waiting_task_i[c][cl] && !busy_q[c][cl] && !core_dead_suspect_o[c][cl];
             end
         end
