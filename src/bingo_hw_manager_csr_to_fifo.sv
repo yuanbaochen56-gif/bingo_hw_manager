@@ -28,7 +28,11 @@ module bingo_hw_manager_csr_to_fifo #(
 //     data_t   data;
 //   } csr_rsp_t;
     parameter type data_t = logic,
-    parameter type bingo_hw_manager_done_info_full_t = logic
+    parameter type bingo_hw_manager_done_info_full_t = logic,
+    // CSR number of the heartbeat write. 0x5fd by default; a system whose CSR
+    // path only forwards the ready/done CSRs can use the ready CSR (0x5fe):
+    // a read of it pops the ready queue, a write of it is a heartbeat.
+    parameter logic [11:0] CsrHeartbeatAddr = 12'h5fd
     // typedef struct packed{
     //     logic [ReservedBitsForDoneInfo-1:0]        reserved_bits;
     //     bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
@@ -54,7 +58,11 @@ module bingo_hw_manager_csr_to_fifo #(
     input  logic     [N-1:0]    fifo_data_ready_i,
     // Heartbeat CSR writes are accepted locally and do not enter the done FIFO.
     output data_t    [N-1:0]    heartbeat_data_o,
-    output logic     [N-1:0]    heartbeat_valid_o
+    output logic     [N-1:0]    heartbeat_valid_o,
+    // A valid request that matches none of the CSRs above. It is never served
+    // (no FIFO access, no response), so the requesting core stalls; exported
+    // so the top can report it.
+    output logic     [N-1:0]    csr_req_unknown_o
 );
     // Signals for csr_to_fifo_read
     logic [N-1:0] csr_req_valid_read;
@@ -67,7 +75,7 @@ module bingo_hw_manager_csr_to_fifo #(
     // CSR address map
     localparam logic [11:0] CSR_READY     = 12'h5fe;
     localparam logic [11:0] CSR_DONE      = 12'h5ff;
-    localparam logic [11:0] CSR_HEARTBEAT = 12'h5fd;
+    localparam logic [11:0] CSR_HEARTBEAT = CsrHeartbeatAddr;
 
     // Signals for Write Done Info
     bingo_hw_manager_done_info_full_t [N-1:0] done_info;
@@ -129,6 +137,8 @@ module bingo_hw_manager_csr_to_fifo #(
 
         assign heartbeat_valid_o[i] = is_heartbeat;
         assign heartbeat_data_o[i]  = csr_req_i[i].data;
+
+        assign csr_req_unknown_o[i] = csr_req_valid_i[i] && !is_ready_read && !is_done_write && !is_heartbeat;
 
     end
 endmodule
