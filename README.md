@@ -213,7 +213,13 @@ bingo_hw_manager_top
  |    +-- Chiplet Done Queue (write_mailbox, 1x)
  |
  +-- Power Manager (1x)
-      +-- bingo_hw_manager_pm (idle-based clock gating)
+ |    +-- bingo_hw_manager_pm (idle-based clock gating)
+ |
+ +-- Watchdog (1x)
+ |    +-- bingo_hw_manager_watchdog (busy timer per (core, cluster), heartbeat reset)
+ |
+ +-- Core Remap (NUM_CORES_PER_CLUSTER instances)
+      +-- bingo_hw_manager_core_remap (dead logical core -> substitute core)
 ```
 
 ## Parameters
@@ -235,6 +241,10 @@ bingo_hw_manager_top
 | `ReadyQueueDepth` | 8 | Per-(core,cluster) ready FIFO depth |
 | `TASK_QUEUE_TYPE` | 1 | 0: AXI-Lite slave, 1: AXI-Lite master |
 | `READY_AND_DONE_QUEUE_INTERFACE_TYPE` | 1 | 0: AXI-Lite, 1: CSR req/resp |
+| `WatchdogHeartbeatTimeoutCycles` | 100000 | Cycles a busy core may go without heartbeat before it is `dead_suspect` |
+| `WatchdogCoreMask` | `'1` | Per-(core, cluster) watchdog enable; masked slots are never `dead_suspect` |
+| `CoreRemapAllowMask` | `'1` | `[logical][physical]`: cores allowed to run a dead core's tasks (`'0` = no remap) |
+| `CsrHeartbeatAddr` | `12'h5fd` | CSR number of the heartbeat write (e.g. `12'h5fe` = write to the ready CSR) |
 
 ## Interface Modes
 
@@ -256,6 +266,45 @@ When a task's `dep_set_chiplet_id != chip_id_i`, the dependency signal is routed
 4. Remote chiplet processes the signal through its dep matrix set arbiter
 
 Broadcast mode (`dep_set_all_chiplet = 1`) sends the signal to all chiplets simultaneously.
+
+## Watchdog, Heartbeat and Core Remap
+
+**CSR map (CSR interface mode):** read `0x5fe` pops the core's ready queue, write `0x5ff`
+reports a done task, write `CsrHeartbeatAddr` (default `0x5fd`) is a heartbeat. A heartbeat
+never enters the done queue. With `CsrHeartbeatAddr = 12'h5fe`, a write to the ready CSR is the
+heartbeat (useful when the core's CSR path only forwards `0x5fe`/`0x5ff`). A request with any
+other address is never served; simulation reports it as `[BINGO_CSR]`.
+
+**Watchdog:** a core becomes busy when it pops a task and idle again when its done arrives.
+While busy, a timer counts cycles since the last dispatch/heartbeat; reaching
+`WatchdogHeartbeatTimeoutCycles` marks the core `dead_suspect`. Idle cores are never timed.
+A late done clears the suspicion (the core was slow, not dead). Long kernels must write the
+heartbeat CSR periodically. The counter width is derived from the timeout.
+
+**Remap (only on a dead core):**
+- A healthy logical core always keeps its tasks, whether it is busy or polling. The compiler
+  relies on per-core in-order execution, and a dummy-set task only waits for its source task
+  because both sit in the same core's checkout FIFO.
+- When the logical core is `dead_suspect`, an executing task (normal/gating) goes to the
+  lowest-indexed core of the same cluster that is alive and allowed by `CoreRemapAllowMask`.
+  The choice only depends on the set of dead cores, so a dead core's tasks all go to one
+  substitute, in order. Dependencies still use the logical core (dep-matrix column =
+  `assigned_core_id`); ready/checkout/done queues are those of the physical core.
+- Dummy-set and CERF-skipped tasks are never remapped. They also wait until all earlier
+  remapped tasks of their logical core have left their checkout queues.
+- Set `CoreRemapAllowMask = '0` when the cores of a cluster cannot run each other's kernels
+  (detection only, e.g. HeMAiA).
+
+**Limitations:**
+- A task that was running on a core that really died is lost (its checkout entry never drains),
+  so any task depending on it cannot complete. There is no task re-execution.
+- If the compiler adds sequencing edges between consecutive tasks of a core, every later task
+  of a dead core depends on the lost one, so remap cannot help those either.
+- Remapped tasks are assumed independent of the dead core's outstanding work (the tag allocator's
+  same-core HOL assumption no longer holds across the remap).
+- Remap stays within a cluster; there is no cross-cluster or cross-chiplet remap.
+
+Simulation prints `[BINGO_WD]` on every `dead_suspect` change and `[BINGO_REMAP]` for every remapped task.
 
 ## Dependencies
 

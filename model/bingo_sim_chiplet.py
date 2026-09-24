@@ -403,29 +403,20 @@ class ChipletModel:
         if not core_in_range:
             return None
 
-        if self.core_alive[cluster][logical_core] and not self.allow_core_remap:
+        # Mirrors bingo_hw_manager_core_remap: a live logical core always keeps
+        # its task (busy or not), only a dead one is replaced.
+        if self.core_alive[cluster][logical_core]:
             return logical_core
 
-        if not self.core_alive[cluster][logical_core] and not self.allow_core_remap:
+        if not self.allow_core_remap:
             return None
 
-        candidates = [
-            co for co in range(self.num_cores)
-            if self.core_alive[cluster][co]
-        ]
-        if not candidates:
-            return None
-
-        best = None
-        best_load = float("inf")
-
-        for co in candidates: # Prefer least loaded alive core in the same cluster
-            load = int(self.core_busy[cluster][co]) + self.ready_queues[co][cluster].count
-            if load < best_load:
-                best = co
-                best_load = load
-
-        return best
+        # Deterministic substitute: the lowest-indexed live core of the cluster,
+        # so all tasks of a dead core land on the same core, in order.
+        for co in range(self.num_cores):
+            if self.core_alive[cluster][co]:
+                return co
+        return None
 
     def _try_checkout_dep_set(self, core: int, cluster: int, cycle: int) -> Optional[list[SimEvent]]:
         """Try to fire dep_set from checkout[core][cluster].
