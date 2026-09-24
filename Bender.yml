@@ -55,6 +55,12 @@ sources:
       - test/tb_bingo_hw_manager_heartbeat_long_task.sv
       - test/tb_bingo_hw_manager_remap_passthrough.sv
       - test/tb_bingo_hw_manager_remap_dead_suspect.sv
+      - test/tb_bingo_hw_manager_remap_busy_no_remap.sv   # healthy busy core keeps its tasks
+      - test/tb_bingo_hw_manager_remap_dummy_set_order.sv # dummy-set waits for its same-core source
+      - test/tb_bingo_hw_manager_remap_sticky_order.sv    # dead core's tasks go to one substitute, in order
+      - test/tb_bingo_hw_manager_remap_dummy_after_remap.sv # dummy-set waits for remapped earlier tasks
+      - test/tb_bingo_hw_manager_remap_mask_off.sv        # CoreRemapAllowMask='0: detection only (HeMAiA)
+      - test/tb_bingo_hw_manager_csr_heartbeat_addr.sv    # heartbeat on CSR 0x5fe + masked slot (HeMAiA)
 
   # NOTE: Generated test files in test/generated/ are NOT listed here.
   # They are picked up automatically by compile_vsim.sh via shell glob.
