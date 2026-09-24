@@ -24,6 +24,15 @@ module bingo_hw_manager_top #(
     // consumer drains only ITS producer's increment (no counter-sharing hazard).
     parameter int unsigned DepTagWidth = 4,
     parameter int unsigned WatchdogHeartbeatTimeoutCycles = 100000, // The number of cycles for the watchdog to time out
+    // Watchdog enable per (core, cluster) slot. A masked slot is never reported
+    // dead_suspect (e.g. a host slot that sends no heartbeats, or a tied-off slot).
+    parameter logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] WatchdogCoreMask = '1,
+    // Core remap: CoreRemapAllowMask[logical][physical] = 1 lets `physical` run the
+    // tasks of `logical` (same cluster) once `logical` is dead_suspect. Set it to '0
+    // when the cores of a cluster cannot run each other's kernels.
+    parameter logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CORES_PER_CLUSTER-1:0] CoreRemapAllowMask = '1,
+    // CSR number of the heartbeat write (see bingo_hw_manager_csr_to_fifo).
+    parameter logic [11:0] CsrHeartbeatAddr = 12'h5fd,
     // AXI interface types
     // The task queue holds tasks to be scheduled to the devices
     // Host writes the task queue via 64bit AXI Lite
@@ -492,6 +501,10 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect;
 
+    // Per logical core (waiting queue head): 1 if the task executes on a core
+    // and may therefore be remapped (not a dummy-set, not CERF-skipped).
+    logic [NUM_CORES_PER_CLUSTER-1:0] remap_remappable;
+    logic [NUM_CORES_PER_CLUSTER-1:0] remap_select_valid_raw;
     logic [NUM_CORES_PER_CLUSTER-1:0] remap_select_valid;
     bingo_hw_manager_assigned_core_id_t    [NUM_CORES_PER_CLUSTER-1:0] remap_physical_core;
     bingo_hw_manager_assigned_cluster_id_t [NUM_CORES_PER_CLUSTER-1:0] remap_physical_cluster;
@@ -499,9 +512,15 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remap_route_fire;
     bingo_hw_manager_assigned_core_id_t    [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remap_route_src_core;
 
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] running_logical_valid;
-    bingo_hw_manager_assigned_core_id_t    [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] running_logical_core;
-    bingo_hw_manager_assigned_cluster_id_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] running_logical_cluster;
+    // Number of tasks of logical core [core] (cluster [cluster]) that were remapped
+    // to another physical core and are still in that core's checkout queue.
+    localparam int unsigned RemapOutstandingWidth =
+        $clog2(NUM_CORES_PER_CLUSTER * CheckoutQueueDepth + 1);
+    logic [RemapOutstandingWidth-1:0] remap_outstanding_d [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
+    logic [RemapOutstandingWidth-1:0] remap_outstanding_q [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
+
+    // Watchdog counter wide enough for the configured timeout (saturating timer).
+    localparam int unsigned WatchdogCounterWidth = $clog2(WatchdogHeartbeatTimeoutCycles + 1) + 1;
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//
@@ -1194,6 +1213,7 @@ module bingo_hw_manager_top #(
         //
         logic                  [N_CORES_TOTAL-1:0] heartbeat_valid_1d;
         device_axi_lite_data_t [N_CORES_TOTAL-1:0] heartbeat_data_1d;
+        logic                  [N_CORES_TOTAL-1:0] csr_req_unknown_1d;
 
         bingo_hw_manager_csr_to_fifo #(
             .TaskIdWidth (TaskIdWidth),
@@ -1203,7 +1223,8 @@ module bingo_hw_manager_top #(
             .csr_req_t (csr_req_t),
             .csr_rsp_t (csr_rsp_t),
             .data_t    (device_axi_lite_data_t),
-            .bingo_hw_manager_done_info_full_t (bingo_hw_manager_done_info_full_t)
+            .bingo_hw_manager_done_info_full_t (bingo_hw_manager_done_info_full_t),
+            .CsrHeartbeatAddr (CsrHeartbeatAddr)
         ) i_bingo_hw_manager_csr_to_fifo (
             .csr_req_i         (csr_req_1d               ),
             .csr_req_valid_i   (csr_req_valid_1d         ),
@@ -1221,8 +1242,30 @@ module bingo_hw_manager_top #(
             .fifo_data_ready_i (write_done_queue_ready_1d),
             // heartbeat signal
             .heartbeat_valid_o  ( heartbeat_valid_1d     ),
-            .heartbeat_data_o   ( heartbeat_data_1d      ) // heartbeat_data_1d is reserved for future progress counters.
+            .heartbeat_data_o   ( heartbeat_data_1d      ), // heartbeat_data_1d is reserved for future progress counters.
+            .csr_req_unknown_o  ( csr_req_unknown_1d     )
             );
+
+`ifndef SYNTHESIS
+        // A CSR request with an unknown address is never served and silently stalls
+        // its core (e.g. an integration that forwards a translated CSR number).
+        // Report it once when it appears.
+        logic [N_CORES_TOTAL-1:0] csr_req_unknown_q;
+        always @(posedge clk_i or negedge rst_ni) begin
+            if (!rst_ni) begin
+                csr_req_unknown_q <= '0;
+            end else begin
+                csr_req_unknown_q <= csr_req_unknown_1d;
+                for (int unsigned i = 0; i < N_CORES_TOTAL; i++) begin
+                    if (csr_req_unknown_1d[i] && !csr_req_unknown_q[i]) begin
+                        $error("[BINGO_CSR] chip %0d core %0d cluster %0d: unknown CSR address 0x%0h (write=%0b), request will stall",
+                               chip_id_i, i % NUM_CORES_PER_CLUSTER, i / NUM_CORES_PER_CLUSTER,
+                               csr_req_1d[i].addr, csr_req_1d[i].write);
+                    end
+                end
+            end
+        end
+`endif
 
         always_comb begin : connect_ready_queue_1d_to_2d
             for (int unsigned core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
@@ -1329,13 +1372,16 @@ module bingo_hw_manager_top #(
         .pm_axi_lite_resp_i    (pm_axi_lite_resp_i                     )
     );
     //////////////////////////////////////////////////////////////////////
-    // watchdog fot core heartbeat monitoring
+    // Watchdog for core heartbeat monitoring
     //////////////////////////////////////////////////////////////////////
+    // core_available is kept for observability only; routing no longer uses it
+    // (a healthy core keeps its tasks whether it is busy or polling).
     bingo_hw_manager_watchdog #(
         .NumCores(NUM_CORES_PER_CLUSTER),
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
-        .CounterWidth(24),
-        .HeartbeatTimeoutCycles(WatchdogHeartbeatTimeoutCycles)
+        .CounterWidth(WatchdogCounterWidth),
+        .HeartbeatTimeoutCycles(WatchdogHeartbeatTimeoutCycles),
+        .CoreMask(WatchdogCoreMask)
     ) i_watchdog (
         .clk_i                 ( clk_i                          ),
         .rst_ni                ( rst_ni                         ),
@@ -1351,23 +1397,86 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////////////////
     // Core Remapping
     //////////////////////////////////////////////////////////////////////
+    // A task only leaves its logical core when that core is dead_suspect (see
+    // bingo_hw_manager_core_remap). Dummy-set and CERF-skipped tasks never execute
+    // on a core and must drain through their own core's checkout FIFO, which is
+    // what orders them after the core's earlier tasks, so they are never remapped.
     for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin : gen_core_remap
+        logic                                  is_dummy_set;
+        bingo_hw_manager_assigned_cluster_id_t task_cluster;
+        logic                                  outstanding_clear;
+
+        assign is_dummy_set = (waiting_dep_check_task_desc[core].task_type == 2'b01) &&
+                              waiting_dep_check_task_desc[core].dep_set_info.dep_set_en;
+        assign remap_remappable[core] = !is_dummy_set && !cond_exec_skip[core];
+
         bingo_hw_manager_core_remap #(
             .NumCores(NUM_CORES_PER_CLUSTER),
             .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
             .CoreIdWidth(cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)),
-            .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
+            .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
+            .AllowMask(CoreRemapAllowMask)
         ) i_core_remap (
             .req_valid_i(!waiting_dep_check_queue_empty[core]),
             .logical_core_i(bingo_hw_manager_assigned_core_id_t'(core)),
             .logical_cluster_i(waiting_dep_check_task_desc[core].assigned_cluster_id),
-            .core_available_i(core_available),
+            .remappable_i(remap_remappable[core]),
             .core_dead_suspect_i(core_dead_suspect),
-            .ready_queue_full_i(ready_queue_full),
-            .select_valid_o(remap_select_valid[core]),
+            .select_valid_o(remap_select_valid_raw[core]),
             .physical_core_o(remap_physical_core[core]),
             .physical_cluster_o(remap_physical_cluster[core])
         );
+
+        // A dummy-set / skipped task stays on its logical core, but earlier tasks of
+        // that core may have been remapped elsewhere (while it was dead_suspect).
+        // Hold it back until all of those have left their checkout queues, so that
+        // its dep_set still fires after every earlier task of its logical core.
+        // Healthy cores never have outstanding remapped tasks: no behaviour change.
+        assign task_cluster = waiting_dep_check_task_desc[core].assigned_cluster_id;
+        always_comb begin
+            outstanding_clear = 1'b1;
+            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                if ((bingo_hw_manager_assigned_cluster_id_t'(cl) == task_cluster) &&
+                    (remap_outstanding_q[core][cl] != '0)) begin
+                    outstanding_clear = 1'b0;
+                end
+            end
+        end
+        assign remap_select_valid[core] = remap_select_valid_raw[core] &&
+                                          (remap_remappable[core] || outstanding_clear);
+    end
+
+    // Track remapped tasks per logical core until they leave the checkout queue of
+    // the physical core that runs them (checkout entries keep the logical core id).
+    always_comb begin : update_remap_outstanding
+        remap_outstanding_d = remap_outstanding_q;
+        for (int unsigned p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
+            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                if (remap_route_fire[p][cl] &&
+                    (remap_route_src_core[p][cl] != bingo_hw_manager_assigned_core_id_t'(p))) begin
+                    remap_outstanding_d[remap_route_src_core[p][cl]][cl] =
+                        remap_outstanding_d[remap_route_src_core[p][cl]][cl] + 1'b1;
+                end
+                if (checkout_queue_pop[p][cl] &&
+                    (checkout_queue_data_out[p][cl].assigned_core_id != bingo_hw_manager_assigned_core_id_t'(p)) &&
+                    (int'(checkout_queue_data_out[p][cl].assigned_core_id) < NUM_CORES_PER_CLUSTER)) begin
+                    remap_outstanding_d[checkout_queue_data_out[p][cl].assigned_core_id][cl] =
+                        remap_outstanding_d[checkout_queue_data_out[p][cl].assigned_core_id][cl] - 1'b1;
+                end
+            end
+        end
+    end
+
+    always_ff @(posedge clk_i or negedge rst_ni) begin : remap_outstanding_regs
+        if (!rst_ni) begin
+            for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+                for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                    remap_outstanding_q[c][cl] <= '0;
+                end
+            end
+        end else begin
+            remap_outstanding_q <= remap_outstanding_d;
+        end
     end
 
     always_comb begin : compose_remap_route_signals
@@ -1391,6 +1500,34 @@ module bingo_hw_manager_top #(
             end
         end
     end
+
+`ifndef SYNTHESIS
+    // Simulation-only event log: makes watchdog / remap activity visible in any
+    // flow that simulates this RTL (bingo unit tests and full-system sims).
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect_log_q;
+    always @(posedge clk_i or negedge rst_ni) begin : watchdog_remap_event_log
+        if (!rst_ni) begin
+            core_dead_suspect_log_q <= '0;
+        end else begin
+            core_dead_suspect_log_q <= core_dead_suspect;
+            for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+                for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                    if (core_dead_suspect[c][cl] != core_dead_suspect_log_q[c][cl]) begin
+                        $display("[BINGO_WD] %0t chip=%0d core=%0d cluster=%0d dead_suspect=%0b",
+                                 $time, chip_id_i, c, cl, core_dead_suspect[c][cl]);
+                    end
+                    if (remap_route_fire[c][cl] &&
+                        (remap_route_src_core[c][cl] != bingo_hw_manager_assigned_core_id_t'(c))) begin
+                        $display("[BINGO_REMAP] %0t chip=%0d task=%0d logical_core=%0d -> physical_core=%0d cluster=%0d",
+                                 $time, chip_id_i,
+                                 waiting_dep_check_task_desc[remap_route_src_core[c][cl]].task_id,
+                                 remap_route_src_core[c][cl], c, cl);
+                    end
+                end
+            end
+        end
+    end
+`endif
 
     //////////////////////////////////////////////////////////////////////
     // DARTS Tier 3: Load Monitor
