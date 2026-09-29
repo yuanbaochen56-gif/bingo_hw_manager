@@ -62,6 +62,17 @@ sources:
       - test/tb_bingo_hw_manager_remap_dummy_after_remap.sv # dummy-set waits for remapped earlier tasks
       - test/tb_bingo_hw_manager_remap_mask_off.sv        # CoreRemapAllowMask='0: detection only (HeMAiA)
       - test/tb_bingo_hw_manager_csr_heartbeat_addr.sv    # heartbeat on CSR 0x5fe + masked slot (HeMAiA)
+      - test/tb_bingo_hw_manager_replay_lost_task.sv       # running task of a dead core replayed
+      - test/tb_bingo_hw_manager_replay_queued_tasks.sv    # queued normal/dummy/skipped entries moved in order
+      - test/tb_bingo_hw_manager_replay_sequencing_edge.sv # same-core edge behind the lost task
+      - test/tb_bingo_hw_manager_replay_slow_not_dead.sv   # silent between the timeouts: no fence
+      - test/tb_bingo_hw_manager_replay_zombie.sv          # fenced core's late done dropped
+      - test/tb_bingo_hw_manager_replay_done_race.sv       # done vs confirm timeout, exactly once
+      - test/tb_bingo_hw_manager_replay_no_substitute.sv   # AllowMask '0: replay_stuck, rest runs
+      - test/tb_bingo_hw_manager_replay_chain.sv           # substitute dies too
+      - test/tb_bingo_hw_manager_replay_two_clusters.sv    # replay inside cluster 1
+      - test/tb_bingo_hw_manager_replay_disabled.sv        # confirm timeout 0: detection only
+      - test/tb_bingo_hw_manager_replay_random.sv          # random graph + random fault (scripts/run_replay_random.sh)
 
   # NOTE: Generated test files in test/generated/ are NOT listed here.
   # They are picked up automatically by compile_vsim.sh via shell glob.
