@@ -1,3 +1,12 @@
+// =============================================================================
+// dead_suspect alone does not move work; a fenced core's tasks continue on core 1
+// =============================================================================
+//   1. Core 0 takes task 1 and sends no heartbeat -> dead_suspect.
+//   2. Task 2 (logical core 0) is pushed while core 0 is only dead_suspect: it
+//      must still go to core 0's own ready queue, not to the polling core 1.
+//   3. Core 0 is fenced: task 1 (running) and task 2 (queued) are replayed on
+//      core 1, in that order.
+
 localparam int unsigned EXPECTED_TASK_COUNT      = 999;
 localparam int unsigned DEADLOCK_THRESHOLD       = 1000000;
 localparam int unsigned DEP_MATRIX_LOG_INTERVAL  = 0;
@@ -9,8 +18,7 @@ bingo_hw_manager_task_desc_full_t task_to_die = pack_normal_task(
     1'b0, 1'b0, 0, 0, '0
 );
 
-// Task 2: also targets logical core 0, but should be remapped to core 1
-// because core 0 is dead_suspect.
+// Task 2: also targets logical core 0.
 bingo_hw_manager_task_desc_full_t task_after_dead = pack_normal_task(
     2'b00, 16'd2, 0, 0, 0,
     1'b0, '0,
@@ -26,7 +34,7 @@ initial begin : remap_dead_suspect_test
     wait (rst_ni);
     repeat (20) @(posedge clk_i);
 
-    // --- Phase 1: dispatch task 1 to core 0 and let it become dead ---
+    // --- Phase 1: dispatch task 1 to core 0 and let it become dead_suspect ---
 
     // Make core 0 available.
     fork
@@ -66,7 +74,7 @@ initial begin : remap_dead_suspect_test
 
     $display("[DEAD_REMAP] core 0 is now dead_suspect");
 
-    // --- Phase 2: dispatch task 2 to logical core 0 — expect remap to core 1 ---
+    // --- Phase 2: task 2 still goes to core 0 while it is only dead_suspect ---
 
     core1_read_done = 1'b0;
     core1_task_id = '0;
@@ -82,11 +90,20 @@ initial begin : remap_dead_suspect_test
     repeat (5) @(posedge clk_i);
 
     if (gen_dut[0].i_dut.core_available[1][0] !== 1'b1) begin
-        $fatal(1, "core 1 should be available before remap dispatch");
+        $fatal(1, "core 1 should be available");
     end
 
-    $display("[DEAD_REMAP] Push task 2 to logical core 0 (expect remap to core 1)");
+    $display("[DEAD_REMAP] Push task 2 to logical core 0 (expect core 0's ready queue)");
     task_queue_master[0].write(task_queue_base[0], '0, task_after_dead, '1, resp);
+    repeat (10) @(posedge clk_i);
+    if (gen_dut[0].i_dut.core_fenced[0][0] !== 1'b0) begin
+        $fatal(1, "core 0 was fenced too early; raise TB_WATCHDOG_CONFIRM_TIMEOUT");
+    end
+    if (core1_read_done || gen_dut[0].i_dut.ready_queue_empty[0][0] !== 1'b0) begin
+        $fatal(1, "task 2 must stay on dead_suspect core 0 (core 1 read %0b)", core1_read_done);
+    end
+
+    // --- Phase 3: core 0 is fenced; tasks 1 and 2 are replayed on core 1 ---
 
     fork : wait_core1_or_timeout
         begin
@@ -96,17 +113,28 @@ initial begin : remap_dead_suspect_test
             repeat (300) @(posedge clk_i);
             if (!core1_read_done) begin
                 dump_queue_state();
-                $fatal(1, "task 2 was not remapped to core 1");
+                $fatal(1, "task 1 was not replayed on core 1");
             end
         end
     join_any
     disable wait_core1_or_timeout;
 
-    if (core1_task_id[TaskIdWidth-1:0] !== bingo_hw_manager_task_id_t'(16'd2)) begin
-        $fatal(1, "core 1 read wrong task id: expected 2 got %0d",
+    if (gen_dut[0].i_dut.core_fenced[0][0] !== 1'b1) begin
+        $fatal(1, "core 0 should be fenced once its tasks move");
+    end
+    if (core1_task_id[TaskIdWidth-1:0] !== bingo_hw_manager_task_id_t'(1)) begin
+        $fatal(1, "core 1 should first run replayed task 1, got %0d",
                core1_task_id[TaskIdWidth-1:0]);
     end
+    csr_done(0, 0, 1, 1);
 
-    $display("Dead-suspect remap test passed — task 2 remapped from dead core 0 to core 1");
+    csr_read(0, 0, 1, CSR_READY, core1_task_id);
+    if (core1_task_id[TaskIdWidth-1:0] !== bingo_hw_manager_task_id_t'(2)) begin
+        $fatal(1, "core 1 should then run task 2, got %0d", core1_task_id[TaskIdWidth-1:0]);
+    end
+    csr_done(0, 0, 1, 2);
+    repeat (10) @(posedge clk_i);
+
+    $display("Dead-suspect remap test passed - tasks 1,2 of fenced core 0 continued on core 1");
     $finish;
 end

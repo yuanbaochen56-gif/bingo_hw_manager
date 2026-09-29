@@ -6,6 +6,7 @@ module tb_bingo_hw_manager_watchdog;
     localparam int unsigned NUM_CLUSTERS  = 1;
     localparam int unsigned COUNTER_WIDTH = 8;
     localparam int unsigned TIMEOUT       = 4;
+    localparam int unsigned CONFIRM       = 8;
 
     logic clk_i;
     logic rst_ni;
@@ -18,6 +19,7 @@ module tb_bingo_hw_manager_watchdog;
     logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_busy_o;
     logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_available_o;
     logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_dead_suspect_o;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_fenced_o;
 
     bingo_hw_manager_watchdog #(
         .NumCores(NUM_CORES),
@@ -33,7 +35,8 @@ module tb_bingo_hw_manager_watchdog;
         .waiting_task_i(waiting_task_i),
         .core_busy_o(core_busy_o),
         .core_available_o(core_available_o),
-        .core_dead_suspect_o(core_dead_suspect_o)
+        .core_dead_suspect_o(core_dead_suspect_o),
+        .core_fenced_o(core_fenced_o)
     );
 
     // Same stimulus, but core 0 excluded from monitoring (CoreMask[core][cluster]).
@@ -55,7 +58,33 @@ module tb_bingo_hw_manager_watchdog;
         .waiting_task_i(waiting_task_i),
         .core_busy_o(core_busy_masked),
         .core_available_o(),
-        .core_dead_suspect_o(core_dead_suspect_masked)
+        .core_dead_suspect_o(core_dead_suspect_masked),
+        .core_fenced_o()
+    );
+
+    // Same stimulus, with the confirm timeout enabled (fencing).
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_busy_f;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_available_f;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_dead_suspect_f;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_fenced_f;
+
+    bingo_hw_manager_watchdog #(
+        .NumCores(NUM_CORES),
+        .NumClusters(NUM_CLUSTERS),
+        .CounterWidth(COUNTER_WIDTH),
+        .HeartbeatTimeoutCycles(TIMEOUT),
+        .ConfirmTimeoutCycles(CONFIRM)
+    ) dut_fence (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
+        .task_dispatched_i(task_dispatched_i),
+        .task_done_i(task_done_i),
+        .heartbeat_i(heartbeat_i),
+        .waiting_task_i(waiting_task_i),
+        .core_busy_o(core_busy_f),
+        .core_available_o(core_available_f),
+        .core_dead_suspect_o(core_dead_suspect_f),
+        .core_fenced_o(core_fenced_f)
     );
 
     initial clk_i = 1'b0;
@@ -129,6 +158,29 @@ module tb_bingo_hw_manager_watchdog;
     end
     endtask
 
+    // Fencing instance: busy / dead_suspect / fenced of one core.
+    task automatic expect_fence_state(
+        input int unsigned core,
+        input logic expected_busy,
+        input logic expected_dead,
+        input logic expected_fenced
+    );
+    begin
+        if (core_busy_f[core][0] !== expected_busy) begin
+            $error("[fence] core %0d busy mismatch: expected %0b got %0b",
+                   core, expected_busy, core_busy_f[core][0]);
+        end
+        if (core_dead_suspect_f[core][0] !== expected_dead) begin
+            $error("[fence] core %0d dead_suspect mismatch: expected %0b got %0b",
+                   core, expected_dead, core_dead_suspect_f[core][0]);
+        end
+        if (core_fenced_f[core][0] !== expected_fenced) begin
+            $error("[fence] core %0d fenced mismatch: expected %0b got %0b",
+                   core, expected_fenced, core_fenced_f[core][0]);
+        end
+    end
+    endtask
+
     initial begin
         clear_inputs();
 
@@ -174,10 +226,49 @@ module tb_bingo_hw_manager_watchdog;
             $error("masked core 0 must never be dead_suspect, got %0b", core_dead_suspect_masked[0][0]);
         end
 
+        $display("Fencing instance: suspect but not yet fenced");
+        expect_fence_state(0, 1'b1, 1'b1, 1'b0);
+
         $display("Done should clear busy and dead_suspect");
         pulse_done(0);
         expect_core_state(0, 1'b0, 1'b1, 1'b0);
         expect_core_state(1, 1'b0, 1'b1, 1'b0);
+        expect_fence_state(0, 1'b0, 1'b0, 1'b0);
+
+        $display("Heartbeat before the confirm timeout prevents fencing");
+        pulse_dispatch(1);
+        tick(CONFIRM - 1);
+        expect_fence_state(1, 1'b1, 1'b1, 1'b0);
+        pulse_heartbeat(1);
+        expect_fence_state(1, 1'b1, 1'b0, 1'b0);
+        tick(CONFIRM - 1);
+        expect_fence_state(1, 1'b1, 1'b1, 1'b0);
+
+        $display("A done in the cycle the confirm timeout is reached wins");
+        tick(1);  // timer == CONFIRM: the next edge would fence
+        expect_fence_state(1, 1'b1, 1'b1, 1'b0);
+        pulse_done(1);
+        expect_fence_state(1, 1'b0, 1'b0, 1'b0);
+
+        $display("No heartbeat until the confirm timeout: fenced, sticky");
+        pulse_dispatch(0);
+        tick(CONFIRM);
+        expect_fence_state(0, 1'b1, 1'b1, 1'b0);
+        tick(1);
+        expect_fence_state(0, 1'b0, 1'b1, 1'b1);
+        if (core_available_f[0][0] !== 1'b0) begin
+            $error("[fence] fenced core 0 must never be available");
+        end
+        if (core_fenced_o[0][0] !== 1'b0) begin
+            $error("confirm timeout 0 must never fence, got %0b", core_fenced_o[0][0]);
+        end
+        pulse_done(0);
+        expect_fence_state(0, 1'b0, 1'b1, 1'b1);
+        pulse_heartbeat(0);
+        pulse_dispatch(0);
+        tick(2 * CONFIRM);
+        expect_fence_state(0, 1'b0, 1'b1, 1'b1);
+        expect_fence_state(1, 1'b0, 1'b0, 1'b0);
 
         $display("All watchdog tests passed");
         #10;

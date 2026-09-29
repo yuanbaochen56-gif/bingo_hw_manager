@@ -1,7 +1,8 @@
 // =============================================================================
-// Full remap flow: dead core -> remap -> dependency still by logical core
+// Full remap flow: dead core -> replay -> remap -> dependency by logical core
 // =============================================================================
-//   1. Core 0 takes task 1 and stops sending heartbeats -> dead_suspect.
+//   1. Core 0 takes task 1 and stops sending heartbeats -> dead_suspect, then
+//      fenced. Its outstanding task 1 is replayed on core 1 (retired).
 //   2. Task 2 (logical core 0, sets core 2's dependency on column 0) is
 //      remapped to physical core 1 and runs there.
 //   3. Task 3 (core 2, checks column 0) must be released by task 2's
@@ -11,7 +12,7 @@ localparam int unsigned EXPECTED_TASK_COUNT      = 999;// expected task count fo
 localparam int unsigned DEADLOCK_THRESHOLD       = 1000000;// deadlock threshold for the test
 localparam int unsigned DEP_MATRIX_LOG_INTERVAL  = 0;// dep matrix log interval for the test
 
-// Task 1 hangs on core 0 (no heartbeat, never completes).
+// Task 1 hangs on core 0 (no heartbeat, never completes there).
 bingo_hw_manager_task_desc_full_t remap_hang_task = pack_normal_task(
     2'b00, 16'd1, 0, 0, 0,//task_type, task_id, assigned_chiplet_id, assigned_cluster_id, assigned_core_id
     1'b0, '0,//dep_check_en, dep_check_code
@@ -19,7 +20,7 @@ bingo_hw_manager_task_desc_full_t remap_hang_task = pack_normal_task(
 );
 
 // Task 2 is logically assigned to core 0 and sets a dependency for core 2.
-// With core 0 dead it must run on physical core 1.
+// With core 0 retired it must run on physical core 1.
 bingo_hw_manager_task_desc_full_t remap_source_task = pack_normal_task(
     2'b00, 16'd2, 0, 0, 0,
     1'b0, '0,
@@ -36,7 +37,6 @@ bingo_hw_manager_task_desc_full_t remap_dependent_task = pack_normal_task(
 
 initial begin : remap_full_flow_test
     automatic axi_pkg::resp_t resp;
-    automatic bit core1_read_done;
     automatic bit core2_read_done;
     automatic device_axi_lite_data_t core0_task_id;
     automatic device_axi_lite_data_t core1_task_id;
@@ -45,7 +45,6 @@ initial begin : remap_full_flow_test
     wait (rst_ni);
     repeat (20) @(posedge clk_i);
 
-    core1_read_done = 1'b0;
     core2_read_done = 1'b0;
 
     // --- Step 1: core 0 takes task 1 and goes silent ---
@@ -56,32 +55,36 @@ initial begin : remap_full_flow_test
         $fatal(1, "core 0 read wrong task id: expected 1 got %0d", core0_task_id[TaskIdWidth-1:0]);
     end
 
-    fork : wait_dead
+    wait_retired(0, 0, 0, 1000);
+    $display("[REMAP_FULL] Core 0 is fenced and retired");
+
+    // Core 1 gets the replayed task 1 and completes it.
+    fork : wait_replay
         begin
-            wait (gen_dut[0].i_dut.core_dead_suspect[0][0] === 1'b1);
+            csr_read(0, 0, 1, CSR_READY, core1_task_id);
         end
         begin
-            repeat (500) @(posedge clk_i);
-            $fatal(1, "core 0 did not become dead_suspect");
+            repeat (300) @(posedge clk_i);
+            dump_queue_state();
+            $fatal(1, "core 1 did not receive replayed task 1");
         end
     join_any
-    disable wait_dead;
-    $display("[REMAP_FULL] Core 0 is dead_suspect");
+    disable wait_replay;
+    if (core1_task_id[TaskIdWidth-1:0] !== bingo_hw_manager_task_id_t'(1)) begin
+        $fatal(1, "core 1 should run replayed task 1, got %0d", core1_task_id[TaskIdWidth-1:0]);
+    end
+    csr_done(0, 0, 1, 1);
 
-    // Cores 1 and 2 are idle and polling.
+    // Core 2 is idle and polling.
     fork
-        begin : core1_ready_reader
-            csr_read(0, 0, 1, CSR_READY, core1_task_id);// 0: chiplet, 0: cluster, 1: core
-            core1_read_done = 1'b1;
-        end
         begin : core2_ready_reader
             csr_read(0, 0, 2, CSR_READY, core2_task_id);
             core2_read_done = 1'b1;
         end
-    join_none// the readers run in the background
+    join_none// the reader runs in the background
     repeat (5) @(posedge clk_i);
 
-    // --- Step 2: task 2 of dead logical core 0 runs on physical core 1 ---
+    // --- Step 2: task 2 of retired logical core 0 runs on physical core 1 ---
     $display("[REMAP_FULL] Push source task 2: logical core 0, expected physical core 1");
     task_queue_master[0].write(task_queue_base[0], '0, remap_source_task, '1, resp);
 
@@ -90,7 +93,7 @@ initial begin : remap_full_flow_test
 
     fork : wait_core1_or_timeout
         begin
-            wait (core1_read_done);
+            csr_read(0, 0, 1, CSR_READY, core1_task_id);
         end
         begin
             repeat (300) @(posedge clk_i);

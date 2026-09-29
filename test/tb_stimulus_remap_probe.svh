@@ -3,8 +3,10 @@
 // =============================================================================
 // Phase 1: logical core 0 is healthy but not polling, core 1 is idle and
 //          polling. The selector must keep logical core 0 (no work stealing).
-// Phase 2: core 0 takes a task and stops sending heartbeats. Once it is
-//          dead_suspect, the selector must point logical core 0 to core 1.
+// Phase 2: core 0 takes a task and stops sending heartbeats. While it is only
+//          dead_suspect the selector keeps logical core 0; once it is fenced
+//          the selector holds logical core 0 until its outstanding task 1 has
+//          been replayed (retired), then points logical core 0 to core 1.
 // The probe task (logical core 0) waits on a dependency that is never set, so
 // it stays at the head of core 0's waiting queue and only the selector output
 // is observed.
@@ -74,18 +76,39 @@ initial begin : remap_probe_test
     wait (gen_dut[0].i_dut.core_dead_suspect[0][0] === 1'b1);
     @(posedge clk_i);
     #1;
+    if (gen_dut[0].i_dut.remap_physical_core[0] !== bingo_hw_manager_assigned_core_id_t'(0)) begin
+        $fatal(1, "dead_suspect (not fenced) core 0 must keep its tasks, got physical core %0d",
+               gen_dut[0].i_dut.remap_physical_core[0]);
+    end
+
+    wait (gen_dut[0].i_dut.core_fenced[0][0] === 1'b1);
+    #1;
+    if (gen_dut[0].i_dut.core_retired[0][0] === 1'b0 &&
+        gen_dut[0].i_dut.remap_select_valid[0] !== 1'b0) begin
+        $fatal(1, "fenced core 0 must be held until its outstanding tasks are replayed");
+    end
+
+    wait_retired(0, 0, 0, 100);
+    @(posedge clk_i);
+    #1;
 
     if (gen_dut[0].i_dut.remap_select_valid[0] !== 1'b1) begin
         $fatal(1, "logical core 0 remap_select_valid should assert");
     end
 
     if (gen_dut[0].i_dut.remap_physical_core[0] !== bingo_hw_manager_assigned_core_id_t'(1)) begin
-        $fatal(1, "dead logical core 0 should fall back to physical core 1, got %0d",
+        $fatal(1, "retired logical core 0 should fall back to physical core 1, got %0d",
                gen_dut[0].i_dut.remap_physical_core[0]);
     end
 
     if (gen_dut[0].i_dut.remap_physical_cluster[0] !== bingo_hw_manager_assigned_cluster_id_t'(0)) begin
         $fatal(1, "logical core 0 should stay in cluster 0");
+    end
+
+    // Task 1 was replayed on core 1, which was polling.
+    repeat (5) @(posedge clk_i);
+    if (unused_task_id[TaskIdWidth-1:0] !== bingo_hw_manager_task_id_t'(1)) begin
+        $fatal(1, "core 1 should have received replayed task 1, got %0d", unused_task_id[TaskIdWidth-1:0]);
     end
 
     disable fork;

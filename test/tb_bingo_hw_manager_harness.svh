@@ -30,8 +30,40 @@ import axi_test::*;
 `ifndef TB_WATCHDOG_HEARTBEAT_TIMEOUT
   `define TB_WATCHDOG_HEARTBEAT_TIMEOUT 100000
 `endif
+// Replay: cycles without heartbeat before a busy core is fenced (0: detection only)
+`ifndef TB_WATCHDOG_CONFIRM_TIMEOUT
+  `define TB_WATCHDOG_CONFIRM_TIMEOUT 0
+`endif
 `ifndef TB_DISABLE_CORE_WORKERS
   `define TB_DISABLE_CORE_WORKERS 0
+`endif
+// Fault injection into the core workers: core TB_FAULT_CORE (flat id, -1: none)
+// misbehaves once it reads task TB_FAULT_TASK_ID.
+//   TB_FAULT_MODE 0 HANG   : never reports done, no heartbeat
+//   TB_FAULT_MODE 1 ZOMBIE : silent until fenced, then reports done
+//                            TB_FAULT_ZOMBIE_DELAY cycles later and polls again
+//   TB_FAULT_MODE 2 SLOW   : silent for TB_FAULT_SLOW_CYCLES, then reports done
+`ifndef TB_FAULT_CORE
+  `define TB_FAULT_CORE -1
+`endif
+`ifndef TB_FAULT_TASK_ID
+  `define TB_FAULT_TASK_ID 0
+`endif
+`ifndef TB_FAULT_MODE
+  `define TB_FAULT_MODE 0
+`endif
+`ifndef TB_FAULT_ZOMBIE_DELAY
+  `define TB_FAULT_ZOMBIE_DELAY 20
+`endif
+`ifndef TB_FAULT_SLOW_CYCLES
+  `define TB_FAULT_SLOW_CYCLES 0
+`endif
+// Second, independent fault (always HANG), e.g. a substitute that dies as well
+`ifndef TB_FAULT2_CORE
+  `define TB_FAULT2_CORE -1
+`endif
+`ifndef TB_FAULT2_TASK_ID
+  `define TB_FAULT2_TASK_ID 0
 `endif
 // CoreRemapAllowMask[logical][physical] of the DUT ('1: can remap to any core of the cluster)
 `ifndef TB_CORE_REMAP_ALLOW_MASK
@@ -52,6 +84,19 @@ localparam int unsigned NUM_CLUSTERS_PER_CHIPLET   = `TB_NUM_CLUSTERS_PER_CHIPLE
 localparam int unsigned NUM_CORES_PER_CLUSTER      = `TB_NUM_CORES_PER_CLUSTER;
 localparam int unsigned READY_AGENT_NUM = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET;
 localparam int unsigned WATCHDOG_HEARTBEAT_TIMEOUT = `TB_WATCHDOG_HEARTBEAT_TIMEOUT;
+localparam int unsigned WATCHDOG_CONFIRM_TIMEOUT   = `TB_WATCHDOG_CONFIRM_TIMEOUT;
+localparam int          FAULT_CORE                 = `TB_FAULT_CORE;
+localparam int unsigned FAULT_TASK_ID              = `TB_FAULT_TASK_ID;
+localparam int unsigned FAULT_MODE                 = `TB_FAULT_MODE;
+localparam int          FAULT2_CORE                = `TB_FAULT2_CORE;
+localparam int unsigned FAULT2_TASK_ID             = `TB_FAULT2_TASK_ID;
+localparam int unsigned FAULT_HANG                 = 0;
+// Runtime copies of the fault selection: a stimulus may override them at time 0.
+int          fault_core    = FAULT_CORE;
+int unsigned fault_task_id = FAULT_TASK_ID;
+int unsigned fault_mode    = FAULT_MODE;
+localparam int unsigned FAULT_ZOMBIE               = 1;
+localparam int unsigned FAULT_SLOW                 = 2;
 
 localparam time CyclTime = 10ns;
 localparam time ApplTime =  2ns;
@@ -520,6 +565,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .READY_AND_DONE_QUEUE_INTERFACE_TYPE ( READY_AND_DONE_QUEUE_INTERFACE_TYPE ),
         .TASK_QUEUE_TYPE                     ( TASK_QUEUE_TYPE                     ),
         .WatchdogHeartbeatTimeoutCycles      ( WATCHDOG_HEARTBEAT_TIMEOUT          ),
+        .WatchdogConfirmTimeoutCycles        ( WATCHDOG_CONFIRM_TIMEOUT            ),
         .WatchdogCoreMask                    ( `TB_WATCHDOG_CORE_MASK              ),
         .CoreRemapAllowMask                  ( `TB_CORE_REMAP_ALLOW_MASK           ),
         .CsrHeartbeatAddr                    ( `TB_CSR_HEARTBEAT_ADDR              ),
@@ -579,16 +625,20 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .cerf_write_data_i                    ( cerf_write_data[chiplet_idx]                                 ),
         .cerf_state_o                         ( /* read-back, unused in standalone TB */                     ),
         // DARTS: Load monitor
-        .load_total_pending_o                 ( /* unused */                                                )
+        .load_total_pending_o                 ( /* unused */                                                ),
+        // Watchdog / replay status (probed hierarchically by the stimuli)
+        .core_fenced_o                        ( /* unused */                                                ),
+        .replay_stuck_o                       ( /* unused */                                                )
     );
 end
 
 // ---------------------------------------------------------------------------
 // Remap placement monitor (white-box, always on)
 // ---------------------------------------------------------------------------
-// A task may only leave its logical core when that core is dead_suspect (A1),
-// and tasks that never execute on a core (dummy-set, CERF-skipped) must never
-// be remapped (A2): they rely on their logical core's checkout FIFO order.
+// A task may only leave its logical core once that core is retired (fenced and
+// its outstanding tasks replayed), and tasks that never execute on a core
+// (dummy-set, CERF-skipped) must never be remapped: they rely on their logical
+// core's checkout FIFO order.
 for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_remap_monitor
     always @(posedge clk_i) begin
         if (rst_ni) begin
@@ -597,8 +647,8 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_remap_monitor
                     if (gen_dut[gi].i_dut.remap_route_fire[p][cl]) begin
                         automatic int src = gen_dut[gi].i_dut.remap_route_src_core[p][cl];
                         if (src != p) begin
-                            if (gen_dut[gi].i_dut.core_dead_suspect[src][cl] !== 1'b1) begin
-                                $error("[REMAP_CHECK] chip %0d: task %0d of healthy logical core %0d (cluster %0d) placed on physical core %0d",
+                            if (gen_dut[gi].i_dut.core_retired[src][cl] !== 1'b1) begin
+                                $error("[REMAP_CHECK] chip %0d: task %0d of non-retired logical core %0d (cluster %0d) placed on physical core %0d",
                                        gi, gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].task_id, src, cl, p);
                             end
                             if (((gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].task_type == 2'b01) &&
@@ -609,6 +659,99 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_remap_monitor
                             end
                         end
                     end
+                end
+            end
+        end
+    end
+end
+
+// ---------------------------------------------------------------------------
+// Retire scoreboard (white-box, always on)
+// ---------------------------------------------------------------------------
+// Every task that enters a checkout queue retires exactly once, and the tasks
+// of one logical core retire in the order they left its waiting queue. A replay
+// move (checkout entry popped to go to another core) is not a retirement.
+typedef int unsigned retire_q_t [$];
+retire_q_t   retire_expected [NUM_CHIPLET][NUM_CLUSTERS_PER_CHIPLET][NUM_CORES_PER_CLUSTER];
+int unsigned retire_count    [NUM_CHIPLET][4096];
+
+for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_retire_scoreboard
+    initial begin
+        for (int t = 0; t < 4096; t++) retire_count[gi][t] = 0;
+    end
+    always @(posedge clk_i) begin
+        if (rst_ni) begin
+            // Entries leaving a waiting queue (all but dummy-check tasks reach a checkout queue)
+            for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
+                if (gen_dut[gi].i_dut.waiting_dep_check_queue_pop[core]) begin
+                    automatic bingo_hw_manager_task_desc_t d = gen_dut[gi].i_dut.waiting_dep_check_task_desc[core];
+                    if (!((d.task_type == 2'b01) && d.dep_check_info.dep_check_en)) begin
+                        retire_expected[gi][d.assigned_cluster_id][core].push_back(d.task_id);
+                    end
+                end
+            end
+            // Retirements
+            for (int p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
+                for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                    if (gen_dut[gi].i_dut.checkout_queue_pop[p][cl] &&
+                        !gen_dut[gi].i_dut.replay_pop[p][cl]) begin
+                        automatic bingo_hw_manager_task_desc_t d = gen_dut[gi].i_dut.checkout_queue_data_out[p][cl];
+                        automatic int logical = d.assigned_core_id;
+                        retire_count[gi][d.task_id]++;
+                        if (retire_count[gi][d.task_id] > 1) begin
+                            $error("[RETIRE_CHECK] chip %0d: task %0d retired %0d times (core %0d cluster %0d)",
+                                   gi, d.task_id, retire_count[gi][d.task_id], p, cl);
+                        end
+                        if (retire_expected[gi][cl][logical].size() == 0) begin
+                            $error("[RETIRE_CHECK] chip %0d: task %0d of logical core %0d cluster %0d retired but never dispatched",
+                                   gi, d.task_id, logical, cl);
+                        end else if (retire_expected[gi][cl][logical][0] != d.task_id) begin
+                            $error("[RETIRE_CHECK] chip %0d: logical core %0d cluster %0d retired task %0d, expected task %0d first",
+                                   gi, logical, cl, d.task_id, retire_expected[gi][cl][logical][0]);
+                        end else begin
+                            void'(retire_expected[gi][cl][logical].pop_front());
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+// ---------------------------------------------------------------------------
+// Replay event counters (for stimulus checks)
+// ---------------------------------------------------------------------------
+int unsigned replay_move_count [NUM_CHIPLET];  // checkout entries moved off fenced cores
+int unsigned remap_count       [NUM_CHIPLET];  // tasks routed to another physical core
+int unsigned fence_drop_count  [NUM_CHIPLET];  // done writes of fenced cores dropped
+bit          replay_stuck_seen [NUM_CHIPLET];
+bit          dead_suspect_seen [NUM_CHIPLET];
+
+for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_counters
+    initial begin
+        replay_move_count[gi] = 0;
+        remap_count[gi]       = 0;
+        fence_drop_count[gi]  = 0;
+        replay_stuck_seen[gi] = 1'b0;
+        dead_suspect_seen[gi] = 1'b0;
+    end
+    always @(posedge clk_i) begin
+        if (rst_ni) begin
+            if (gen_dut[gi].i_dut.replay_move_fire) replay_move_count[gi]++;
+            if (gen_dut[gi].i_dut.replay_stuck) replay_stuck_seen[gi] = 1'b1;
+            if (|gen_dut[gi].i_dut.core_dead_suspect) dead_suspect_seen[gi] = 1'b1;
+            for (int p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
+                for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                    if (gen_dut[gi].i_dut.remap_route_fire[p][cl] &&
+                        (gen_dut[gi].i_dut.remap_route_src_core[p][cl] != p)) begin
+                        remap_count[gi]++;
+                    end
+                end
+            end
+            for (int i = 0; i < NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET; i++) begin
+                if (gen_dut[gi].i_dut.gen_csr_to_fifo_intf.write_done_queue_valid_1d[i] &&
+                    gen_dut[gi].i_dut.gen_csr_to_fifo_intf.core_fenced_1d[i]) begin
+                    fence_drop_count[gi]++;
                 end
             end
         end
@@ -705,6 +848,33 @@ logic [4095:0] task_completed_bitmap = '0;
 // Per-chiplet done queue lock (for AXI-Lite mode)
 logic [NUM_CHIPLET-1:0] done_queue_lock;
 
+// Fenced / retired slots, for the fault-injecting core worker and the stimuli
+logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] fenced_export  [NUM_CHIPLET];
+logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] retired_export [NUM_CHIPLET];
+for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_fenced_export
+    assign fenced_export[gi]  = gen_dut[gi].i_dut.core_fenced;
+    assign retired_export[gi] = gen_dut[gi].i_dut.core_retired;
+end
+
+// Wait until (chip, cluster, core) is retired: fenced and its outstanding tasks replayed.
+task automatic wait_retired(
+    input int chip, input int cluster, input int core,
+    input int unsigned max_cycles
+);
+    fork : wait_retired_or_timeout
+        begin
+            wait (retired_export[chip][core][cluster] === 1'b1);
+        end
+        begin
+            repeat (max_cycles) @(posedge clk_i);
+            dump_queue_state();
+            $fatal(1, "core %0d cluster %0d was not retired within %0d cycles (fenced %0b)",
+                   core, cluster, max_cycles, fenced_export[chip][core][cluster]);
+        end
+    join_any
+    disable wait_retired_or_timeout;
+endtask
+
 // ---------------------------------------------------------------------------
 // Core Worker Task (with structured trace logging)
 // ---------------------------------------------------------------------------
@@ -753,6 +923,37 @@ task automatic core_worker(
         $display("[TRACE] %0t,TASK_DISPATCHED,%0d,%0d,%0d,%0d",
                  $time, chip, cluster, core, data[TaskIdWidth-1:0]);
 
+        if ((idx == FAULT2_CORE) && (data[TaskIdWidth-1:0] == FAULT2_TASK_ID[TaskIdWidth-1:0])) begin
+            $display("[FAULT] %0t chip %0d cluster %0d core %0d: second fault (hang) on task %0d",
+                     $time, chip, cluster, core, FAULT2_TASK_ID);
+            forever @(posedge clk_i);
+        end
+        if ((idx == fault_core) && (data[TaskIdWidth-1:0] == fault_task_id[TaskIdWidth-1:0])) begin
+            $display("[FAULT] %0t chip %0d cluster %0d core %0d: mode %0d on task %0d",
+                     $time, chip, cluster, core, fault_mode, fault_task_id);
+            if (fault_mode == FAULT_HANG) begin
+                forever @(posedge clk_i);
+            end else if (fault_mode == FAULT_ZOMBIE) begin
+                wait (fenced_export[chip][core][cluster] === 1'b1);
+                repeat (`TB_FAULT_ZOMBIE_DELAY) @(posedge clk_i);
+                done_info = '0;
+                done_info.task_id             = data[TaskIdWidth-1:0];
+                done_info.assigned_cluster_id = bingo_hw_manager_assigned_cluster_id_t'(cluster);
+                done_info.assigned_core_id    = bingo_hw_manager_assigned_core_id_t'(core);
+                $display("[FAULT] %0t zombie core %0d cluster %0d reports done for task %0d",
+                         $time, core, cluster, fault_task_id);
+                csr_write(chip, cluster, core, CSR_DONE, device_axi_lite_data_t'(done_info));
+                // A fenced core never gets another task
+                csr_read(chip, cluster, core, CSR_READY, data);
+                $error("[FAULT] zombie core %0d cluster %0d received task %0d after being fenced",
+                       core, cluster, data[TaskIdWidth-1:0]);
+                forever @(posedge clk_i);
+            end else begin
+                // SLOW: silent (no heartbeat), then continue normally
+                repeat (`TB_FAULT_SLOW_CYCLES) @(posedge clk_i);
+            end
+        end
+
         // Simulate work with random delay
         repeat ($urandom_range(20, 50)) @(posedge clk_i);
 
@@ -777,6 +978,9 @@ task automatic core_worker(
         // Record completion
         $display("[TRACE] %0t,TASK_DONE,%0d,%0d,%0d,%0d",
                  $time, chip, cluster, core, data[TaskIdWidth-1:0]);
+        if (task_completed_bitmap[data[TaskIdWidth-1:0]]) begin
+            $error("[TRACE] task %0d completed twice", data[TaskIdWidth-1:0]);
+        end
         completed_task_count++;
         task_completed_bitmap[data[TaskIdWidth-1:0]] = 1'b1;
     end
@@ -858,10 +1062,11 @@ task automatic dump_queue_state();
                 core,
                 waiting_empty_export[chip][core] ? "EMPTY" : "HAS_TASKS");
             for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                $display("      Cluster %0d: ready_q = %s, checkout_q = %s",
+                $display("      Cluster %0d: ready_q = %s, checkout_q = %s, fenced = %0b",
                     cl,
                     ready_empty_export[chip][core][cl] ? "EMPTY" : "HAS_TASKS",
-                    checkout_empty_export[chip][core][cl] ? "EMPTY" : "HAS_TASKS");
+                    checkout_empty_export[chip][core][cl] ? "EMPTY" : "HAS_TASKS",
+                    fenced_export[chip][core][cl]);
             end
         end
     end
