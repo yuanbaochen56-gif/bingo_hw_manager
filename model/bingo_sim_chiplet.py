@@ -404,7 +404,9 @@ class ChipletModel:
             return None
 
         # Mirrors bingo_hw_manager_core_remap: a live logical core always keeps
-        # its task (busy or not), only a dead one is replaced.
+        # its task (busy or not), only a dead one is replaced. A core that is
+        # dead from the start is a retired core with nothing to replay in the
+        # RTL; a core dying mid-run (watchdog fence + replay) is not modeled.
         if self.core_alive[cluster][logical_core]:
             return logical_core
 

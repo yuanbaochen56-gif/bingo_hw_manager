@@ -168,10 +168,12 @@ done_q[2][0]   done_q[2][1]     <- core 2, clusters 0..1
 
 The pop condition for each FIFO depends ONLY on its own state:
 ```
-done_q_pop[core][cluster] = !done_q_empty[core][cluster]
-                          && checkout[core][cluster].task_type == NORMAL
-                          && arbiter_ready[core + cluster * N_CORES]
+done_q_pop[core][cluster] = checkout_pop[core][cluster]           // not a replay move
+                          && checkout[core][cluster].task_type in {NORMAL, GATING}
 ```
+An executing (normal / gating) checkout head only leaves its checkout queue when
+its done is present (`!done_q_empty`), on the local dep_set path, the chiplet
+dep_set path and the dep_set-disabled path alike, and its done leaves with it.
 
 No cross-core or cross-cluster dependency in the pop logic. This eliminates head-of-line blocking where one core's completion stalls behind another core's entry in a shared FIFO.
 
@@ -218,8 +220,11 @@ bingo_hw_manager_top
  +-- Watchdog (1x)
  |    +-- bingo_hw_manager_watchdog (busy timer per (core, cluster), heartbeat reset)
  |
+ +-- Replay Controller (1x)
+ |    +-- bingo_hw_manager_replay_ctrl (moves a fenced core's checkout entries to live cores)
+ |
  +-- Core Remap (NUM_CORES_PER_CLUSTER instances)
-      +-- bingo_hw_manager_core_remap (dead logical core -> substitute core)
+      +-- bingo_hw_manager_core_remap (retired logical core -> substitute core)
 ```
 
 ## Parameters
@@ -242,8 +247,9 @@ bingo_hw_manager_top
 | `TASK_QUEUE_TYPE` | 1 | 0: AXI-Lite slave, 1: AXI-Lite master |
 | `READY_AND_DONE_QUEUE_INTERFACE_TYPE` | 1 | 0: AXI-Lite, 1: CSR req/resp |
 | `WatchdogHeartbeatTimeoutCycles` | 100000 | Cycles a busy core may go without heartbeat before it is `dead_suspect` |
+| `WatchdogConfirmTimeoutCycles` | 0 | Cycles without heartbeat before a busy core is fenced and its tasks are replayed; must exceed the heartbeat timeout; `0` = detection only (no fence, replay or remap); CSR interface only |
 | `WatchdogCoreMask` | `'1` | Per-(core, cluster) watchdog enable; masked slots are never `dead_suspect` |
-| `CoreRemapAllowMask` | `'1` | `[logical][physical]`: cores allowed to run a dead core's tasks (`'0` = no remap) |
+| `CoreRemapAllowMask` | `'1` | `[logical][physical]`: cores allowed to run a fenced core's replayed and later tasks (`'0` = none) |
 | `CsrHeartbeatAddr` | `12'h5fd` | CSR number of the heartbeat write (e.g. `12'h5fe` = write to the ready CSR) |
 
 ## Interface Modes
@@ -267,7 +273,7 @@ When a task's `dep_set_chiplet_id != chip_id_i`, the dependency signal is routed
 
 Broadcast mode (`dep_set_all_chiplet = 1`) sends the signal to all chiplets simultaneously.
 
-## Watchdog, Heartbeat and Core Remap
+## Watchdog, Heartbeat, Replay and Core Remap
 
 **CSR map (CSR interface mode):** read `0x5fe` pops the core's ready queue, write `0x5ff`
 reports a done task, write `CsrHeartbeatAddr` (default `0x5fd`) is a heartbeat. A heartbeat
@@ -279,32 +285,63 @@ other address is never served; simulation reports it as `[BINGO_CSR]`.
 While busy, a timer counts cycles since the last dispatch/heartbeat; reaching
 `WatchdogHeartbeatTimeoutCycles` marks the core `dead_suspect`. Idle cores are never timed.
 A late done clears the suspicion (the core was slow, not dead). Long kernels must write the
-heartbeat CSR periodically. The counter width is derived from the timeout.
+heartbeat CSR periodically. The counter width is derived from the timeouts.
 
-**Remap (only on a dead core):**
-- A healthy logical core always keeps its tasks, whether it is busy or polling. The compiler
-  relies on per-core in-order execution, and a dummy-set task only waits for its source task
-  because both sit in the same core's checkout FIFO.
-- When the logical core is `dead_suspect`, an executing task (normal/gating) goes to the
-  lowest-indexed core of the same cluster that is alive and allowed by `CoreRemapAllowMask`.
-  The choice only depends on the set of dead cores, so a dead core's tasks all go to one
+**Fence (confirmed dead):** with `WatchdogConfirmTimeoutCycles != 0`, a busy core that reaches
+that second, longer timeout is fenced, sticky until reset (`core_fenced_o`, e.g. for the system
+to reset or isolate it). A done, dispatch or heartbeat in the same cycle wins. A fenced core no
+longer gets tasks (its ready reads stall), and its done writes and heartbeats are accepted and
+dropped, so a slow core that comes back cannot retire a task a second time.
+
+**Replay:** a fenced core's checkout queue holds every task dispatched to it and not yet
+retired, in order: the task it was running, then the tasks queued behind it. Their dep checks
+already passed. `bingo_hw_manager_replay_ctrl` migrates one fenced core at a time:
+1. flush its ready queue and let a done that arrived before the fence retire its task;
+2. move its checkout entries, in order, into the ready + checkout queues of a live core
+   (per entry: the lowest live core allowed by `CoreRemapAllowMask` for the entry's logical
+   core; dummy-set / CERF-skipped entries only go to the checkout queue);
+3. mark the core retired.
+
+A replayed task keeps its logical core id, so its dep_set releases the same dependents as
+before, including a same-core sequencing edge behind the lost task. If no live core may run an
+entry, the migration stops and `replay_stuck_o` is raised; the other cores keep running.
+While a replay step may push into a cluster, normal dispatch into that cluster pauses.
+
+**Remap (only once retired):**
+- A logical core that is not fenced always keeps its tasks, whether it is busy, polling or
+  `dead_suspect`. The compiler relies on per-core in-order execution, and a dummy-set task only
+  waits for its source task because both sit in the same core's checkout FIFO.
+- A fenced logical core's new tasks wait until it is retired and no other slot of its cluster
+  is still being replayed, so its replayed (older) tasks reach their new core first.
+- Once retired, an executing task (normal/gating) goes to the lowest-indexed core of the same
+  cluster that is not fenced and is allowed by `CoreRemapAllowMask`; without one, it waits.
+  The choice only depends on the set of fenced cores, so a dead core's tasks go to one
   substitute, in order. Dependencies still use the logical core (dep-matrix column =
   `assigned_core_id`); ready/checkout/done queues are those of the physical core.
 - Dummy-set and CERF-skipped tasks are never remapped. They also wait until all earlier
-  remapped tasks of their logical core have left their checkout queues.
+  tasks of their logical core that run elsewhere have left their checkout queues.
 - Set `CoreRemapAllowMask = '0` when the cores of a cluster cannot run each other's kernels
-  (detection only, e.g. HeMAiA).
+  (e.g. HeMAiA): a fenced core then stops at `replay_stuck_o`.
 
 **Limitations:**
-- A task that was running on a core that really died is lost (its checkout entry never drains),
-  so any task depending on it cannot complete. There is no task re-execution.
-- If the compiler adds sequencing edges between consecutive tasks of a core, every later task
-  of a dead core depends on the lost one, so remap cannot help those either.
-- Remapped tasks are assumed independent of the dead core's outstanding work (the tag allocator's
-  same-core HOL assumption no longer holds across the remap).
-- Remap stays within a cluster; there is no cross-cluster or cross-chiplet remap.
+- Replay assumes that re-running a task gives the same result (its inputs are intact and it
+  overwrites its outputs). In-place updates or buffers reused before the task finished break
+  this; the compiler has to ensure it (no `replayable` marking yet).
+- A fenced core's memory side effects are not stopped by the manager; the system has to reset
+  or isolate it (`core_fenced_o`).
+- A core that dies while idle is not detected (only busy cores are timed).
+- Replay and remap stay within a cluster; there is no cross-cluster or cross-chiplet replay.
+- A fenced core is only released by reset.
+- Replay needs the CSR ready/done interface (`READY_AND_DONE_QUEUE_INTERFACE_TYPE = 1`).
+- The waiting queues are per core index and shared by the clusters, so a held task of a
+  fenced core also holds the tasks of the same core index in other clusters queued behind it.
+- The load monitor keeps counting a fenced core's last task as pending.
 
-Simulation prints `[BINGO_WD]` on every `dead_suspect` change and `[BINGO_REMAP]` for every remapped task.
+Simulation prints `[BINGO_WD]` on every `dead_suspect` / `fenced` change, `[BINGO_FENCE]` for
+every dropped done, `[BINGO_REPLAY]` for every moved checkout entry, `[BINGO_RETIRED]` when a
+fenced core's migration is complete, `[BINGO_REPLAY_STUCK]` when no core may run an entry, and
+`[BINGO_REMAP]` for every remapped task. `[BINGO_ASSERT]` errors flag replay invariant
+violations.
 
 ## Dependencies
 

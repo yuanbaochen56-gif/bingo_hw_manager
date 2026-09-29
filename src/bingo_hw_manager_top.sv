@@ -24,12 +24,18 @@ module bingo_hw_manager_top #(
     // consumer drains only ITS producer's increment (no counter-sharing hazard).
     parameter int unsigned DepTagWidth = 4,
     parameter int unsigned WatchdogHeartbeatTimeoutCycles = 100000, // The number of cycles for the watchdog to time out
+    // Cycles a busy core may go without heartbeat before it is fenced (confirmed
+    // dead, sticky until reset) and its outstanding tasks are replayed on other
+    // cores. Must exceed WatchdogHeartbeatTimeoutCycles. 0 disables fencing,
+    // replay and remap (detection only). Needs the CSR ready/done interface.
+    parameter int unsigned WatchdogConfirmTimeoutCycles = 0,
     // Watchdog enable per (core, cluster) slot. A masked slot is never reported
     // dead_suspect (e.g. a host slot that sends no heartbeats, or a tied-off slot).
     parameter logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] WatchdogCoreMask = '1,
     // Core remap: CoreRemapAllowMask[logical][physical] = 1 lets `physical` run the
-    // tasks of `logical` (same cluster) once `logical` is dead_suspect. Set it to '0
-    // when the cores of a cluster cannot run each other's kernels.
+    // tasks of `logical` (same cluster) once `logical` is fenced and its outstanding
+    // tasks were replayed. Set it to '0 when the cores of a cluster cannot run each
+    // other's kernels.
     parameter logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CORES_PER_CLUSTER-1:0] CoreRemapAllowMask = '1,
     // CSR number of the heartbeat write (see bingo_hw_manager_csr_to_fifo).
     parameter logic [11:0] CsrHeartbeatAddr = 12'h5fd,
@@ -140,7 +146,11 @@ module bingo_hw_manager_top #(
     input  logic [31:0]                         cerf_write_data_i,
     output logic [31:0]                         cerf_state_o,
     // DARTS: Load Monitor output (CSR readable)
-    output logic [10:0]                         load_total_pending_o
+    output logic [10:0]                         load_total_pending_o,
+    // Watchdog: confirmed dead cores (sticky). The system may reset / isolate them.
+    output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    core_fenced_o,
+    // Replay: a fenced core holds a task that no live core may run
+    output logic                                replay_stuck_o
 );
     // --------Type definitions and signal declarations--------------------//
     // ---- Start of Type definitions -------------------------------------//
@@ -192,6 +202,14 @@ module bingo_hw_manager_top #(
         logic [4:0]                                  cond_exec_group_id;
         logic                                        cond_exec_invert;
     } bingo_hw_manager_task_desc_t;
+
+    // The watchdog only sees dispatches (ready queue pops) in the CSR interface mode.
+    if ((WatchdogConfirmTimeoutCycles != 0) && (READY_AND_DONE_QUEUE_INTERFACE_TYPE != 1)) begin : gen_replay_intf_check
+        initial begin
+        $error("WatchdogConfirmTimeoutCycles (task replay) needs READY_AND_DONE_QUEUE_INTERFACE_TYPE = 1 (CSR)");
+        $finish;
+        end
+    end
 
     localparam int unsigned TaskDescWidth = $bits(bingo_hw_manager_task_desc_t);
     localparam int unsigned ReservedBitsForTaskDesc = HostAxiLiteDataWidth - TaskDescWidth;
@@ -500,6 +518,30 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect;
+    // Confirmed dead (sticky): the slot's ready reads, dones and heartbeats are ignored
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_fenced;
+    // Fenced and all its outstanding tasks moved to other cores (sticky)
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_retired;
+    // Checkout queue head executes on a core (normal / gating): retires with its done
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_head_exec;
+
+    // Replay (see bingo_hw_manager_replay_ctrl)
+    logic [NUM_CLUSTERS_PER_CHIPLET-1:0] replay_pending_cluster; // a slot of the cluster is fenced, not retired
+    logic [NUM_CLUSTERS_PER_CHIPLET-1:0] replay_move_cluster;    // a MOVE step may push into the cluster
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_ready_flush;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_move;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_pop;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_push;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_push_ready;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0] replay_head_logical;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_head_no_exec;
+    logic                                  replay_move_fire;
+    logic                                  replay_push_ready_q;
+    bingo_hw_manager_assigned_core_id_t    replay_src_core;
+    bingo_hw_manager_assigned_cluster_id_t replay_src_cluster;
+    bingo_hw_manager_assigned_core_id_t    replay_dst_core;
+    logic                                  replay_stuck;
+    bingo_hw_manager_task_desc_t           replay_data;
 
     // Per logical core (waiting queue head): 1 if the task executes on a core
     // and may therefore be remapped (not a dummy-set, not CERF-skipped).
@@ -519,8 +561,11 @@ module bingo_hw_manager_top #(
     logic [RemapOutstandingWidth-1:0] remap_outstanding_d [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
     logic [RemapOutstandingWidth-1:0] remap_outstanding_q [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
 
-    // Watchdog counter wide enough for the configured timeout (saturating timer).
-    localparam int unsigned WatchdogCounterWidth = $clog2(WatchdogHeartbeatTimeoutCycles + 1) + 1;
+    // Watchdog counter wide enough for the configured timeouts (saturating timer).
+    localparam int unsigned WatchdogMaxTimeoutCycles =
+        (WatchdogConfirmTimeoutCycles > WatchdogHeartbeatTimeoutCycles) ?
+        WatchdogConfirmTimeoutCycles : WatchdogHeartbeatTimeoutCycles;
+    localparam int unsigned WatchdogCounterWidth = $clog2(WatchdogMaxTimeoutCycles + 1) + 1;
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//
@@ -999,7 +1044,8 @@ module bingo_hw_manager_top #(
                     .clk_i       ( clk_i                                  ),
                     .rst_ni      ( rst_ni                                 ),
                     .testmode_i  ( 1'b0                                   ),
-                    .flush_i     ( 1'b0                                   ),
+                    // Replay: the entries of a fenced core are moved from its checkout queue
+                    .flush_i     ( replay_ready_flush[core][cluster]      ),
                     .full_o      ( ready_queue_full[core][cluster]        ),
                     .empty_o     ( ready_queue_empty[core][cluster]       ),
                     .usage_o     ( /*not used*/                           ),
@@ -1014,10 +1060,14 @@ module bingo_hw_manager_top #(
             end
             assign ready_queue_base_addr[core][cluster] = ready_queue_base_addr_i +
                                                         (core + cluster * NUM_CORES_PER_CLUSTER) * ReadyQueueAddrOffset;
-            assign ready_queue_data_in[core][cluster].task_id =
+            // Replay pushes never collide with routed pushes: routing into the cluster
+            // is blocked while a replay MOVE may push into it.
+            assign ready_queue_data_in[core][cluster].task_id = replay_push_ready[core][cluster] ?
+                replay_data.task_id :
                 waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].task_id;
             assign ready_queue_data_in[core][cluster].reserved_bits = '0;
-            assign ready_queue_push[core][cluster] = ready_queue_filter_oup_valid[core][cluster] & ~ready_queue_full[core][cluster];
+            assign ready_queue_push[core][cluster] = (ready_queue_filter_oup_valid[core][cluster] & ~ready_queue_full[core][cluster]) |
+                                                     replay_push_ready[core][cluster];
         end
     end
 
@@ -1051,14 +1101,26 @@ module bingo_hw_manager_top #(
             // DARTS CERF: if task is conditionally skipped, mark as dummy (2'b01)
             // so checkout logic fires dep_set without done_queue match
             always_comb begin
-                checkout_queue_data_in[core][cluster] =
-                    waiting_dep_check_task_desc[remap_route_src_core[core][cluster]];
-                if (cond_exec_skip[remap_route_src_core[core][cluster]]) begin
-                    checkout_queue_data_in[core][cluster].task_type = 2'b01;
+                if (replay_push[core][cluster]) begin
+                    // Replayed entry: already checked (and CERF-marked) at its first dispatch
+                    checkout_queue_data_in[core][cluster] = replay_data;
+                end else begin
+                    checkout_queue_data_in[core][cluster] =
+                        waiting_dep_check_task_desc[remap_route_src_core[core][cluster]];
+                    if (cond_exec_skip[remap_route_src_core[core][cluster]]) begin
+                        checkout_queue_data_in[core][cluster].task_type = 2'b01;
+                    end
                 end
             end
-            assign checkout_queue_push[core][cluster] = remap_route_fire[core][cluster];
-            assign checkout_queue_pop[core][cluster] = stream_demux_checkout_queue_chiplet_dep_set_inp_ready[core][cluster] && !checkout_queue_empty[core][cluster];
+            assign checkout_queue_push[core][cluster] = remap_route_fire[core][cluster] | replay_push[core][cluster];
+            // Pop on the handshake only: the downstream arbiters may raise ready without
+            // valid, which would retire an executing head before its done arrived.
+            // While a replay MOVE drains this queue, only the replay controller pops it
+            // (valid is held low then).
+            assign checkout_queue_pop[core][cluster] =
+                (stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] &&
+                 stream_demux_checkout_queue_chiplet_dep_set_inp_ready[core][cluster]) ||
+                replay_pop[core][cluster];
 
             stream_demux #(
                 .N_OUP ( 2 )
@@ -1070,7 +1132,14 @@ module bingo_hw_manager_top #(
                 .oup_ready_i ( stream_demux_checkout_queue_chiplet_dep_set_oup_ready[core][cluster]    )
             );
 
-            assign stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] = !checkout_queue_empty[core][cluster];
+            // An executing task (normal / gating) only leaves the checkout queue with its
+            // own done, for the local and the chiplet dep_set path alike.
+            assign checkout_head_exec[core][cluster] = (checkout_queue_data_out[core][cluster].task_type == 2'b00) ||
+                                                       (checkout_queue_data_out[core][cluster].task_type == 2'b10);
+            assign stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] = !checkout_queue_empty[core][cluster] &&
+                                                                                          !replay_move[core][cluster] &&
+                                                                                          (!checkout_head_exec[core][cluster] ||
+                                                                                           !done_q_empty[core][cluster]);
             assign stream_demux_checkout_queue_chiplet_dep_set_oup_sel[core][cluster] = 
                 (checkout_queue_data_out[core][cluster].dep_set_info.dep_set_chiplet_id != chip_id_i);
             // To Chiplet Dep Set
@@ -1175,16 +1244,18 @@ module bingo_hw_manager_top #(
     end
 
     // Per-(core, cluster) done queue pop logic:
-    // Pop when the checkout queue head for this (core, cluster) is a normal task
-    // AND the arbiter accepted the dep_set. No cross-core or cross-cluster blocking.
+    // Pop together with the checkout queue head when that head is a normal (2'b00)
+    // or gating (2'b10) task: it only leaves the checkout queue with its done
+    // (local dep_set, chiplet dep_set, or dropped when dep_set is disabled).
+    // Popping on the dep-matrix arbiter's ready instead left the done behind when
+    // the head took another path, so the next task retired on it prematurely.
+    // A replay move is not a retirement. No cross-core or cross-cluster blocking.
     always_comb begin
         for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
             for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
-                // Normal (2'b00) and gating (2'b10) tasks need done_queue match
-                done_q_pop[core][cluster] = !done_q_empty[core][cluster] &&
-                    (checkout_queue_data_out[core][cluster].task_type == 2'b00 ||
-                     checkout_queue_data_out[core][cluster].task_type == 2'b10) &&
-                    stream_arbiter_dep_matrix_set_inp_ready[core + cluster * NUM_CORES_PER_CLUSTER];
+                done_q_pop[core][cluster] = checkout_queue_pop[core][cluster] &&
+                                            !replay_pop[core][cluster] &&
+                                            checkout_head_exec[core][cluster];
             end
         end
     end
@@ -1214,6 +1285,10 @@ module bingo_hw_manager_top #(
         logic                  [N_CORES_TOTAL-1:0] heartbeat_valid_1d;
         device_axi_lite_data_t [N_CORES_TOTAL-1:0] heartbeat_data_1d;
         logic                  [N_CORES_TOTAL-1:0] csr_req_unknown_1d;
+        // Done writes of fenced cores are accepted and dropped before the arbiter
+        logic                  [N_CORES_TOTAL-1:0] core_fenced_1d;
+        logic                  [N_CORES_TOTAL-1:0] write_done_arb_valid_1d;
+        logic                  [N_CORES_TOTAL-1:0] write_done_arb_ready_1d;
 
         bingo_hw_manager_csr_to_fifo #(
             .TaskIdWidth (TaskIdWidth),
@@ -1276,10 +1351,16 @@ module bingo_hw_manager_top #(
                     csr_rsp_o[core][cluster] = csr_rsp_1d[core + cluster * NUM_CORES_PER_CLUSTER];
                     csr_rsp_valid_o[core][cluster] = csr_rsp_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER];
                     csr_rsp_ready_1d[core + cluster * NUM_CORES_PER_CLUSTER] = csr_rsp_ready_i[core][cluster];
+                    // A fenced core can no longer take tasks (its ready reads stall) or
+                    // report heartbeats: its outstanding tasks are replayed elsewhere.
                     read_ready_queue_data_1d[core + cluster * NUM_CORES_PER_CLUSTER] = device_axi_lite_data_t'(ready_queue_data_out[core][cluster]);
-                    read_ready_queue_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER] = !ready_queue_empty[core][cluster];
-                    ready_queue_pop[core][cluster] = read_ready_queue_ready_1d[core + cluster * NUM_CORES_PER_CLUSTER] && !ready_queue_empty[core][cluster];
-                    heartbeat_valid[core][cluster] = heartbeat_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER];
+                    read_ready_queue_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER] = !ready_queue_empty[core][cluster] &&
+                                                                                        !core_fenced[core][cluster];
+                    ready_queue_pop[core][cluster] = read_ready_queue_ready_1d[core + cluster * NUM_CORES_PER_CLUSTER] &&
+                                                     !ready_queue_empty[core][cluster] && !core_fenced[core][cluster];
+                    heartbeat_valid[core][cluster] = heartbeat_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER] &&
+                                                     !core_fenced[core][cluster];
+                    core_fenced_1d[core + cluster * NUM_CORES_PER_CLUSTER] = core_fenced[core][cluster];
                 end
             end
         end
@@ -1305,12 +1386,31 @@ module bingo_hw_manager_top #(
             .clk_i      (clk_i),
             .rst_ni     (rst_ni),
             .inp_data_i (write_done_queue_data_1d),
-            .inp_valid_i(write_done_queue_valid_1d),
-            .inp_ready_o(write_done_queue_ready_1d),
+            .inp_valid_i(write_done_arb_valid_1d),
+            .inp_ready_o(write_done_arb_ready_1d),
             .oup_data_o (write_done_queue_data),
             .oup_valid_o(write_done_queue_valid),
             .oup_ready_i(write_done_queue_ready)
         );
+        // A fenced core's task is replayed on another core, so its own (late) done
+        // must never retire the task a second time: accept the write and drop it.
+        assign write_done_arb_valid_1d  = write_done_queue_valid_1d & ~core_fenced_1d;
+        assign write_done_queue_ready_1d = write_done_arb_ready_1d | core_fenced_1d;
+
+`ifndef SYNTHESIS
+        always @(posedge clk_i) begin
+            if (rst_ni) begin
+                for (int unsigned i = 0; i < N_CORES_TOTAL; i++) begin
+                    if (write_done_queue_valid_1d[i] && core_fenced_1d[i]) begin
+                        $display("[BINGO_FENCE] %0t chip=%0d core=%0d cluster=%0d dropped done task=%0d",
+                                 $time, chip_id_i, i % NUM_CORES_PER_CLUSTER, i / NUM_CORES_PER_CLUSTER,
+                                 write_done_queue_data_1d[i][TaskIdWidth-1:0]);
+                    end
+                end
+            end
+        end
+`endif
+
         // Extract core_id + cluster_id from the arbitrated done_info to route to per-(core,cluster) FIFO
         bingo_hw_manager_done_info_full_t write_done_info;
         assign write_done_info = bingo_hw_manager_done_info_full_t'(write_done_queue_data);
@@ -1381,6 +1481,7 @@ module bingo_hw_manager_top #(
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
         .CounterWidth(WatchdogCounterWidth),
         .HeartbeatTimeoutCycles(WatchdogHeartbeatTimeoutCycles),
+        .ConfirmTimeoutCycles(WatchdogConfirmTimeoutCycles),
         .CoreMask(WatchdogCoreMask)
     ) i_watchdog (
         .clk_i                 ( clk_i                          ),
@@ -1391,20 +1492,92 @@ module bingo_hw_manager_top #(
         .waiting_task_i        ( core_status_waiting_task        ),
         .core_busy_o           ( core_busy                       ),
         .core_available_o      ( core_available                  ),
-        .core_dead_suspect_o   ( core_dead_suspect               )
+        .core_dead_suspect_o   ( core_dead_suspect               ),
+        .core_fenced_o         ( core_fenced                     )
     );
+    assign core_fenced_o = core_fenced;
+
+    //////////////////////////////////////////////////////////////////////
+    // Task Replay
+    //////////////////////////////////////////////////////////////////////
+    // A fenced core's checkout queue holds all its dispatched, unfinished tasks
+    // in order (the head is the one it was running). The replay controller
+    // moves them to live cores; see bingo_hw_manager_replay_ctrl.
+    always_comb begin : compose_replay_inputs
+        for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                replay_head_logical[c][cl] = checkout_queue_data_out[c][cl].assigned_core_id;
+                replay_head_no_exec[c][cl] = (checkout_queue_data_out[c][cl].task_type == 2'b01);
+            end
+        end
+    end
+
+    bingo_hw_manager_replay_ctrl #(
+        .NumCores(NUM_CORES_PER_CLUSTER),
+        .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
+        .CoreIdWidth(cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)),
+        .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
+        .AllowMask(CoreRemapAllowMask)
+    ) i_replay_ctrl (
+        .clk_i                   ( clk_i                  ),
+        .rst_ni                  ( rst_ni                 ),
+        .fenced_i                ( core_fenced            ),
+        .done_q_empty_i          ( done_q_empty           ),
+        .checkout_empty_i        ( checkout_queue_empty   ),
+        .checkout_full_i         ( checkout_queue_full    ),
+        .ready_full_i            ( ready_queue_full       ),
+        .checkout_logical_core_i ( replay_head_logical    ),
+        .checkout_no_exec_i      ( replay_head_no_exec    ),
+        .retired_o               ( core_retired           ),
+        .ready_flush_o           ( replay_ready_flush     ),
+        .move_o                  ( replay_move            ),
+        .move_fire_o             ( replay_move_fire       ),
+        .push_ready_o            ( replay_push_ready_q    ),
+        .src_core_o              ( replay_src_core        ),
+        .src_cluster_o           ( replay_src_cluster     ),
+        .dst_core_o              ( replay_dst_core        ),
+        .stuck_o                 ( replay_stuck           )
+    );
+    assign replay_stuck_o = replay_stuck;
+    assign replay_data    = checkout_queue_data_out[replay_src_core][replay_src_cluster];
+
+    always_comb begin : compose_replay_signals
+        replay_pop             = '0;
+        replay_push            = '0;
+        replay_push_ready      = '0;
+        replay_pending_cluster = '0;
+        replay_move_cluster    = '0;
+        if (replay_move_fire) begin
+            replay_pop[replay_src_core][replay_src_cluster]         = 1'b1;
+            replay_push[replay_dst_core][replay_src_cluster]        = 1'b1;
+            replay_push_ready[replay_dst_core][replay_src_cluster]  = replay_push_ready_q;
+        end
+        for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+            for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+                if (core_fenced[c][cl] && !core_retired[c][cl]) begin
+                    replay_pending_cluster[cl] = 1'b1;
+                end
+                // A stuck MOVE never pushes, so it does not block the cluster.
+                if (replay_move[c][cl] && !replay_stuck) begin
+                    replay_move_cluster[cl] = 1'b1;
+                end
+            end
+        end
+    end
 
     //////////////////////////////////////////////////////////////////////
     // Core Remapping
     //////////////////////////////////////////////////////////////////////
-    // A task only leaves its logical core when that core is dead_suspect (see
-    // bingo_hw_manager_core_remap). Dummy-set and CERF-skipped tasks never execute
-    // on a core and must drain through their own core's checkout FIFO, which is
-    // what orders them after the core's earlier tasks, so they are never remapped.
+    // A task only leaves its logical core once that core is retired (fenced and
+    // its outstanding tasks replayed, see bingo_hw_manager_core_remap).
+    // Dummy-set and CERF-skipped tasks never execute on a core and must drain
+    // through their own core's checkout FIFO, which is what orders them after the
+    // core's earlier tasks, so they are never remapped.
     for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin : gen_core_remap
         logic                                  is_dummy_set;
         bingo_hw_manager_assigned_cluster_id_t task_cluster;
         logic                                  outstanding_clear;
+        logic                                  replay_hold;
 
         assign is_dummy_set = (waiting_dep_check_task_desc[core].task_type == 2'b01) &&
                               waiting_dep_check_task_desc[core].dep_set_info.dep_set_en;
@@ -1421,41 +1594,53 @@ module bingo_hw_manager_top #(
             .logical_core_i(bingo_hw_manager_assigned_core_id_t'(core)),
             .logical_cluster_i(waiting_dep_check_task_desc[core].assigned_cluster_id),
             .remappable_i(remap_remappable[core]),
-            .core_dead_suspect_i(core_dead_suspect),
+            .core_fenced_i(core_fenced),
+            .core_retired_i(core_retired),
             .select_valid_o(remap_select_valid_raw[core]),
             .physical_core_o(remap_physical_core[core]),
             .physical_cluster_o(remap_physical_cluster[core])
         );
 
         // A dummy-set / skipped task stays on its logical core, but earlier tasks of
-        // that core may have been remapped elsewhere (while it was dead_suspect).
-        // Hold it back until all of those have left their checkout queues, so that
-        // its dep_set still fires after every earlier task of its logical core.
+        // that core may have been remapped (or replayed) elsewhere. Hold it back
+        // until all of those have left their checkout queues, so that its dep_set
+        // still fires after every earlier task of its logical core.
         // Healthy cores never have outstanding remapped tasks: no behaviour change.
+        //
+        // A fenced logical core is also held while any slot of its cluster still
+        // waits to be replayed: its older tasks may sit in that slot and must reach
+        // their new core first.
         assign task_cluster = waiting_dep_check_task_desc[core].assigned_cluster_id;
         always_comb begin
             outstanding_clear = 1'b1;
+            replay_hold       = 1'b0;
             for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                if ((bingo_hw_manager_assigned_cluster_id_t'(cl) == task_cluster) &&
-                    (remap_outstanding_q[core][cl] != '0)) begin
-                    outstanding_clear = 1'b0;
+                if (bingo_hw_manager_assigned_cluster_id_t'(cl) == task_cluster) begin
+                    if (remap_outstanding_q[core][cl] != '0) begin
+                        outstanding_clear = 1'b0;
+                    end
+                    if (core_fenced[core][cl] && replay_pending_cluster[cl]) begin
+                        replay_hold = 1'b1;
+                    end
                 end
             end
         end
         assign remap_select_valid[core] = remap_select_valid_raw[core] &&
-                                          (remap_remappable[core] || outstanding_clear);
+                                          (remap_remappable[core] || outstanding_clear) &&
+                                          !replay_hold;
     end
 
-    // Track remapped tasks per logical core until they leave the checkout queue of
-    // the physical core that runs them (checkout entries keep the logical core id).
+    // Track tasks per logical core that sit in the checkout queue of another
+    // physical core (remapped or replayed; checkout entries keep the logical id).
     always_comb begin : update_remap_outstanding
         remap_outstanding_d = remap_outstanding_q;
         for (int unsigned p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
             for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                if (remap_route_fire[p][cl] &&
-                    (remap_route_src_core[p][cl] != bingo_hw_manager_assigned_core_id_t'(p))) begin
-                    remap_outstanding_d[remap_route_src_core[p][cl]][cl] =
-                        remap_outstanding_d[remap_route_src_core[p][cl]][cl] + 1'b1;
+                if (checkout_queue_push[p][cl] &&
+                    (checkout_queue_data_in[p][cl].assigned_core_id != bingo_hw_manager_assigned_core_id_t'(p)) &&
+                    (int'(checkout_queue_data_in[p][cl].assigned_core_id) < NUM_CORES_PER_CLUSTER)) begin
+                    remap_outstanding_d[checkout_queue_data_in[p][cl].assigned_core_id][cl] =
+                        remap_outstanding_d[checkout_queue_data_in[p][cl].assigned_core_id][cl] + 1'b1;
                 end
                 if (checkout_queue_pop[p][cl] &&
                     (checkout_queue_data_out[p][cl].assigned_core_id != bingo_hw_manager_assigned_core_id_t'(p)) &&
@@ -1486,7 +1671,9 @@ module bingo_hw_manager_top #(
         for (int unsigned dst_core = 0; dst_core < NUM_CORES_PER_CLUSTER; dst_core++) begin
             for (int unsigned dst_cluster = 0; dst_cluster < NUM_CLUSTERS_PER_CHIPLET; dst_cluster++) begin
                 for (int unsigned src_core = 0; src_core < NUM_CORES_PER_CLUSTER; src_core++) begin
+                    // Replay pushes have priority over routed tasks in their cluster.
                     if (!remap_route_valid[dst_core][dst_cluster] &&
+                        !replay_move_cluster[dst_cluster] &&
                         demux_ready_and_checkout_queue_oup_valid[src_core][dst_cluster] &&
                         remap_select_valid[src_core] &&
                         (remap_physical_core[src_core] == bingo_hw_manager_assigned_core_id_t'(dst_core)) &&
@@ -1502,19 +1689,33 @@ module bingo_hw_manager_top #(
     end
 
 `ifndef SYNTHESIS
-    // Simulation-only event log: makes watchdog / remap activity visible in any
-    // flow that simulates this RTL (bingo unit tests and full-system sims).
+    // Simulation-only event log: makes watchdog / remap / replay activity visible
+    // in any flow that simulates this RTL (bingo unit tests and full-system sims).
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect_log_q;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_fenced_log_q;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_retired_log_q;
+    logic                                                           replay_stuck_log_q;
     always @(posedge clk_i or negedge rst_ni) begin : watchdog_remap_event_log
         if (!rst_ni) begin
             core_dead_suspect_log_q <= '0;
+            core_fenced_log_q       <= '0;
+            core_retired_log_q      <= '0;
+            replay_stuck_log_q      <= 1'b0;
         end else begin
             core_dead_suspect_log_q <= core_dead_suspect;
+            core_fenced_log_q       <= core_fenced;
+            core_retired_log_q      <= core_retired;
+            replay_stuck_log_q      <= replay_stuck;
             for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
                 for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                    if (core_dead_suspect[c][cl] != core_dead_suspect_log_q[c][cl]) begin
-                        $display("[BINGO_WD] %0t chip=%0d core=%0d cluster=%0d dead_suspect=%0b",
-                                 $time, chip_id_i, c, cl, core_dead_suspect[c][cl]);
+                    if ((core_dead_suspect[c][cl] != core_dead_suspect_log_q[c][cl]) ||
+                        (core_fenced[c][cl] != core_fenced_log_q[c][cl])) begin
+                        $display("[BINGO_WD] %0t chip=%0d core=%0d cluster=%0d dead_suspect=%0b fenced=%0b",
+                                 $time, chip_id_i, c, cl, core_dead_suspect[c][cl], core_fenced[c][cl]);
+                    end
+                    if (core_retired[c][cl] && !core_retired_log_q[c][cl]) begin
+                        $display("[BINGO_RETIRED] %0t chip=%0d core=%0d cluster=%0d",
+                                 $time, chip_id_i, c, cl);
                     end
                     if (remap_route_fire[c][cl] &&
                         (remap_route_src_core[c][cl] != bingo_hw_manager_assigned_core_id_t'(c))) begin
@@ -1522,6 +1723,74 @@ module bingo_hw_manager_top #(
                                  $time, chip_id_i,
                                  waiting_dep_check_task_desc[remap_route_src_core[c][cl]].task_id,
                                  remap_route_src_core[c][cl], c, cl);
+                    end
+                end
+            end
+            if (replay_move_fire) begin
+                $display("[BINGO_REPLAY] %0t chip=%0d task=%0d type=%0d logical_core=%0d from=%0d to=%0d cluster=%0d",
+                         $time, chip_id_i, replay_data.task_id, replay_data.task_type,
+                         replay_data.assigned_core_id, replay_src_core, replay_dst_core, replay_src_cluster);
+            end
+            if (replay_stuck && !replay_stuck_log_q) begin
+                $display("[BINGO_REPLAY_STUCK] %0t chip=%0d core=%0d cluster=%0d: no live core may run task %0d (logical core %0d)",
+                         $time, chip_id_i, replay_src_core, replay_src_cluster,
+                         replay_data.task_id, replay_data.assigned_core_id);
+            end
+        end
+    end
+
+    // Replay invariants
+    always @(posedge clk_i) begin : replay_assertions
+        if (rst_ni) begin
+            for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+                for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                    // A1: a fenced core neither takes a task nor retires one
+                    if (core_fenced[c][cl] && (ready_queue_pop[c][cl] || done_q_push[c][cl])) begin
+                        $error("[BINGO_ASSERT] fenced core %0d cluster %0d: ready pop %0b / done push %0b",
+                               c, cl, ready_queue_pop[c][cl], done_q_push[c][cl]);
+                    end
+                    // A2: a fenced core receives no executing task; before it is
+                    // retired it receives nothing at all
+                    if (core_fenced[c][cl] && ready_queue_push[c][cl]) begin
+                        $error("[BINGO_ASSERT] ready push into fenced core %0d cluster %0d", c, cl);
+                    end
+                    if (core_fenced[c][cl] && checkout_queue_push[c][cl] &&
+                        (!core_retired[c][cl] || (checkout_queue_data_in[c][cl].task_type != 2'b01))) begin
+                        $error("[BINGO_ASSERT] checkout push of task %0d (type %0d) into fenced core %0d cluster %0d (retired %0b)",
+                               checkout_queue_data_in[c][cl].task_id, checkout_queue_data_in[c][cl].task_type,
+                               c, cl, core_retired[c][cl]);
+                    end
+                    // A3: outstanding counter never wraps
+                    if (remap_outstanding_q[c][cl] > NUM_CORES_PER_CLUSTER * CheckoutQueueDepth) begin
+                        $error("[BINGO_ASSERT] remap_outstanding[%0d][%0d] out of range: %0d",
+                               c, cl, remap_outstanding_q[c][cl]);
+                    end
+                    // A4: a slot being moved is not retired through its done queue
+                    if (replay_move[c][cl] && done_q_pop[c][cl]) begin
+                        $error("[BINGO_ASSERT] done pop on core %0d cluster %0d during replay MOVE", c, cl);
+                    end
+                    // A5: a replay push never collides with a routed push
+                    if (replay_push[c][cl] && remap_route_fire[c][cl]) begin
+                        $error("[BINGO_ASSERT] replay and routed push into core %0d cluster %0d", c, cl);
+                    end
+                    // A7: an executing task retires together with its own done
+                    if (checkout_queue_pop[c][cl] && !replay_pop[c][cl] &&
+                        (checkout_queue_data_out[c][cl].task_type != 2'b01) &&
+                        (!done_q_pop[c][cl] || done_q_empty[c][cl] ||
+                         (done_q_info[c][cl].task_id != checkout_queue_data_out[c][cl].task_id))) begin
+                        $error("[BINGO_ASSERT] core %0d cluster %0d retired task %0d with done pop %0b (done task %0d)",
+                               c, cl, checkout_queue_data_out[c][cl].task_id, done_q_pop[c][cl],
+                               done_q_info[c][cl].task_id);
+                    end
+                    if (done_q_pop[c][cl] &&
+                        !(checkout_queue_pop[c][cl] && !replay_pop[c][cl])) begin
+                        $error("[BINGO_ASSERT] core %0d cluster %0d popped done of task %0d without retiring a task",
+                               c, cl, done_q_info[c][cl].task_id);
+                    end
+                    // A6: fenced / retired are sticky
+                    if ((core_fenced_log_q[c][cl] && !core_fenced[c][cl]) ||
+                        (core_retired_log_q[c][cl] && !core_retired[c][cl])) begin
+                        $error("[BINGO_ASSERT] fenced/retired of core %0d cluster %0d fell", c, cl);
                     end
                 end
             end
