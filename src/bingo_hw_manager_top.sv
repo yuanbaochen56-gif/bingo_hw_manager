@@ -174,7 +174,8 @@ module bingo_hw_manager_top #(
     output logic [10:0]                         load_total_pending_o,
     // Watchdog: confirmed dead cores (sticky). The system may reset / isolate them.
     output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    core_fenced_o,
-    // Replay: a fenced core holds a task that no live core may run
+    // Replay: a fenced core holds a task that no live core may run (level 3:
+    // on this chiplet, or on the remote chiplet that rejected its export)
     output logic                                replay_stuck_o,
     // Watchdog: busy cores without heartbeat for WatchdogHeartbeatTimeoutCycles
     // (not sticky, cleared by a heartbeat or a done)
@@ -202,11 +203,17 @@ module bingo_hw_manager_top #(
     output chip_id_t                            remote_done_chip_o,
     output logic [RemoteSlotIdWidth-1:0]        remote_done_proxy_slot_o,
     output logic [TaskIdWidth-1:0]              remote_done_task_id_o,
+    // ... or a reject: no live core here may run the imported task (none of its
+    // type was live on arrival, or its core died and none is left)
+    output logic                                remote_done_reject_o,
     // Done of an exported task (from the chiplet that ran it)
     input  logic                                remote_done_valid_i = 1'b0,
     output logic                                remote_done_ready_o,
     input  logic [RemoteSlotIdWidth-1:0]        remote_done_proxy_slot_i = '0,
     input  logic [TaskIdWidth-1:0]              remote_done_task_id_i = '0,
+    // ... or its reject: the proxy slot becomes stuck (replay_stuck_o), after
+    // the dones that arrived before it retired its earlier entries
+    input  logic                                remote_done_reject_i = 1'b0,
     // Core types the transport can export (it has a target chiplet for them),
     // e.g. bingo_hw_manager_remote_link target_valid_o. A fenced core of another
     // type without a local substitute is stuck, as without level 3, instead of
@@ -344,6 +351,7 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_assigned_chiplet_id_t   chip;
         remote_slot_t                            proxy_slot;
         bingo_hw_manager_task_id_t               task_id;
+        logic                                    reject;
     } remote_done_t;
 
     function automatic bingo_hw_manager_task_desc_full_t desc_to_full(input bingo_hw_manager_task_desc_t d);
@@ -597,6 +605,7 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]         route_remote_grant;
     logic                                  replay_rotate;
     logic                                  replay_export;
+    logic                                  replay_bounce;
     remote_export_t                        export_in;
     remote_export_t                        export_out;
     logic                                  export_push;
@@ -610,6 +619,7 @@ module bingo_hw_manager_top #(
     bingo_hw_manager_assigned_core_id_t    import_core;
     bingo_hw_manager_assigned_cluster_id_t import_cluster;
     logic                                  import_fire;
+    logic                                  import_reject;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] import_push;
     bingo_hw_manager_task_desc_t           import_desc;
     // Level 3 remote dones
@@ -618,6 +628,12 @@ module bingo_hw_manager_top #(
     logic         [NUM_CORES_PER_CLUSTER*NUM_CLUSTERS_PER_CHIPLET-1:0] remote_done_arb_ready;
     remote_done_t                                                      remote_done_out;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    remote_done_push;
+    // Level 3 rejects: executor side (one pending reject), origin side (sticky
+    // per proxy slot)
+    logic                                                              reject_valid_q;
+    remote_done_t                                                      reject_q;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    remote_rejected_q;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    remote_reject_in;
 
     ///////////////////////////////////////////
     // Stream Demux Checkout Queue Chiplet Set
@@ -1377,6 +1393,7 @@ module bingo_hw_manager_top #(
                                                           !replay_hold_slot[core][cluster] &&
                                                           !replay_stuck_slot[core][cluster] &&
                                                           !remote_head_mismatch[core][cluster] &&
+                                                          !remote_rejected_q[core][cluster] &&
                                                           (!checkout_head_exec[core][cluster] ||
                                                            !done_q_empty[core][cluster]);
             assign stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] =
@@ -1386,7 +1403,8 @@ module bingo_hw_manager_top #(
             assign remote_done_arb_data[core + cluster * NUM_CORES_PER_CLUSTER] = '{
                 chip:       checkout_remote_tag_out[core][cluster].origin_chip,
                 proxy_slot: checkout_remote_tag_out[core][cluster].proxy_slot,
-                task_id:    checkout_queue_data_out[core][cluster].task_id
+                task_id:    checkout_queue_data_out[core][cluster].task_id,
+                reject:     1'b0
             };
             assign stream_demux_checkout_queue_chiplet_dep_set_oup_sel[core][cluster] = 
                 (checkout_queue_data_out[core][cluster].dep_set_info.dep_set_chiplet_id != chip_id_i);
@@ -1669,6 +1687,7 @@ module bingo_hw_manager_top #(
         logic csr_done_to_remote_slot;
         always_comb begin
             remote_done_push        = '0;
+            remote_reject_in        = '0;
             remote_done_ready_o     = 1'b0;
             csr_done_to_remote_slot = write_done_queue_valid &&
                 (write_done_info.assigned_core_id ==
@@ -1682,7 +1701,15 @@ module bingo_hw_manager_top #(
                         (write_done_info.assigned_core_id == bingo_hw_manager_assigned_core_id_t'(c)) &&
                         (write_done_info.assigned_cluster_id == bingo_hw_manager_assigned_cluster_id_t'(cl)) &&
                         !done_q_full[c][cl];
-                    if (RemoteEn && remote_done_valid_i && !csr_done_to_remote_slot &&
+                    if (RemoteEn && remote_done_valid_i && remote_done_reject_i &&
+                        (int'(remote_done_proxy_slot_i) == c + cl * NUM_CORES_PER_CLUSTER)) begin
+                        // A reject marks the slot once the dones received before
+                        // it have retired their entries
+                        if (done_q_empty[c][cl]) begin
+                            remote_reject_in[c][cl] = 1'b1;
+                            remote_done_ready_o     = 1'b1;
+                        end
+                    end else if (RemoteEn && remote_done_valid_i && !csr_done_to_remote_slot &&
                         (int'(remote_done_proxy_slot_i) == c + cl * NUM_CORES_PER_CLUSTER) &&
                         !done_q_full[c][cl]) begin
                         remote_done_push[c][cl]             = 1'b1;
@@ -1704,6 +1731,7 @@ module bingo_hw_manager_top #(
         // So we do not need to do anything here
         // Level 3 needs the CSR interface (see gen_remote_intf_check)
         assign remote_done_push    = '0;
+        assign remote_reject_in    = '0;
         assign remote_done_ready_o = 1'b0;
         // Tie the csr signals to zero
         assign csr_req_ready_o = '0;
@@ -1812,6 +1840,7 @@ module bingo_hw_manager_top #(
         .checkout_imported_i        ( checkout_head_imported      ),
         .export_ready_i             ( !export_full                ),
         .remote_type_en_i           ( remote_export_type_en_i     ),
+        .bounce_ready_i             ( !reject_valid_q             ),
         .retired_o               ( core_retired           ),
         .ready_flush_o           ( replay_ready_flush     ),
         .move_o                  ( replay_move            ),
@@ -1824,9 +1853,10 @@ module bingo_hw_manager_top #(
         .dst_cluster_o           ( replay_dst_cluster     ),
         .stuck_o                 ( replay_stuck_slot      ),
         .rotate_o                ( replay_rotate          ),
-        .export_o                ( replay_export          )
+        .export_o                ( replay_export          ),
+        .bounce_o                ( replay_bounce          )
     );
-    assign replay_stuck   = |replay_stuck_slot;
+    assign replay_stuck   = (|replay_stuck_slot) || (|remote_rejected_q);
     assign replay_stuck_o = replay_stuck;
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) remote_done_mismatch_q <= 1'b0;
@@ -1843,8 +1873,11 @@ module bingo_hw_manager_top #(
         replay_move_cluster = '0;
         if (replay_move_fire) begin
             replay_pop[replay_src_core][replay_src_cluster]         = 1'b1;
-            replay_push[replay_dst_core][replay_dst_cluster]        = 1'b1;
-            replay_push_ready[replay_dst_core][replay_dst_cluster]  = replay_push_ready_q;
+            // Level 3: a bounced (rejected) imported entry is only dropped
+            if (!replay_bounce) begin
+                replay_push[replay_dst_core][replay_dst_cluster]        = 1'b1;
+                replay_push_ready[replay_dst_core][replay_dst_cluster]  = replay_push_ready_q;
+            end
         end
         // Nothing is routed into the slot being moved (fenced, not retired), only
         // into its current destination, which may be in another cluster.
@@ -1897,6 +1930,7 @@ module bingo_hw_manager_top #(
             .core_fenced_i(core_fenced),
             .core_retired_i(core_retired),
             .remote_type_en_i(remote_export_type_en_i),
+            .remote_rejected_i(remote_rejected_q),
             .select_valid_o(remap_select_valid_raw[core]),
             .physical_core_o(remap_physical_core[core]),
             .physical_cluster_o(remap_physical_cluster[core]),
@@ -2134,18 +2168,62 @@ module bingo_hw_manager_top #(
             import_push = '0;
             import_push[import_core][import_cluster] = import_fire;
         end
-        assign remote_dispatch_ready_o = import_fire;
+        // No live core here may run it, now or later (fenced is sticky): take it
+        // and reject it back to its origin instead of blocking the link. Waits
+        // for a local replay, which may first bounce older imports of the type.
+        assign import_reject = remote_dispatch_valid_i && !(import_home_found && import_sub_found) &&
+                               !replay_pending && !(|replay_move) && !reject_valid_q;
+        assign remote_dispatch_ready_o = import_fire || import_reject;
 
-        // Dones of imported tasks, back to their origin
+        // One pending reject (import_reject or a bounced imported entry)
+        localparam int unsigned NumSlots = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET;
+        logic reject_arb_valid, reject_arb_ready, reject_raised_q;
+        always_ff @(posedge clk_i or negedge rst_ni) begin
+            if (!rst_ni) begin
+                reject_valid_q  <= 1'b0;
+                reject_q        <= '0;
+                reject_raised_q <= 1'b0;
+            end else begin
+                if (reject_arb_valid && reject_arb_ready) begin
+                    reject_valid_q  <= 1'b0;
+                    reject_raised_q <= 1'b0;
+                end else if (reject_arb_valid) begin
+                    reject_raised_q <= 1'b1;
+                end
+                if (import_reject) begin
+                    reject_valid_q <= 1'b1;
+                    reject_q       <= '{chip:       remote_dispatch_origin_chip_i,
+                                        proxy_slot: remote_dispatch_proxy_slot_i,
+                                        task_id:    import_desc.task_id,
+                                        reject:     1'b1};
+                end else if (replay_bounce) begin
+                    reject_valid_q <= 1'b1;
+                    reject_q       <= '{chip:       checkout_remote_tag_out[replay_src_core][replay_src_cluster].origin_chip,
+                                        proxy_slot: checkout_remote_tag_out[replay_src_core][replay_src_cluster].proxy_slot,
+                                        task_id:    replay_data.task_id,
+                                        reject:     1'b1};
+                end
+            end
+        end
+        // Below every retiring done: the dones of a proxy slot reach its origin
+        // before its reject (once raised, the request is held until taken)
+        assign reject_arb_valid = reject_valid_q && (reject_raised_q || !(|remote_done_arb_valid));
+
+        // Dones of imported tasks and rejects, back to their origin
+        remote_done_t [NumSlots:0] remote_done_all_data;
+        logic         [NumSlots:0] remote_done_all_valid, remote_done_all_ready;
+        assign remote_done_all_data  = {reject_q, remote_done_arb_data};
+        assign remote_done_all_valid = {reject_arb_valid, remote_done_arb_valid};
+        assign {reject_arb_ready, remote_done_arb_ready} = remote_done_all_ready;
         stream_arbiter #(
             .DATA_T(remote_done_t),
-            .N_INP (NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET)
+            .N_INP (NumSlots + 1)
         ) i_remote_done_arbiter (
             .clk_i      ( clk_i                 ),
             .rst_ni     ( rst_ni                ),
-            .inp_data_i ( remote_done_arb_data  ),
-            .inp_valid_i( remote_done_arb_valid ),
-            .inp_ready_o( remote_done_arb_ready ),
+            .inp_data_i ( remote_done_all_data  ),
+            .inp_valid_i( remote_done_all_valid ),
+            .inp_ready_o( remote_done_all_ready ),
             .oup_data_o ( remote_done_out       ),
             .oup_valid_o( remote_done_valid_o   ),
             .oup_ready_i( remote_done_ready_i   )
@@ -2153,6 +2231,7 @@ module bingo_hw_manager_top #(
         assign remote_done_chip_o       = remote_done_out.chip;
         assign remote_done_proxy_slot_o = remote_done_out.proxy_slot;
         assign remote_done_task_id_o    = remote_done_out.task_id;
+        assign remote_done_reject_o     = remote_done_out.reject;
     end else begin : gen_no_remote_dispatch
         assign export_full                   = 1'b1;
         assign export_empty                  = 1'b1;
@@ -2170,14 +2249,25 @@ module bingo_hw_manager_top #(
         assign import_cluster                = '0;
         assign import_desc                   = '0;
         assign import_fire                   = 1'b0;
+        assign import_reject                 = 1'b0;
         assign import_push                   = '0;
         assign remote_dispatch_ready_o       = 1'b0;
+        assign reject_valid_q                = 1'b0;
+        assign reject_q                      = '0;
         assign remote_done_arb_ready         = '0;
         assign remote_done_out               = '0;
         assign remote_done_valid_o           = 1'b0;
         assign remote_done_chip_o            = '0;
         assign remote_done_proxy_slot_o      = '0;
         assign remote_done_task_id_o         = '0;
+        assign remote_done_reject_o          = 1'b0;
+    end
+
+    // Origin side: a proxy slot whose export was rejected stops retiring and
+    // exporting (sticky, part of replay_stuck_o)
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) remote_rejected_q <= '0;
+        else         remote_rejected_q <= remote_rejected_q | remote_reject_in;
     end
 
 `ifndef SYNTHESIS
@@ -2238,15 +2328,30 @@ module bingo_hw_manager_top #(
                          remote_dispatch_proxy_slot_i, import_core, import_cluster,
                          import_home_core, import_home_cluster);
             end
-            if (remote_done_valid_o && remote_done_ready_i) begin
+            if (remote_done_valid_o && remote_done_ready_i && !remote_done_reject_o) begin
                 $display("[BINGO_REMOTE_DONE_OUT] %0t chip=%0d task=%0d -> chip=%0d proxy_slot=%0d",
                          $time, chip_id_i, remote_done_task_id_o, remote_done_chip_o, remote_done_proxy_slot_o);
             end
-            if (remote_done_valid_i && remote_done_ready_o) begin
+            if (remote_done_valid_i && remote_done_ready_o && !remote_done_reject_i) begin
                 $display("[BINGO_REMOTE_DONE_IN] %0t chip=%0d task=%0d proxy_slot=%0d",
                          $time, chip_id_i, remote_done_task_id_i, remote_done_proxy_slot_i);
             end
-            if (replay_move_fire) begin
+            if (import_reject) begin
+                $display("[BINGO_REMOTE_REJECT_OUT] %0t chip=%0d task=%0d -> chip=%0d proxy_slot=%0d (no live core of its type)",
+                         $time, chip_id_i, import_desc.task_id, remote_dispatch_origin_chip_i,
+                         remote_dispatch_proxy_slot_i);
+            end
+            if (replay_bounce) begin
+                $display("[BINGO_REMOTE_REJECT_OUT] %0t chip=%0d task=%0d -> chip=%0d proxy_slot=%0d (its core died, no other live core)",
+                         $time, chip_id_i, replay_data.task_id,
+                         checkout_remote_tag_out[replay_src_core][replay_src_cluster].origin_chip,
+                         checkout_remote_tag_out[replay_src_core][replay_src_cluster].proxy_slot);
+            end
+            if (|remote_reject_in) begin
+                $display("[BINGO_REMOTE_REJECT_IN] %0t chip=%0d task=%0d proxy_slot=%0d: the proxy is stuck",
+                         $time, chip_id_i, remote_done_task_id_i, remote_done_proxy_slot_i);
+            end
+            if (replay_move_fire && !replay_bounce) begin
                 $display("[BINGO_REPLAY] %0t chip=%0d task=%0d type=%0d logical_core=%0d from=%0d to=%0d cluster=%0d to_cluster=%0d logical_cluster=%0d",
                          $time, chip_id_i, replay_data.task_id, replay_data.task_type,
                          replay_data.assigned_core_id, replay_src_core, replay_dst_core, replay_src_cluster,

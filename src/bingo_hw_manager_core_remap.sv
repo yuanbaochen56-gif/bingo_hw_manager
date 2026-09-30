@@ -21,7 +21,9 @@
 //   enabled and the core has a non-zero type that the transport can export
 //   (remote_type_en_i): then it stays on its (retired) logical slot, which acts
 //   as the proxy of a remote chiplet, and remote_o tells the top to export it
-//   instead of pushing it to the ready queue.
+//   instead of pushing it to the ready queue. Once the remote chiplet rejected
+//   a task of that proxy (remote_rejected_i: no live core of the type there
+//   either), its new tasks are held, like those of a core without substitute.
 // - Dummy-set and CERF-skipped tasks (remappable_i = 0) never execute on a
 //   core; they stay on their logical core even when it is retired (its checkout
 //   FIFO still retires them).
@@ -53,6 +55,8 @@ module bingo_hw_manager_core_remap #(
     input  logic [NumCores-1:0][NumClusters-1:0] core_retired_i,
     // Level 3: core types with an export target (index: CoreTypeId)
     input  logic [2**CoreTypeIdWidth-1:0] remote_type_en_i,
+    // Level 3: proxy slots whose exports were rejected (sticky)
+    input  logic [NumCores-1:0][NumClusters-1:0] remote_rejected_i,
     // Selected physical core/cluster
     output logic select_valid_o,
     output logic [CoreIdWidth-1:0] physical_core_o,
@@ -74,7 +78,8 @@ module bingo_hw_manager_core_remap #(
     assign logical_fenced   = logical_in_range && core_fenced_i[logical_core_i][logical_cluster_i];
     assign logical_retired  = logical_in_range && core_retired_i[logical_core_i][logical_cluster_i];
     assign logical_typed    = logical_in_range && (CoreTypeId[logical_core_i][logical_cluster_i] != '0);
-    assign logical_exportable = logical_typed && remote_type_en_i[CoreTypeId[logical_core_i][logical_cluster_i]];
+    assign logical_exportable = logical_typed && remote_type_en_i[CoreTypeId[logical_core_i][logical_cluster_i]] &&
+                                !remote_rejected_i[logical_core_i][logical_cluster_i];
 
     // The logical core is fenced whenever its substitute is used, so the
     // selector never returns the logical core itself here.

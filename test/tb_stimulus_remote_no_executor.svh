@@ -9,8 +9,10 @@
 //            after the retire: task 7 (c2) independent, task 8 (c0) exported
 // chiplet 1: task 11 (c0) hangs; task 13 (c0) queued; tasks 12 (c1), 14 (c2)
 //            independent; after the retire: task 15 (c1)
-// EXPECTED: 5, 6, 7, 12, 14, 15 complete; 1, 2, 4, 8, 11, 13 do not; nothing is
-// stuck (the exports wait at the chiplet boundary) and no task is imported.
+// EXPECTED: 5, 6, 7, 12, 14, 15 complete; 1, 2, 4, 8, 11, 13 do not. Each
+// chiplet rejects the other's exports (at import, or by bouncing them once its
+// own core 0 is fenced), so both proxy slots 0 end up stuck and nothing waits
+// at the chiplet boundary.
 
 localparam int unsigned EXPECTED_TASK_COUNT     = 999;
 localparam int unsigned DEADLOCK_THRESHOLD      = 1000000;
@@ -57,15 +59,25 @@ initial begin : remote_no_executor_test
         end
     end
     for (int g = 0; g < 2; g++) begin
+        automatic int unsigned first = (g == 0) ? 1 : 11;
+        automatic int unsigned second = (g == 0) ? 2 : 13;
         if (fenced_export[g] !== 3'b001 || retired_export[g] !== 3'b001) begin
             $error("[REMOTE_NO_EXEC] chiplet %0d fenced %b retired %b", g, fenced_export[g], retired_export[g]);
         end
-        if (remote_import_count[g] != 0) $error("[REMOTE_NO_EXEC] chiplet %0d imported %0d tasks", g, remote_import_count[g]);
-        // pending at the boundary: export not taken, or waiting in the peer's import mailbox
-        if (rd_in_valid[(g + 1) % 2] !== 1'b1) $error("[REMOTE_NO_EXEC] chiplet %0d has no pending export", g);
-    end
-    if (gen_dut[0].i_dut.replay_stuck !== 1'b0 || gen_dut[1].i_dut.replay_stuck !== 1'b0) begin
-        $error("[REMOTE_NO_EXEC] a chiplet is stuck");
+        // its exports were rejected in order; nothing waits at the boundary
+        if ((remote_rejects[g].size() < 2) || (remote_rejects[g][0] != first) || (remote_rejects[g][1] != second)) begin
+            $error("[REMOTE_NO_EXEC] chiplet %0d rejects %p, expected %0d, %0d first", g, remote_rejects[g], first, second);
+        end
+        if (rd_valid[g] !== 1'b0 || rd_in_valid[g] !== 1'b0) begin
+            $error("[REMOTE_NO_EXEC] chiplet %0d: export %b / import %b still pending", g, rd_valid[g], rd_in_valid[g]);
+        end
+        if (remote_rejected_export[g] !== 3'b001 || replay_stuck_export[g] !== 1'b1) begin
+            $error("[REMOTE_NO_EXEC] chiplet %0d rejected %b stuck %b", g, remote_rejected_export[g],
+                   replay_stuck_export[g]);
+        end
+        if (stuck_slot_export[g] !== 3'b000) begin
+            $error("[REMOTE_NO_EXEC] chiplet %0d locally stuck %b", g, stuck_slot_export[g]);
+        end
     end
     $display("Level-3 no-executor test passed");
     $finish;

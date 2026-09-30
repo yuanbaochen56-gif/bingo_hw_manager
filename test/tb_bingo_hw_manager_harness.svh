@@ -65,6 +65,13 @@ import axi_test::*;
 `ifndef TB_FAULT2_TASK_ID
   `define TB_FAULT2_TASK_ID 0
 `endif
+// Third, independent fault (always HANG)
+`ifndef TB_FAULT3_CORE
+  `define TB_FAULT3_CORE -1
+`endif
+`ifndef TB_FAULT3_TASK_ID
+  `define TB_FAULT3_TASK_ID 0
+`endif
 // CoreTypeId[core][cluster] of the DUT, 4 bits per slot (default: all type 1,
 // every core of a cluster may take over any other)
 `ifndef TB_CORE_TYPE_ID
@@ -130,6 +137,8 @@ localparam int          FAULT_CORE                 = `TB_FAULT_CORE;
 localparam int unsigned FAULT_TASK_ID              = `TB_FAULT_TASK_ID;
 localparam int unsigned FAULT_MODE                 = `TB_FAULT_MODE;
 localparam int          FAULT2_CORE                = `TB_FAULT2_CORE;
+localparam int          FAULT3_CORE                = `TB_FAULT3_CORE;
+localparam int unsigned FAULT3_TASK_ID             = `TB_FAULT3_TASK_ID;
 localparam int unsigned FAULT2_TASK_ID             = `TB_FAULT2_TASK_ID;
 localparam int unsigned FAULT_HANG                 = 0;
 // Runtime copies of the fault selection: a stimulus may override them at time 0.
@@ -615,6 +624,7 @@ logic                     rdn_ready      [NUM_CHIPLET];
 chip_id_t                 rdn_chip       [NUM_CHIPLET];
 logic [REMOTE_SLOT_W-1:0] rdn_proxy_slot [NUM_CHIPLET];
 logic [TaskIdWidth-1:0]   rdn_task_id    [NUM_CHIPLET];
+logic                     rdn_reject     [NUM_CHIPLET];
 // Inputs of chiplet i (mode 1: exports of its predecessor and dones of its
 // successor wired directly; mode 2: from its remote_link)
 logic                     rd_in_valid       [NUM_CHIPLET];
@@ -627,6 +637,9 @@ logic                     rdn_in_valid      [NUM_CHIPLET];
 logic                     rdn_in_ready      [NUM_CHIPLET];
 logic [REMOTE_SLOT_W-1:0] rdn_in_proxy_slot [NUM_CHIPLET];
 logic [TaskIdWidth-1:0]   rdn_in_task_id    [NUM_CHIPLET];
+logic                     rdn_in_reject     [NUM_CHIPLET];
+// Rejects received by chiplet i (task ids of its rejected exports, in order)
+int unsigned              remote_rejects    [NUM_CHIPLET][$];
 localparam logic [15:0]   REMOTE_TARGET_TYPES = `TB_REMOTE_TARGET_TYPES;
 logic [15:0]              remote_type_en    [NUM_CHIPLET];  // to the top (remote_export_type_en_i)
 int unsigned              remote_export_count [NUM_CHIPLET];
@@ -651,6 +664,7 @@ for (genvar i = 0; i < NUM_CHIPLET; i++) begin : gen_remote_link
         assign rdn_in_ready[i]      = (`TB_REMOTE_LINK != 0) && rdn_ready[Pred];
         assign rdn_in_proxy_slot[i] = rdn_proxy_slot[Succ];
         assign rdn_in_task_id[i]    = rdn_task_id[Succ];
+        assign rdn_in_reject[i]     = rdn_reject[Succ];
         assign remote_link_error[i] = '0;
         assign remote_type_en[i]    = REMOTE_TARGET_TYPES;
     end
@@ -673,9 +687,14 @@ for (genvar i = 0; i < NUM_CHIPLET; i++) begin : gen_remote_link
                     remote_max_outstanding[i] = remote_export_count[i] - remote_done_in_count[i];
                 end
             end
-            if (rd_in_valid[i] && rd_ready[i]) remote_import_count[i]++;
+            if (rd_in_valid[i] && rd_ready[i] && !gen_dut[i].i_dut.import_reject) remote_import_count[i]++;
             if (rdn_in_valid[i] && rdn_ready[i]) begin
                 remote_done_in_count[i]++;
+                if (rdn_in_reject[i]) begin
+                    remote_rejects[i].push_back(rdn_in_task_id[i]);
+                    $display("[TB] %0t chip %0d: reject of task %0d (slot %0d)", $time, i,
+                             rdn_in_task_id[i], rdn_in_proxy_slot[i]);
+                end
                 if (export_order[rdn_in_proxy_slot[i]].size() == 0) begin
                     if (`TB_ALLOW_DONE_MISMATCH == 0)
                         $error("[REMOTE_LINK] chip %0d: done of task %0d for slot %0d without an export",
@@ -762,6 +781,7 @@ if (`TB_REMOTE_LINK == 2) begin : gen_rlink
             .done_out_chip_i       ( rdn_chip[i]          ),
             .done_out_proxy_slot_i ( rdn_proxy_slot[i]    ),
             .done_out_task_id_i    ( rdn_task_id[i]       ),
+            .done_out_reject_i     ( rdn_reject[i]        ),
             .import_valid_o        ( rd_in_valid[i]       ),
             .import_ready_i        ( rd_ready[i]          ),
             .import_desc_o         ( rd_in_desc[i]        ),
@@ -772,6 +792,7 @@ if (`TB_REMOTE_LINK == 2) begin : gen_rlink
             .done_in_ready_i       ( rdn_ready[i]         ),
             .done_in_proxy_slot_o  ( rdn_in_proxy_slot[i] ),
             .done_in_task_id_o     ( rdn_in_task_id[i]    ),
+            .done_in_reject_o      ( rdn_in_reject[i]     ),
             .mst_req_o             ( rl_mst_req[i]        ),
             .mst_resp_i            ( rl_mst_resp[i]       ),
             .slv_req_i             ( rl_slv_req[i]        ),
@@ -920,10 +941,12 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .remote_done_chip_o                   ( rdn_chip[chiplet_idx]                                       ),
         .remote_done_proxy_slot_o             ( rdn_proxy_slot[chiplet_idx]                                 ),
         .remote_done_task_id_o                ( rdn_task_id[chiplet_idx]                                    ),
+        .remote_done_reject_o                 ( rdn_reject[chiplet_idx]                                     ),
         .remote_done_valid_i                  ( rdn_in_valid[chiplet_idx]                                   ),
         .remote_done_ready_o                  ( rdn_ready[chiplet_idx]                                      ),
         .remote_done_proxy_slot_i             ( rdn_in_proxy_slot[chiplet_idx]                              ),
         .remote_done_task_id_i                ( rdn_in_task_id[chiplet_idx]                                 ),
+        .remote_done_reject_i                 ( rdn_in_reject[chiplet_idx]                                  ),
         .remote_export_type_en_i              ( remote_type_en[chiplet_idx]                                 ),
         .remote_done_mismatch_o               ( /* probed below */                                          )
     );
@@ -1096,7 +1119,8 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_sva
     a_move_src: assert property (gen_dut[gi].i_dut.replay_move_fire |->
         fenced[gen_dut[gi].i_dut.replay_src_core][gen_dut[gi].i_dut.replay_src_cluster] &&
         !retired[gen_dut[gi].i_dut.replay_src_core][gen_dut[gi].i_dut.replay_src_cluster]);
-    a_move_dst: assert property ((gen_dut[gi].i_dut.replay_move_fire && !gen_dut[gi].i_dut.replay_rotate) |->
+    a_move_dst: assert property ((gen_dut[gi].i_dut.replay_move_fire && !gen_dut[gi].i_dut.replay_rotate &&
+                                  !gen_dut[gi].i_dut.replay_bounce) |->
         !fenced[gen_dut[gi].i_dut.replay_dst_core][gen_dut[gi].i_dut.replay_dst_cluster]);
     // A held (moved / partly moved) or stuck slot retires nothing
     a_hold_no_retire: assert property (
@@ -1117,6 +1141,18 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_sva
     c_fence:       cover property ($rose(|fenced));
     c_rotate:      cover property (gen_dut[gi].i_dut.replay_rotate);
     c_import:      cover property (|gen_dut[gi].i_dut.import_push);
+    // Level 3: only an imported head is bounced (rejected back), and nothing
+    // is pushed for it; a rejected proxy slot retires nothing more
+    a_bounce_imported: assert property (gen_dut[gi].i_dut.replay_bounce |->
+        (gen_dut[gi].i_dut.replay_move_fire &&
+         gen_dut[gi].i_dut.checkout_head_imported[gen_dut[gi].i_dut.replay_src_core][gen_dut[gi].i_dut.replay_src_cluster] &&
+         (gen_dut[gi].i_dut.replay_push == '0)));
+    a_rejected_no_retire: assert property (
+        (gen_dut[gi].i_dut.remote_rejected_q & gen_dut[gi].i_dut.checkout_retire_valid) == '0);
+    a_rejected_fenced: assert property ((gen_dut[gi].i_dut.remote_rejected_q & ~fenced) == '0);
+    c_bounce:        cover property (gen_dut[gi].i_dut.replay_bounce);
+    c_import_reject: cover property (gen_dut[gi].i_dut.import_reject);
+    c_reject_in:     cover property ($rose(|gen_dut[gi].i_dut.remote_rejected_q));
     c_retire:      cover property ($rose(|retired));
     c_stuck:       cover property ($rose(|stuck));
     c_cross_move:  cover property (gen_dut[gi].i_dut.replay_move_fire &&
@@ -1219,9 +1255,22 @@ logic [NUM_CHIPLET-1:0] done_queue_lock;
 // Fenced / retired slots, for the fault-injecting core worker and the stimuli
 logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] fenced_export  [NUM_CHIPLET];
 logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] retired_export [NUM_CHIPLET];
+// Level 3 / replay state per chiplet (stimuli index these with variables)
+logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stuck_slot_export    [NUM_CHIPLET];
+logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remote_rejected_export [NUM_CHIPLET];
+logic                                                          replay_stuck_export  [NUM_CHIPLET];
+logic                                                          import_fire_export   [NUM_CHIPLET];
+logic [TaskIdWidth-1:0]                                        import_task_export   [NUM_CHIPLET];
+logic                                                          replay_bounce_export [NUM_CHIPLET];
 for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_fenced_export
     assign fenced_export[gi]  = gen_dut[gi].i_dut.core_fenced;
     assign retired_export[gi] = gen_dut[gi].i_dut.core_retired;
+    assign stuck_slot_export[gi]      = gen_dut[gi].i_dut.replay_stuck_slot;
+    assign remote_rejected_export[gi] = gen_dut[gi].i_dut.remote_rejected_q;
+    assign replay_stuck_export[gi]    = gen_dut[gi].i_dut.replay_stuck;
+    assign import_fire_export[gi]     = gen_dut[gi].i_dut.import_fire;
+    assign import_task_export[gi]     = gen_dut[gi].i_dut.import_desc.task_id;
+    assign replay_bounce_export[gi]   = gen_dut[gi].i_dut.replay_bounce;
 end
 
 // Wait until (chip, cluster, core) is retired: fenced and its outstanding tasks replayed.
@@ -1294,6 +1343,11 @@ task automatic core_worker(
         if ((idx == FAULT2_CORE) && (data[TaskIdWidth-1:0] == FAULT2_TASK_ID[TaskIdWidth-1:0])) begin
             $display("[FAULT] %0t chip %0d cluster %0d core %0d: second fault (hang) on task %0d",
                      $time, chip, cluster, core, FAULT2_TASK_ID);
+            forever @(posedge clk_i);
+        end
+        if ((idx == FAULT3_CORE) && (data[TaskIdWidth-1:0] == FAULT3_TASK_ID[TaskIdWidth-1:0])) begin
+            $display("[FAULT] %0t chip %0d cluster %0d core %0d: third fault (hang) on task %0d",
+                     $time, chip, cluster, core, FAULT3_TASK_ID);
             forever @(posedge clk_i);
         end
         if ((idx == fault_core) && (data[TaskIdWidth-1:0] == fault_task_id[TaskIdWidth-1:0])) begin

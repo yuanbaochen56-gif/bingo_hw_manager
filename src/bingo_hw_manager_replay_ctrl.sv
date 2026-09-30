@@ -53,6 +53,9 @@
 // entry is rotated without an export, so it still fires after D's earlier
 // tasks. D's done FIFO may already hold remote dones when an aborted
 // migration resumes, so DRAIN does not wait for it once D rotated an entry.
+// An entry imported from another chiplet that no live core here may run is
+// bounced instead of stuck: MOVE pops it without a push (bounce_o) and the top
+// sends a reject back to its origin, which marks the proxy slot stuck there.
 module bingo_hw_manager_replay_ctrl #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
@@ -85,6 +88,8 @@ module bingo_hw_manager_replay_ctrl #(
     input  logic                                 export_ready_i,
     // Level 3: core types with an export target (index: CoreTypeId)
     input  logic [2**CoreTypeIdWidth-1:0]        remote_type_en_i,
+    // Level 3: the reject register accepts a bounced entry
+    input  logic                                 bounce_ready_i,
 
     output logic [NumCores-1:0][NumClusters-1:0] retired_o,
     output logic [NumCores-1:0][NumClusters-1:0] ready_flush_o,
@@ -108,7 +113,10 @@ module bingo_hw_manager_replay_ctrl #(
     // Level 3: this MOVE step rotates the head of the source (dst = src) and,
     // with export_o, copies it to the export FIFO
     output logic                      rotate_o,
-    output logic                      export_o
+    output logic                      export_o,
+    // Level 3: this MOVE step drops the (imported) head of the source without
+    // a push; the top rejects it back to its origin chiplet
+    output logic                      bounce_o
 );
 
     localparam bit RemoteEn = SubstituteLevelMask[2];
@@ -218,6 +226,7 @@ module bingo_hw_manager_replay_ctrl #(
         rotated_d     = rotated_q;
         rotate_o      = 1'b0;
         export_o      = 1'b0;
+        bounce_o      = 1'b0;
 
         // A partly moved slot waiting for a stuck slot can never resume
         for (int unsigned c = 0; c < NumCores; c++) begin
@@ -265,6 +274,13 @@ module bingo_hw_manager_replay_ctrl #(
                         rotate_o    = 1'b1;
                         export_o    = !head_no_exec;
                         rotated_d[src_core_q][src_cluster_q] = 1'b1;
+                    end
+                end else if (!dst_found && RemoteEn && checkout_imported_i[src_core_q][src_cluster_q]) begin
+                    // Level 3: an imported entry nobody here may run goes back
+                    // to its origin as a reject
+                    if (bounce_ready_i) begin
+                        move_fire_o = 1'b1;
+                        bounce_o    = 1'b1;
                     end
                 end else if (!dst_found) begin
                     stuck_d[src_core_q][src_cluster_q] = 1'b1;
