@@ -27,6 +27,11 @@
 //
 // In the cycle a slot is fenced (and the cycle after reset) the table is being
 // written: smt_update_o asks its readers to wait one cycle.
+//
+// Power and load view of the slots (fault-aware): a fenced slot is dead, so it
+// no longer keeps its power domain at the normal level (pm_idle_o: polling for a
+// task, or fenced) and no longer counts as load (load_clear_o). A slot that is
+// only dead_suspect may still be working and keeps both.
 module bingo_hw_manager_ctrl #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
@@ -44,6 +49,13 @@ module bingo_hw_manager_ctrl #(
 
     // Watchdog: confirmed dead slots (sticky)
     input  logic [NumCores-1:0][NumClusters-1:0] fenced_i,
+    // Slots polling their ready queue (idle)
+    input  logic [NumCores-1:0][NumClusters-1:0] waiting_i,
+
+    // Power manager: slots that do not keep their domain at the normal level
+    output logic [NumCores-1:0][NumClusters-1:0] pm_idle_o,
+    // Load monitor: slots whose pending count is cleared
+    output logic [NumCores-1:0][NumClusters-1:0] load_clear_o,
 
     // Slot mapping table, indexed by logical slot
     output logic [NumCores-1:0][NumClusters-1:0]                     smt_found_o,
@@ -129,6 +141,12 @@ module bingo_hw_manager_ctrl #(
     assign smt_core_o    = smt_core_q;
     assign smt_cluster_o = smt_cluster_q;
     assign smt_update_o  = init_q || (|fence_new);
+
+    // ------------------------------------------------------------------
+    // Fault-aware power and load view
+    // ------------------------------------------------------------------
+    assign pm_idle_o    = waiting_i | fenced_i;
+    assign load_clear_o = fenced_i;
 
 `ifndef SYNTHESIS
     // Outside an update cycle the table equals the combinational choice

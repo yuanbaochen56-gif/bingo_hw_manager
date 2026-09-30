@@ -697,6 +697,9 @@ module bingo_hw_manager_top #(
     ///////////////////////////////////////
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] heartbeat_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_status_waiting_task;
+    // Control plane (bingo_hw_manager_ctrl): power / load view of the slots
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_idle;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_load_clear;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect;
@@ -1761,8 +1764,9 @@ module bingo_hw_manager_top #(
         .normal_power_level_i  ( bingo_hw_manager_normal_power_level_i  ),
         .pm_base_addr_i        ( bingo_hw_manager_pm_base_addr_i        ),
         .core_power_domain_i   ( bingo_hw_manager_core_power_domain_i   ),
-        // Internal Core status
-        .core_status_waiting_task_i ( core_status_waiting_task         ),
+        // Internal Core status: polling or fenced (bingo_hw_manager_ctrl), so a
+        // dead core does not keep its domain at the normal level
+        .core_status_waiting_task_i ( ctrl_pm_idle                     ),
         // DVFS mode: monitor + notify host
         .pm_mode_i             ( bingo_hw_manager_pm_mode_i             ),
         .dvfs_clint_msip_addr_i( bingo_hw_manager_dvfs_clint_msip_addr_i),
@@ -1836,6 +1840,9 @@ module bingo_hw_manager_top #(
         .clk_i          ( clk_i        ),
         .rst_ni         ( rst_ni       ),
         .fenced_i       ( core_fenced  ),
+        .waiting_i      ( core_status_waiting_task ),
+        .pm_idle_o      ( ctrl_pm_idle     ),
+        .load_clear_o   ( ctrl_load_clear  ),
         .smt_found_o    ( smt_found    ),
         .smt_core_o     ( smt_core     ),
         .smt_cluster_o  ( smt_cluster  ),
@@ -2473,6 +2480,7 @@ module bingo_hw_manager_top #(
         .rst_ni             (rst_ni),
         .task_dispatched_i  (ready_queue_pop),
         .task_done_i        (done_q_push),
+        .clear_i            (ctrl_load_clear),
         .pending_per_core_o (/* CSR readable — connect when needed */),
         .total_pending_o    (load_total_pending_o)
     );

@@ -9,6 +9,7 @@
 //
 // Tracks the number of pending tasks per (core, cluster) pair.
 // Increments on dispatch (ready queue pop), decrements on completion (done queue push).
+// clear_i holds a pair at zero (a fenced core: its task will never complete there).
 // Exposes per-core and total pending counts for host-driven load balancing.
 
 module bingo_hw_manager_load_monitor #(
@@ -22,6 +23,8 @@ module bingo_hw_manager_load_monitor #(
     input  logic [NumCores-1:0][NumClusters-1:0] task_dispatched_i,
     // Completion events (from done queue push)
     input  logic [NumCores-1:0][NumClusters-1:0] task_done_i,
+    // Hold the count at zero (e.g. fenced core)
+    input  logic [NumCores-1:0][NumClusters-1:0] clear_i,
     // Status outputs (CSR readable)
     output logic [CounterWidth-1:0] pending_per_core_o [NumCores][NumClusters],
     output logic [CounterWidth+2:0] total_pending_o
@@ -37,7 +40,9 @@ module bingo_hw_manager_load_monitor #(
         end else begin
             for (int c = 0; c < NumCores; c++) begin
                 for (int cl = 0; cl < NumClusters; cl++) begin
-                    if (task_dispatched_i[c][cl] && !task_done_i[c][cl]) begin
+                    if (clear_i[c][cl]) begin
+                        pending_q[c][cl] <= '0;
+                    end else if (task_dispatched_i[c][cl] && !task_done_i[c][cl]) begin
                         if (pending_q[c][cl] < {CounterWidth{1'b1}})
                             pending_q[c][cl] <= pending_q[c][cl] + 1;
                     end else if (!task_dispatched_i[c][cl] && task_done_i[c][cl]) begin

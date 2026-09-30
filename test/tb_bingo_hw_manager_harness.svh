@@ -107,6 +107,13 @@ import axi_test::*;
 `ifndef TB_REMOTE_TARGET_TYPES
   `define TB_REMOTE_TARGET_TYPES 16'hffff
 `endif
+// Idle power management (DFS): every slot in domain 1, idle level 25, normal
+// level 6 (HeMAiA's values); the PM's clk/rst controller writes always complete
+`ifndef TB_PM_ENABLE
+  `define TB_PM_ENABLE 0
+`endif
+localparam int unsigned PM_IDLE_LEVEL   = 25;
+localparam int unsigned PM_NORMAL_LEVEL = 6;
 // Link errors (remote_link error_o) are test failures unless allowed
 `ifndef TB_ALLOW_LINK_ERROR
   `define TB_ALLOW_LINK_ERROR 0
@@ -851,6 +858,14 @@ if (`TB_REMOTE_LINK == 2) begin : gen_rlink
     );
 end
 
+// PM bus: the clk/rst controller takes every write at once
+host_resp_t pm_ready_resp;
+always_comb begin
+    pm_ready_resp          = '0;
+    pm_ready_resp.aw_ready = 1'b1;
+    pm_ready_resp.w_ready  = 1'b1;
+end
+
 // ---------------------------------------------------------------------------
 // DUT Instantiation
 // ---------------------------------------------------------------------------
@@ -910,13 +925,14 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .csr_rsp_o                            ( csr_resp[chiplet_idx]                                       ),
         .csr_rsp_valid_o                      ( csr_resp_valid[chiplet_idx]                                 ),
         .csr_rsp_ready_i                      ( csr_resp_ready[chiplet_idx]                                 ),
-        .bingo_hw_manager_enable_idle_pm_i    ( '0                                                          ),
-        .bingo_hw_manager_idle_power_level_i  ( '0                                                          ),
-        .bingo_hw_manager_normal_power_level_i( '0                                                          ),
+        .bingo_hw_manager_enable_idle_pm_i    ( device_axi_lite_data_t'(`TB_PM_ENABLE)                        ),
+        .bingo_hw_manager_idle_power_level_i  ( device_axi_lite_data_t'(PM_IDLE_LEVEL)                        ),
+        .bingo_hw_manager_normal_power_level_i( device_axi_lite_data_t'(PM_NORMAL_LEVEL)                      ),
         .bingo_hw_manager_pm_base_addr_i      ( '0                                                          ),
-        .bingo_hw_manager_core_power_domain_i ( '0                                                          ),
+        .bingo_hw_manager_core_power_domain_i ( {(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET){device_axi_lite_data_t'(1)}} ),
+        .bingo_hw_manager_pm_mode_i           ( '0                                                          ),
         .pm_axi_lite_req_o                    ( /* unused */                                                ),
-        .pm_axi_lite_resp_i                   ( '0                                                          ),
+        .pm_axi_lite_resp_i                   ( pm_ready_resp                                               ),
         // DARTS Tier 1: CERF interface (stimulus files can drive these)
         .cerf_write_en_i                      ( cerf_write_en[chiplet_idx]                                   ),
         .cerf_write_data_i                    ( cerf_write_data[chiplet_idx]                                 ),

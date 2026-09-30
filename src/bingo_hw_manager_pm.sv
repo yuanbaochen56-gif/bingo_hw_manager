@@ -497,4 +497,18 @@ module bingo_hw_manager_pm #(
 `endif
     // synopsys translate_on
 
+`ifndef SYNTHESIS
+    // Simulation-only log: every domain level the DFS path applies, every DVFS doorbell
+    always @(posedge clk_i) begin : pm_event_log
+        if (rst_ni) begin
+            if ((state_q == WRITE_VALID_W) && pm_axi_lite_req_o.w_valid && pm_axi_lite_resp_i.w_ready) begin
+                $display("[BINGO_PM] %0t domain=%0d level=%0d", $time, active_domain_id_q, active_target_level_q);
+            end
+            if ((state_q == WRITE_MSIP_W) && pm_axi_lite_req_o.w_valid && pm_axi_lite_resp_i.w_ready) begin
+                $display("[BINGO_PM] %0t dvfs_doorbell level=%0d busy=%0b", $time, desired_chip_level, chip_busy);
+            end
+        end
+    end
+`endif
+
 endmodule

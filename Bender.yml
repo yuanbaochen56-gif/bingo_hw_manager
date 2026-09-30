@@ -97,6 +97,7 @@ sources:
       - test/tb_bingo_hw_manager_rlink_no_target.sv        # level 3 over remote_link: a type without a target is stuck, others export
       - test/tb_bingo_hw_manager_rlink_reject.sv           # level 3 over remote_link: reject on import, the link keeps working
       - test/tb_bingo_hw_manager_rlink_bounce.sv           # level 3 over remote_link: the executing core dies, imports bounce back
+      - test/tb_bingo_hw_manager_pm_fault_aware.sv         # control plane: a fenced core does not keep its power domain awake
       - test/tb_bingo_hw_manager_rlink_random.sv           # level 3 over remote_link: random (scripts/run_replay_random.sh)
       - test/tb_bingo_hw_manager_rlink_random_reject.sv    # level 3 over remote_link: random, a hang on each chiplet (rejects)
       - test/tb_bingo_hw_manager_replay_random.sv          # random graph + random fault (scripts/run_replay_random.sh)
