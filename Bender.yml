@@ -80,6 +80,9 @@ sources:
       - test/tb_bingo_hw_manager_xcl_two_faults.sv         # level 2: two dead cores, two clusters
       - test/tb_bingo_hw_manager_xcl_no_substitute.sv      # level 2: none in the chiplet, rest runs
       - test/tb_bingo_hw_manager_xcl_disabled.sv           # level 2 off (default): stuck
+      - test/tb_bingo_hw_manager_remote_dispatch.sv        # level 3: dead core's tasks run on the other chiplet
+      - test/tb_bingo_hw_manager_remote_full_queue.sv      # level 3: export from a full checkout queue, in order
+      - test/tb_bingo_hw_manager_remote_no_executor.sv     # level 3: no live core of the type anywhere
       - test/tb_bingo_hw_manager_replay_random.sv          # random graph + random fault (scripts/run_replay_random.sh)
 
   # NOTE: Generated test files in test/generated/ are NOT listed here.
