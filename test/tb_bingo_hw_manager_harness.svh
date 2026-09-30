@@ -74,6 +74,11 @@ import axi_test::*;
 `ifndef TB_SUBSTITUTE_LEVEL_MASK
   `define TB_SUBSTITUTE_LEVEL_MASK 3'b001
 `endif
+// Level 3: connect the remote dispatch / done streams of chiplet i to chiplet
+// (i + 1) % NUM_CHIPLET (back to back; needs TB_SUBSTITUTE_LEVEL_MASK[2])
+`ifndef TB_REMOTE_LINK
+  `define TB_REMOTE_LINK 0
+`endif
 // WatchdogCoreMask[core][cluster] of the DUT ('1: all slots monitored)
 `ifndef TB_WATCHDOG_CORE_MASK
   `define TB_WATCHDOG_CORE_MASK '1
@@ -563,6 +568,51 @@ task automatic cerf_write_bitmask(input int chip, input logic [31:0] mask);
 endtask
 
 // ---------------------------------------------------------------------------
+// Level 3 remote streams (per chiplet, see TB_REMOTE_LINK)
+// ---------------------------------------------------------------------------
+localparam int unsigned REMOTE_SLOT_W = cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET);
+logic                     rd_valid       [NUM_CHIPLET];
+logic                     rd_ready       [NUM_CHIPLET];
+host_axi_lite_data_t      rd_desc        [NUM_CHIPLET];
+logic [3:0]               rd_core_type   [NUM_CHIPLET];
+chip_id_t                 rd_origin_chip [NUM_CHIPLET];
+logic [REMOTE_SLOT_W-1:0] rd_proxy_slot  [NUM_CHIPLET];
+logic                     rdn_valid      [NUM_CHIPLET];
+logic                     rdn_ready      [NUM_CHIPLET];
+chip_id_t                 rdn_chip       [NUM_CHIPLET];
+logic [REMOTE_SLOT_W-1:0] rdn_proxy_slot [NUM_CHIPLET];
+logic [TaskIdWidth-1:0]   rdn_task_id    [NUM_CHIPLET];
+// Inputs of chiplet i: exports of its predecessor, dones of its successor
+logic                     rd_in_valid    [NUM_CHIPLET];
+logic                     rd_in_ready    [NUM_CHIPLET];
+logic                     rdn_in_valid   [NUM_CHIPLET];
+logic                     rdn_in_ready   [NUM_CHIPLET];
+int unsigned              remote_export_count [NUM_CHIPLET];
+int unsigned              remote_import_count [NUM_CHIPLET];
+for (genvar i = 0; i < NUM_CHIPLET; i++) begin : gen_remote_link
+    localparam int unsigned Pred = (i + NUM_CHIPLET - 1) % NUM_CHIPLET;
+    localparam int unsigned Succ = (i + 1) % NUM_CHIPLET;
+    // chiplet i exports to Succ and gets the dones of its exports from Succ
+    assign rd_in_valid[i]  = (`TB_REMOTE_LINK != 0) && rd_valid[Pred];
+    assign rd_in_ready[i]  = (`TB_REMOTE_LINK != 0) && rd_ready[Succ];
+    assign rdn_in_valid[i] = (`TB_REMOTE_LINK != 0) && rdn_valid[Succ] && (rdn_chip[Succ] == chip_id_t'(i));
+    assign rdn_in_ready[i] = (`TB_REMOTE_LINK != 0) && rdn_ready[Pred];
+    initial begin
+        remote_export_count[i] = 0;
+        remote_import_count[i] = 0;
+    end
+    always @(posedge clk_i) begin
+        if (rst_ni) begin
+            if (rd_valid[i] && rd_in_ready[i]) remote_export_count[i]++;
+            if (rd_in_valid[i] && rd_ready[i]) remote_import_count[i]++;
+            if ((`TB_REMOTE_LINK != 0) && rdn_valid[i] && (rdn_chip[i] != chip_id_t'(Pred))) begin
+                $error("[REMOTE_LINK] chip %0d sends a done to chip %0d, expected %0d", i, rdn_chip[i], Pred);
+            end
+        end
+    end
+end
+
+// ---------------------------------------------------------------------------
 // DUT Instantiation
 // ---------------------------------------------------------------------------
 for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : gen_dut
@@ -635,7 +685,29 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .load_total_pending_o                 ( /* unused */                                                ),
         // Watchdog / replay status (probed hierarchically by the stimuli)
         .core_fenced_o                        ( /* unused */                                                ),
-        .replay_stuck_o                       ( /* unused */                                                )
+        .replay_stuck_o                       ( /* unused */                                                ),
+        // Level 3 remote dispatch (see gen_remote_link)
+        .remote_dispatch_valid_o              ( rd_valid[chiplet_idx]                                       ),
+        .remote_dispatch_ready_i              ( rd_in_ready[chiplet_idx]                                    ),
+        .remote_dispatch_desc_o               ( rd_desc[chiplet_idx]                                        ),
+        .remote_dispatch_core_type_o          ( rd_core_type[chiplet_idx]                                   ),
+        .remote_dispatch_origin_chip_o        ( rd_origin_chip[chiplet_idx]                                 ),
+        .remote_dispatch_proxy_slot_o         ( rd_proxy_slot[chiplet_idx]                                  ),
+        .remote_dispatch_valid_i              ( rd_in_valid[chiplet_idx]                                    ),
+        .remote_dispatch_ready_o              ( rd_ready[chiplet_idx]                                       ),
+        .remote_dispatch_desc_i               ( rd_desc[(chiplet_idx + NUM_CHIPLET - 1) % NUM_CHIPLET]      ),
+        .remote_dispatch_core_type_i          ( rd_core_type[(chiplet_idx + NUM_CHIPLET - 1) % NUM_CHIPLET] ),
+        .remote_dispatch_origin_chip_i        ( rd_origin_chip[(chiplet_idx + NUM_CHIPLET - 1) % NUM_CHIPLET] ),
+        .remote_dispatch_proxy_slot_i         ( rd_proxy_slot[(chiplet_idx + NUM_CHIPLET - 1) % NUM_CHIPLET] ),
+        .remote_done_valid_o                  ( rdn_valid[chiplet_idx]                                      ),
+        .remote_done_ready_i                  ( rdn_in_ready[chiplet_idx]                                   ),
+        .remote_done_chip_o                   ( rdn_chip[chiplet_idx]                                       ),
+        .remote_done_proxy_slot_o             ( rdn_proxy_slot[chiplet_idx]                                 ),
+        .remote_done_task_id_o                ( rdn_task_id[chiplet_idx]                                    ),
+        .remote_done_valid_i                  ( rdn_in_valid[chiplet_idx]                                   ),
+        .remote_done_ready_o                  ( rdn_ready[chiplet_idx]                                      ),
+        .remote_done_proxy_slot_i             ( rdn_proxy_slot[(chiplet_idx + 1) % NUM_CHIPLET]             ),
+        .remote_done_task_id_i                ( rdn_task_id[(chiplet_idx + 1) % NUM_CHIPLET]                )
     );
 end
 
@@ -701,8 +773,10 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_retire_scoreboard
             // Retirements
             for (int p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                    // (an imported entry is scoreboarded on its origin chiplet)
                     if (gen_dut[gi].i_dut.checkout_queue_pop[p][cl] &&
-                        !gen_dut[gi].i_dut.replay_pop[p][cl]) begin
+                        !gen_dut[gi].i_dut.replay_pop[p][cl] &&
+                        !gen_dut[gi].i_dut.checkout_head_imported[p][cl]) begin
                         automatic bingo_hw_manager_task_desc_t d = gen_dut[gi].i_dut.checkout_queue_data_out[p][cl];
                         automatic int logical    = d.assigned_core_id;
                         automatic int logical_cl = d.assigned_cluster_id;
@@ -795,10 +869,11 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_sva
     a_stuck_fenced:   assert property ((stuck & ~fenced) == '0);
     a_retired_stuck:  assert property ((retired & stuck) == '0);
     // A MOVE step goes from a fenced, unretired slot to a live other slot
+    // (level 3: or rotates the source's head)
     a_move_src: assert property (gen_dut[gi].i_dut.replay_move_fire |->
         fenced[gen_dut[gi].i_dut.replay_src_core][gen_dut[gi].i_dut.replay_src_cluster] &&
         !retired[gen_dut[gi].i_dut.replay_src_core][gen_dut[gi].i_dut.replay_src_cluster]);
-    a_move_dst: assert property (gen_dut[gi].i_dut.replay_move_fire |->
+    a_move_dst: assert property ((gen_dut[gi].i_dut.replay_move_fire && !gen_dut[gi].i_dut.replay_rotate) |->
         !fenced[gen_dut[gi].i_dut.replay_dst_core][gen_dut[gi].i_dut.replay_dst_cluster]);
     // A held (moved / partly moved) or stuck slot retires nothing
     a_hold_no_retire: assert property (
@@ -808,7 +883,17 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_sva
     // A fenced slot gets no ready push (it would never run the task)
     a_no_ready_push_fenced: assert property ((fenced & gen_dut[gi].i_dut.ready_queue_push) == '0);
 
+    // Level 3: an exported entry never gets a ready push; an imported one
+    // never enters a fenced slot
+    a_rotate_self: assert property (gen_dut[gi].i_dut.replay_rotate |->
+        ((gen_dut[gi].i_dut.replay_src_core == gen_dut[gi].i_dut.replay_dst_core) &&
+         (gen_dut[gi].i_dut.replay_src_cluster == gen_dut[gi].i_dut.replay_dst_cluster) &&
+         !gen_dut[gi].i_dut.replay_push_ready_q));
+    a_import_live: assert property ((fenced & gen_dut[gi].i_dut.import_push) == '0);
+
     c_fence:       cover property ($rose(|fenced));
+    c_rotate:      cover property (gen_dut[gi].i_dut.replay_rotate);
+    c_import:      cover property (|gen_dut[gi].i_dut.import_push);
     c_retire:      cover property ($rose(|retired));
     c_stuck:       cover property ($rose(|stuck));
     c_cross_move:  cover property (gen_dut[gi].i_dut.replay_move_fire &&
