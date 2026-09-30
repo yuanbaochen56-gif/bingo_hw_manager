@@ -32,6 +32,7 @@ sources:
   - src/bingo_hw_manager_chiplet_dep_set.sv    # Chiplet DependencySetModule (The Master port to send chiplet dep set info to other chiplets)
   - src/bingo_hw_manager_dep_check_manager.sv  # Dependency Check Manager Module
   - src/bingo_hw_manager_pm.sv                 # Power Management Module
+  - src/bingo_hw_manager_remote_link.sv        # Level 3 transport: remote dispatch / done over AXI-Lite
   # Level 2
   - src/bingo_hw_manager_top.sv                # Top-level module
   - target: test
@@ -83,6 +84,8 @@ sources:
       - test/tb_bingo_hw_manager_remote_dispatch.sv        # level 3: dead core's tasks run on the other chiplet
       - test/tb_bingo_hw_manager_remote_full_queue.sv      # level 3: export from a full checkout queue, in order
       - test/tb_bingo_hw_manager_remote_no_executor.sv     # level 3: no live core of the type anywhere
+      - test/tb_bingo_hw_manager_remote_done_mismatch.sv   # level 3: wrong remote done task id stops the proxy
+      - test/tb_bingo_hw_manager_remote_link.sv            # level 3 transport adapter unit test
       - test/tb_bingo_hw_manager_replay_random.sv          # random graph + random fault (scripts/run_replay_random.sh)
 
   # NOTE: Generated test files in test/generated/ are NOT listed here.

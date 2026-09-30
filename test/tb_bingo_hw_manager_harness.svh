@@ -80,6 +80,12 @@ import axi_test::*;
   `define TB_REMOTE_LINK 0
 `endif
 // WatchdogCoreMask[core][cluster] of the DUT ('1: all slots monitored)
+// A remote done that does not match the proxy head is an error unless a test
+// provokes it
+`ifndef TB_ALLOW_DONE_MISMATCH
+  `define TB_ALLOW_DONE_MISMATCH 0
+`endif
+
 `ifndef TB_WATCHDOG_CORE_MASK
   `define TB_WATCHDOG_CORE_MASK '1
 `endif
@@ -707,8 +713,14 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .remote_done_valid_i                  ( rdn_in_valid[chiplet_idx]                                   ),
         .remote_done_ready_o                  ( rdn_ready[chiplet_idx]                                      ),
         .remote_done_proxy_slot_i             ( rdn_proxy_slot[(chiplet_idx + 1) % NUM_CHIPLET]             ),
-        .remote_done_task_id_i                ( rdn_task_id[(chiplet_idx + 1) % NUM_CHIPLET]                )
+        .remote_done_task_id_i                ( rdn_task_id[(chiplet_idx + 1) % NUM_CHIPLET]                ),
+        .remote_done_mismatch_o               ( /* probed below */                                          )
     );
+    always @(posedge clk_i) begin
+        if (rst_ni && (`TB_ALLOW_DONE_MISMATCH == 0) && i_dut.remote_done_mismatch_o) begin
+            $error("[REMOTE_LINK] chip %0d: remote done does not match the proxy head", chiplet_idx);
+        end
+    end
 end
 
 // ---------------------------------------------------------------------------

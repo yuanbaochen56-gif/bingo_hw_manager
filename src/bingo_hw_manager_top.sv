@@ -195,7 +195,10 @@ module bingo_hw_manager_top #(
     input  logic                                remote_done_valid_i = 1'b0,
     output logic                                remote_done_ready_o,
     input  logic [RemoteSlotIdWidth-1:0]        remote_done_proxy_slot_i = '0,
-    input  logic [TaskIdWidth-1:0]              remote_done_task_id_i = '0
+    input  logic [TaskIdWidth-1:0]              remote_done_task_id_i = '0,
+    // Sticky: the done at the head of a proxy slot's done queue does not
+    // belong to its exported head task (the slot then stops retiring)
+    output logic                                remote_done_mismatch_o
 );
     // --------Type definitions and signal declarations--------------------//
     // ---- Start of Type definitions -------------------------------------//
@@ -549,6 +552,8 @@ module bingo_hw_manager_top #(
     remote_tag_t                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_remote_tag_out;
     // Checkout head imported from another chiplet: retires into the remote done stream
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_head_imported;
+    logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remote_head_mismatch;
+    logic                                                                                    remote_done_mismatch_q;
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_retire_valid;
     // Level 3 export (origin side)
     logic [NUM_CORES_PER_CLUSTER-1:0]                                       remap_remote;
@@ -1325,9 +1330,17 @@ module bingo_hw_manager_top #(
             // own done, for the local and the chiplet dep_set path alike.
             assign checkout_head_exec[core][cluster] = (checkout_queue_data_out[core][cluster].task_type == 2'b00) ||
                                                        (checkout_queue_data_out[core][cluster].task_type == 2'b10);
+            // Level 3: an exported head only retires on the remote done of the
+            // same task (the dones of a proxy slot come back in export order)
+            assign remote_head_mismatch[core][cluster] = RemoteEn &&
+                checkout_remote_tag_out[core][cluster].exported &&
+                !checkout_queue_empty[core][cluster] && checkout_head_exec[core][cluster] &&
+                !done_q_empty[core][cluster] &&
+                (done_q_info[core][cluster].task_id != checkout_queue_data_out[core][cluster].task_id);
             assign checkout_retire_valid[core][cluster] = !checkout_queue_empty[core][cluster] &&
                                                           !replay_hold_slot[core][cluster] &&
                                                           !replay_stuck_slot[core][cluster] &&
+                                                          !remote_head_mismatch[core][cluster] &&
                                                           (!checkout_head_exec[core][cluster] ||
                                                            !done_q_empty[core][cluster]);
             assign stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] =
@@ -1777,6 +1790,11 @@ module bingo_hw_manager_top #(
     );
     assign replay_stuck   = |replay_stuck_slot;
     assign replay_stuck_o = replay_stuck;
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) remote_done_mismatch_q <= 1'b0;
+        else         remote_done_mismatch_q <= remote_done_mismatch_q | (|remote_head_mismatch);
+    end
+    assign remote_done_mismatch_o = remote_done_mismatch_q;
     assign replay_data    = checkout_queue_data_out[replay_src_core][replay_src_cluster];
 
     always_comb begin : compose_replay_signals
