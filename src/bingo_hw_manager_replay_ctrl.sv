@@ -42,7 +42,8 @@
 //
 // Level 3 (SubstituteLevelMask[2], remote chiplet): an entry that no live core
 // of the chiplet may run is not stuck if its logical core has a non-zero type
-// and the entry was not itself imported from another chiplet. MOVE then
+// that the transport can export (remote_type_en_i) and the entry was not itself
+// imported from another chiplet. MOVE then
 // rotates it: pops D's head and pushes it back to D's tail (rotate_o, marked
 // exported), and an executing entry is also copied to the export FIFO
 // (export_o). D stays the proxy of these entries: the remote done of an
@@ -82,6 +83,8 @@ module bingo_hw_manager_replay_ctrl #(
     input  logic [NumCores-1:0][NumClusters-1:0] checkout_imported_i,
     // Level 3: the export FIFO accepts an entry
     input  logic                                 export_ready_i,
+    // Level 3: core types with an export target (index: CoreTypeId)
+    input  logic [2**CoreTypeIdWidth-1:0]        remote_type_en_i,
 
     output logic [NumCores-1:0][NumClusters-1:0] retired_o,
     output logic [NumCores-1:0][NumClusters-1:0] ready_flush_o,
@@ -200,7 +203,8 @@ module bingo_hw_manager_replay_ctrl #(
     assign head_no_exec  = checkout_no_exec_i[src_core_q][src_cluster_q];
     assign head_exported = RemoteEn && checkout_exported_i[src_core_q][src_cluster_q];
     assign can_rotate    = RemoteEn && !checkout_imported_i[src_core_q][src_cluster_q] &&
-                           (CoreTypeId[head_logical_core][head_logical_cluster] != '0);
+                           (CoreTypeId[head_logical_core][head_logical_cluster] != '0) &&
+                           remote_type_en_i[CoreTypeId[head_logical_core][head_logical_cluster]];
     assign dst_space    = !checkout_full_i[dst_core][dst_cluster] &&
                           (head_no_exec || !ready_full_i[dst_core][dst_cluster]);
 

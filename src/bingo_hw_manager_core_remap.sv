@@ -18,9 +18,10 @@
 //   The choice only depends on the set of fenced cores, so consecutive tasks
 //   of one dead core land on the same substitute, in order. Without such a
 //   substitute the task is held, unless level 3 (SubstituteLevelMask[2]) is
-//   enabled and the core has a non-zero type: then it stays on its (retired)
-//   logical slot, which acts as the proxy of a remote chiplet, and remote_o
-//   tells the top to export it instead of pushing it to the ready queue.
+//   enabled and the core has a non-zero type that the transport can export
+//   (remote_type_en_i): then it stays on its (retired) logical slot, which acts
+//   as the proxy of a remote chiplet, and remote_o tells the top to export it
+//   instead of pushing it to the ready queue.
 // - Dummy-set and CERF-skipped tasks (remappable_i = 0) never execute on a
 //   core; they stay on their logical core even when it is retired (its checkout
 //   FIFO still retires them).
@@ -50,6 +51,8 @@ module bingo_hw_manager_core_remap #(
     // Core status from the watchdog / replay controller
     input  logic [NumCores-1:0][NumClusters-1:0] core_fenced_i,
     input  logic [NumCores-1:0][NumClusters-1:0] core_retired_i,
+    // Level 3: core types with an export target (index: CoreTypeId)
+    input  logic [2**CoreTypeIdWidth-1:0] remote_type_en_i,
     // Selected physical core/cluster
     output logic select_valid_o,
     output logic [CoreIdWidth-1:0] physical_core_o,
@@ -64,12 +67,14 @@ module bingo_hw_manager_core_remap #(
     logic [CoreIdWidth-1:0]    sub_core;
     logic [ClusterIdWidth-1:0] sub_cluster;
     logic                      logical_typed;
+    logic                      logical_exportable;
 
     assign logical_in_range = (int'(logical_core_i) < NumCores) &&
                               (int'(logical_cluster_i) < NumClusters);
     assign logical_fenced   = logical_in_range && core_fenced_i[logical_core_i][logical_cluster_i];
     assign logical_retired  = logical_in_range && core_retired_i[logical_core_i][logical_cluster_i];
     assign logical_typed    = logical_in_range && (CoreTypeId[logical_core_i][logical_cluster_i] != '0);
+    assign logical_exportable = logical_typed && remote_type_en_i[CoreTypeId[logical_core_i][logical_cluster_i]];
 
     // The logical core is fenced whenever its substitute is used, so the
     // selector never returns the logical core itself here.
@@ -105,7 +110,7 @@ module bingo_hw_manager_core_remap #(
                 if (sub_found) begin
                     physical_core_o    = sub_core;
                     physical_cluster_o = sub_cluster;
-                end else if (SubstituteLevelMask[2] && logical_typed) begin
+                end else if (SubstituteLevelMask[2] && logical_exportable) begin
                     select_valid_o = 1'b1;
                     remote_o       = 1'b1;
                 end

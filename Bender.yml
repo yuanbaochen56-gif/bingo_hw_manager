@@ -93,6 +93,7 @@ sources:
       - test/tb_bingo_hw_manager_rlink_done_order.sv       # level 3 over remote_link: two proxy slots, done order
       - test/tb_bingo_hw_manager_rlink_credit_exhaust.sv   # level 3 over remote_link: one credit
       - test/tb_bingo_hw_manager_rlink_loopback.sv         # level 3 over remote_link: single-chiplet loopback (force remote)
+      - test/tb_bingo_hw_manager_rlink_no_target.sv        # level 3 over remote_link: a type without a target is stuck, others export
       - test/tb_bingo_hw_manager_rlink_random.sv           # level 3 over remote_link: random (scripts/run_replay_random.sh)
       - test/tb_bingo_hw_manager_replay_random.sv          # random graph + random fault (scripts/run_replay_random.sh)
 

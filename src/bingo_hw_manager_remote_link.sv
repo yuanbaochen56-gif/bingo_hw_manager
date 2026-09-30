@@ -10,6 +10,7 @@
 //     priority over an export. Single outstanding write: AW + W, then B.
 //     Export destination: static table RemoteTargetChip[core type]
 //     ({valid, chip id}); an invalid entry is never exported (ready held low).
+//     target_valid_o tells bingo which types it may export at all.
 //     Done destination: done_out_chip_i (origin of the imported task).
 // RX: one AXI-Lite slave spanning two 4 KiB pages at base_addr_i:
 //     page 0 (+0x0000) dispatch mailbox, page 1 (+0x1000) done mailbox. Each is
@@ -109,6 +110,9 @@ module bingo_hw_manager_remote_link #(
     input  resp_t                                  mst_resp_i,
     input  req_t                                   slv_req_i,
     output resp_t                                  slv_resp_o,
+    // Core types with a valid RemoteTargetChip entry (to bingo_hw_manager_top
+    // remote_export_type_en_i: the other types are never exported)
+    output logic [NumCoreTypes-1:0]                target_valid_o,
     // Status
     output logic [4:0]                             error_o,
     output logic [NumPeers-1:0][CreditWidth-1:0]   credits_o
@@ -169,6 +173,10 @@ module bingo_hw_manager_remote_link #(
             $fatal(1, "remote_link: RemoteTargetChip[%0d] = %0d is not in PeerChipId", t,
                    RemoteTargetChip[t][ChipIdWidth-1:0]);
         end
+    end
+
+    for (genvar t = 0; t < NumCoreTypes; t++) begin : gen_target_valid
+        assign target_valid_o[t] = RemoteTargetChip[t][ChipIdWidth];
     end
 
     // Runtime peer lookup

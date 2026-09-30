@@ -207,6 +207,11 @@ module bingo_hw_manager_top #(
     output logic                                remote_done_ready_o,
     input  logic [RemoteSlotIdWidth-1:0]        remote_done_proxy_slot_i = '0,
     input  logic [TaskIdWidth-1:0]              remote_done_task_id_i = '0,
+    // Core types the transport can export (it has a target chiplet for them),
+    // e.g. bingo_hw_manager_remote_link target_valid_o. A fenced core of another
+    // type without a local substitute is stuck, as without level 3, instead of
+    // waiting forever in the export FIFO. Default: every type.
+    input  logic [2**CoreTypeIdWidth-1:0]       remote_export_type_en_i = '1,
     // Sticky: the done at the head of a proxy slot's done queue does not
     // belong to its exported head task (the slot then stops retiring)
     output logic                                remote_done_mismatch_o
@@ -1786,6 +1791,7 @@ module bingo_hw_manager_top #(
         .checkout_exported_i        ( replay_head_exported        ),
         .checkout_imported_i        ( checkout_head_imported      ),
         .export_ready_i             ( !export_full                ),
+        .remote_type_en_i           ( remote_export_type_en_i     ),
         .retired_o               ( core_retired           ),
         .ready_flush_o           ( replay_ready_flush     ),
         .move_o                  ( replay_move            ),
@@ -1870,6 +1876,7 @@ module bingo_hw_manager_top #(
             .remappable_i(remap_remappable[core]),
             .core_fenced_i(core_fenced),
             .core_retired_i(core_retired),
+            .remote_type_en_i(remote_export_type_en_i),
             .select_valid_o(remap_select_valid_raw[core]),
             .physical_core_o(remap_physical_core[core]),
             .physical_cluster_o(remap_physical_cluster[core]),

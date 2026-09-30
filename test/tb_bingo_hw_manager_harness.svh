@@ -94,6 +94,12 @@ import axi_test::*;
 `ifndef TB_REMOTE_STALL
   `define TB_REMOTE_STALL 1
 `endif
+// Core types (bit = CoreTypeId) with an export target: mode 2 gives the other
+// types no RemoteTargetChip entry, and every mode passes the mask to the top
+// (remote_export_type_en_i)
+`ifndef TB_REMOTE_TARGET_TYPES
+  `define TB_REMOTE_TARGET_TYPES 16'hffff
+`endif
 // Link errors (remote_link error_o) are test failures unless allowed
 `ifndef TB_ALLOW_LINK_ERROR
   `define TB_ALLOW_LINK_ERROR 0
@@ -621,6 +627,8 @@ logic                     rdn_in_valid      [NUM_CHIPLET];
 logic                     rdn_in_ready      [NUM_CHIPLET];
 logic [REMOTE_SLOT_W-1:0] rdn_in_proxy_slot [NUM_CHIPLET];
 logic [TaskIdWidth-1:0]   rdn_in_task_id    [NUM_CHIPLET];
+localparam logic [15:0]   REMOTE_TARGET_TYPES = `TB_REMOTE_TARGET_TYPES;
+logic [15:0]              remote_type_en    [NUM_CHIPLET];  // to the top (remote_export_type_en_i)
 int unsigned              remote_export_count [NUM_CHIPLET];
 int unsigned              remote_import_count [NUM_CHIPLET];
 int unsigned              remote_done_in_count [NUM_CHIPLET];
@@ -644,6 +652,7 @@ for (genvar i = 0; i < NUM_CHIPLET; i++) begin : gen_remote_link
         assign rdn_in_proxy_slot[i] = rdn_proxy_slot[Succ];
         assign rdn_in_task_id[i]    = rdn_task_id[Succ];
         assign remote_link_error[i] = '0;
+        assign remote_type_en[i]    = REMOTE_TARGET_TYPES;
     end
     initial begin
         remote_export_count[i]    = 0;
@@ -690,6 +699,10 @@ for (genvar i = 0; i < NUM_CHIPLET; i++) begin : gen_remote_link
     end
 end
 
+function automatic logic [15:0][ChipIdWidth:0] rl_targets(input int unsigned succ);
+    for (int unsigned t = 0; t < 16; t++) rl_targets[t] = {REMOTE_TARGET_TYPES[t], ChipIdWidth'(succ)};
+endfunction
+
 if (`TB_REMOTE_LINK == 2) begin : gen_rlink
     localparam int unsigned RlNumPeers = (NUM_CHIPLET <= 2) ? 1 : 2;
     host_req_t  [NUM_CHIPLET-1:0] rl_mst_req, rl_xbar_in_req, rl_xbar_out_req, rl_slv_req;
@@ -715,8 +728,8 @@ if (`TB_REMOTE_LINK == 2) begin : gen_rlink
         localparam int unsigned Succ = (i + 1) % NUM_CHIPLET;
         localparam logic [RlNumPeers-1:0][ChipIdWidth-1:0] Peers =
             (NUM_CHIPLET <= 2) ? (RlNumPeers*ChipIdWidth)'(Succ) : (RlNumPeers*ChipIdWidth)'({8'(Succ), 8'(Pred)});
-        // every core type goes to the successor
-        localparam logic [15:0][ChipIdWidth:0] Targets = {16{1'b1, 8'(Succ)}};
+        // every core type of TB_REMOTE_TARGET_TYPES goes to the successor
+        localparam logic [15:0][ChipIdWidth:0] Targets = rl_targets(Succ);
         logic [RlNumPeers-1:0][$clog2(`TB_REMOTE_CREDITS + 1)-1:0] credits;
         assign rl_addr_map[i] = '{idx: i, start_addr: {8'(i), REMOTE_LINK_BASE[39:0]},
                                   end_addr: {8'(i), REMOTE_LINK_BASE[39:0] + 40'h2000}};
@@ -763,6 +776,7 @@ if (`TB_REMOTE_LINK == 2) begin : gen_rlink
             .mst_resp_i            ( rl_mst_resp[i]       ),
             .slv_req_i             ( rl_slv_req[i]        ),
             .slv_resp_o            ( rl_slv_resp[i]       ),
+            .target_valid_o        ( remote_type_en[i]    ),
             .error_o               ( remote_link_error[i] ),
             .credits_o             ( credits              )
         );
@@ -910,6 +924,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .remote_done_ready_o                  ( rdn_ready[chiplet_idx]                                      ),
         .remote_done_proxy_slot_i             ( rdn_in_proxy_slot[chiplet_idx]                              ),
         .remote_done_task_id_i                ( rdn_in_task_id[chiplet_idx]                                 ),
+        .remote_export_type_en_i              ( remote_type_en[chiplet_idx]                                 ),
         .remote_done_mismatch_o               ( /* probed below */                                          )
     );
     always @(posedge clk_i) begin
