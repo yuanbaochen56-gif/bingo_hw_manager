@@ -75,6 +75,11 @@ sources:
       - test/tb_bingo_hw_manager_replay_stuck_other_core.sv # a stuck core does not block another replay
       - test/tb_bingo_hw_manager_replay_two_clusters.sv    # replay inside cluster 1
       - test/tb_bingo_hw_manager_replay_disabled.sv        # confirm timeout 0: detection only
+      - test/tb_bingo_hw_manager_xcl_fallback.sv           # level 2: substitute in another cluster
+      - test/tb_bingo_hw_manager_xcl_prefer_local.sv       # level 2: own cluster preferred
+      - test/tb_bingo_hw_manager_xcl_two_faults.sv         # level 2: two dead cores, two clusters
+      - test/tb_bingo_hw_manager_xcl_no_substitute.sv      # level 2: none in the chiplet, rest runs
+      - test/tb_bingo_hw_manager_xcl_disabled.sv           # level 2 off (default): stuck
       - test/tb_bingo_hw_manager_replay_random.sv          # random graph + random fault (scripts/run_replay_random.sh)
 
   # NOTE: Generated test files in test/generated/ are NOT listed here.
