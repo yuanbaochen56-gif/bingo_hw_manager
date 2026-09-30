@@ -647,17 +647,18 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_remap_monitor
             for (int p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
                     if (gen_dut[gi].i_dut.remap_route_fire[p][cl]) begin
-                        automatic int src = gen_dut[gi].i_dut.remap_route_src_core[p][cl];
-                        if (src != p) begin
-                            if (gen_dut[gi].i_dut.core_retired[src][cl] !== 1'b1) begin
-                                $error("[REMAP_CHECK] chip %0d: task %0d of non-retired logical core %0d (cluster %0d) placed on physical core %0d",
-                                       gi, gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].task_id, src, cl, p);
+                        automatic int src    = gen_dut[gi].i_dut.remap_route_src_core[p][cl];
+                        automatic int src_cl = gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].assigned_cluster_id;
+                        if ((src != p) || (src_cl != cl)) begin
+                            if (gen_dut[gi].i_dut.core_retired[src][src_cl] !== 1'b1) begin
+                                $error("[REMAP_CHECK] chip %0d: task %0d of non-retired logical core %0d (cluster %0d) placed on physical core %0d cluster %0d",
+                                       gi, gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].task_id, src, src_cl, p, cl);
                             end
                             if (((gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].task_type == 2'b01) &&
                                  gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].dep_set_info.dep_set_en) ||
                                 gen_dut[gi].i_dut.cond_exec_skip[src]) begin
-                                $error("[REMAP_CHECK] chip %0d: non-executing task %0d of logical core %0d (cluster %0d) remapped to physical core %0d",
-                                       gi, gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].task_id, src, cl, p);
+                                $error("[REMAP_CHECK] chip %0d: non-executing task %0d of logical core %0d (cluster %0d) remapped to physical core %0d cluster %0d",
+                                       gi, gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].task_id, src, src_cl, p, cl);
                             end
                         end
                     end
@@ -698,20 +699,22 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_retire_scoreboard
                     if (gen_dut[gi].i_dut.checkout_queue_pop[p][cl] &&
                         !gen_dut[gi].i_dut.replay_pop[p][cl]) begin
                         automatic bingo_hw_manager_task_desc_t d = gen_dut[gi].i_dut.checkout_queue_data_out[p][cl];
-                        automatic int logical = d.assigned_core_id;
+                        automatic int logical    = d.assigned_core_id;
+                        automatic int logical_cl = d.assigned_cluster_id;
                         retire_count[gi][d.task_id]++;
                         if (retire_count[gi][d.task_id] > 1) begin
                             $error("[RETIRE_CHECK] chip %0d: task %0d retired %0d times (core %0d cluster %0d)",
                                    gi, d.task_id, retire_count[gi][d.task_id], p, cl);
                         end
-                        if (retire_expected[gi][cl][logical].size() == 0) begin
+                        // Checked per logical slot: the entry may retire in another cluster
+                        if (retire_expected[gi][logical_cl][logical].size() == 0) begin
                             $error("[RETIRE_CHECK] chip %0d: task %0d of logical core %0d cluster %0d retired but never dispatched",
-                                   gi, d.task_id, logical, cl);
-                        end else if (retire_expected[gi][cl][logical][0] != d.task_id) begin
+                                   gi, d.task_id, logical, logical_cl);
+                        end else if (retire_expected[gi][logical_cl][logical][0] != d.task_id) begin
                             $error("[RETIRE_CHECK] chip %0d: logical core %0d cluster %0d retired task %0d, expected task %0d first",
-                                   gi, logical, cl, d.task_id, retire_expected[gi][cl][logical][0]);
+                                   gi, logical, logical_cl, d.task_id, retire_expected[gi][logical_cl][logical][0]);
                         end else begin
-                            void'(retire_expected[gi][cl][logical].pop_front());
+                            void'(retire_expected[gi][logical_cl][logical].pop_front());
                         end
                     end
                 end
@@ -745,7 +748,8 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_counters
             for (int p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
                     if (gen_dut[gi].i_dut.remap_route_fire[p][cl] &&
-                        (gen_dut[gi].i_dut.remap_route_src_core[p][cl] != p)) begin
+                        ((gen_dut[gi].i_dut.remap_route_src_core[p][cl] != p) ||
+                         (gen_dut[gi].i_dut.waiting_dep_check_task_desc[gen_dut[gi].i_dut.remap_route_src_core[p][cl]].assigned_cluster_id != cl))) begin
                         remap_count[gi]++;
                     end
                 end

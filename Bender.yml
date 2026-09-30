@@ -25,6 +25,7 @@ sources:
   - src/bingo_hw_manager_cond_exec_controller.sv # DARTS: CERF
   - src/bingo_hw_manager_load_monitor.sv         # DARTS: Load Monitor
   - src/bingo_hw_manager_watchdog.sv           # core state monitoring and dead core detection
+  - src/bingo_hw_manager_substitute_sel.sv     # Substitute of a fenced core (remap and replay)
   - src/bingo_hw_manager_core_remap.sv         # Core remap selector
   - src/bingo_hw_manager_replay_ctrl.sv        # Replay of a fenced core's outstanding tasks
   - src/bingo_hw_manager_dep_matrix.sv         # Dependency Matrix Module

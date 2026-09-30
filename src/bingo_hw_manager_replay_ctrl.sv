@@ -17,15 +17,16 @@
 //   DRAIN  flush D's ready FIFO; wait until D's done FIFO is empty (a done that
 //          arrived before the fence retires its task normally, no replay)
 //   MOVE   pop D's checkout head and push it to substitute S, chosen per entry
-//          from the entry's logical core; stall while S is full. If no live
+//          from the entry's logical core and cluster (bingo_hw_manager_substitute_sel,
+//          so S may sit in another cluster); stall while S is full. If no live
 //          core may run the entry, mark D stuck and go back to IDLE.
 //   FINISH mark D retired
 // Stuck is sticky and final: fenced is sticky, so a missing substitute never
 // appears later. A stuck slot keeps its remaining entries (the top holds its
 // checkout output), and the other fenced slots are still migrated.
-// While a slot of a cluster is fenced and not retired, the top blocks normal
-// routing into that cluster, so the migrated (older) tasks of a logical core
-// always enter a substitute before its newer ones.
+// While a slot is fenced and not retired, the top holds the new tasks of every
+// fenced logical core, so the migrated (older) tasks of a logical core always
+// enter a substitute before its newer ones.
 module bingo_hw_manager_replay_ctrl #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
@@ -46,6 +47,7 @@ module bingo_hw_manager_replay_ctrl #(
     input  logic [NumCores-1:0][NumClusters-1:0] ready_full_i,
     // Fields of each checkout head
     input  logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0] checkout_logical_core_i,
+    input  logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] checkout_logical_cluster_i,
     input  logic [NumCores-1:0][NumClusters-1:0] checkout_no_exec_i, // task_type 01: checkout only
 
     output logic [NumCores-1:0][NumClusters-1:0] retired_o,
@@ -53,13 +55,14 @@ module bingo_hw_manager_replay_ctrl #(
     // Slot currently drained by MOVE: its normal checkout output must be held
     output logic [NumCores-1:0][NumClusters-1:0] move_o,
     // One MOVE step: pop the head of (src_core_o, src_cluster_o) and push it to
-    // (dst_core_o, src_cluster_o); push_ready_o also pushes its task id to the
+    // (dst_core_o, dst_cluster_o); push_ready_o also pushes its task id to the
     // ready FIFO of the destination.
     output logic                      move_fire_o,
     output logic                      push_ready_o,
     output logic [CoreIdWidth-1:0]    src_core_o,
     output logic [ClusterIdWidth-1:0] src_cluster_o,
     output logic [CoreIdWidth-1:0]    dst_core_o,
+    output logic [ClusterIdWidth-1:0] dst_cluster_o,
     // Fenced slot whose next entry no live core may run (sticky); its checkout
     // output must stay held
     output logic [NumCores-1:0][NumClusters-1:0] stuck_o
@@ -98,35 +101,39 @@ module bingo_hw_manager_replay_ctrl #(
         end
     end
 
-    // Substitute for the head of the slot being moved: the lowest live core of
-    // the cluster that is the logical core itself or has its (non-zero) type.
-    logic [CoreIdWidth-1:0]     head_logical;
-    logic [CoreTypeIdWidth-1:0] head_type;
-    logic                       dst_found;
-    logic [CoreIdWidth-1:0]     dst_core;
+    // Substitute for the head of the slot being moved, from its logical slot
+    // (the entry may already sit in the queue of an earlier substitute)
+    logic [CoreIdWidth-1:0]    head_logical_core;
+    logic [ClusterIdWidth-1:0] head_logical_cluster;
+    logic                      dst_found;
+    logic [CoreIdWidth-1:0]    dst_core;
+    logic [ClusterIdWidth-1:0] dst_cluster;
 
-    assign head_logical = checkout_logical_core_i[src_core_q][src_cluster_q];
-    assign head_type    = CoreTypeId[head_logical][src_cluster_q];
+    assign head_logical_core    = checkout_logical_core_i[src_core_q][src_cluster_q];
+    assign head_logical_cluster = checkout_logical_cluster_i[src_core_q][src_cluster_q];
 
-    always_comb begin
-        dst_found = 1'b0;
-        dst_core  = '0;
-        for (int c = NumCores - 1; c >= 0; c--) begin
-            if (((c == int'(head_logical)) ||
-                 ((head_type != '0) && (CoreTypeId[c][src_cluster_q] == head_type))) &&
-                !fenced_i[c][src_cluster_q]) begin
-                dst_found = 1'b1;
-                dst_core  = CoreIdWidth'(c);
-            end
-        end
-    end
+    bingo_hw_manager_substitute_sel #(
+        .NumCores(NumCores),
+        .NumClusters(NumClusters),
+        .CoreIdWidth(CoreIdWidth),
+        .ClusterIdWidth(ClusterIdWidth),
+        .CoreTypeIdWidth(CoreTypeIdWidth),
+        .CoreTypeId(CoreTypeId)
+    ) i_substitute_sel (
+        .logical_core_i(head_logical_core),
+        .logical_cluster_i(head_logical_cluster),
+        .fenced_i(fenced_i),
+        .found_o(dst_found),
+        .core_o(dst_core),
+        .cluster_o(dst_cluster)
+    );
 
     logic head_no_exec;
     logic dst_space;
 
     assign head_no_exec = checkout_no_exec_i[src_core_q][src_cluster_q];
-    assign dst_space    = !checkout_full_i[dst_core][src_cluster_q] &&
-                          (head_no_exec || !ready_full_i[dst_core][src_cluster_q]);
+    assign dst_space    = !checkout_full_i[dst_core][dst_cluster] &&
+                          (head_no_exec || !ready_full_i[dst_core][dst_cluster]);
 
     always_comb begin
         state_d       = state_q;
@@ -179,6 +186,7 @@ module bingo_hw_manager_replay_ctrl #(
     assign src_core_o    = src_core_q;
     assign src_cluster_o = src_cluster_q;
     assign dst_core_o    = dst_core;
+    assign dst_cluster_o = dst_cluster;
 
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin

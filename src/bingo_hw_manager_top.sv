@@ -32,12 +32,14 @@ module bingo_hw_manager_top #(
     // Watchdog enable per (core, cluster) slot. A masked slot is never reported
     // dead_suspect (e.g. a host slot that sends no heartbeats, or a tied-off slot).
     parameter logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] WatchdogCoreMask = '1,
-    // Core remap / replay: type id of each (core, cluster) slot. Two cores of the
-    // same cluster with the same non-zero type run the same kernels, so one may
-    // take over the tasks of the other once that one is fenced. Type 0: the slot
-    // neither hands over its tasks nor takes over others' (e.g. a host slot, or a
-    // core type that appears once per cluster). Default: all cores of a cluster
-    // are interchangeable.
+    // Core remap / replay: type id of each (core, cluster) slot, chiplet-wide. Two
+    // cores with the same non-zero type can run each other's tasks, also from
+    // another cluster, so one may take over the tasks of the other once that one
+    // is fenced; a substitute in the dead core's own cluster is preferred. Give
+    // cores whose tasks only work in their own cluster (e.g. operands in local
+    // L1 at local addresses) a different type per cluster. Type 0: the slot
+    // neither hands over its tasks nor takes over others' (e.g. a host slot).
+    // Default: all cores of the chiplet are interchangeable.
     parameter int unsigned CoreTypeIdWidth = 4,
     parameter logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][CoreTypeIdWidth-1:0] CoreTypeId =
         {(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET){CoreTypeIdWidth'(1)}},
@@ -530,20 +532,22 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_head_exec;
 
     // Replay (see bingo_hw_manager_replay_ctrl)
-    logic [NUM_CLUSTERS_PER_CHIPLET-1:0] replay_pending_cluster; // a slot of the cluster is fenced, not retired
-    logic [NUM_CLUSTERS_PER_CHIPLET-1:0] replay_move_cluster;    // a MOVE step may push into the cluster
+    logic                                replay_pending;      // a slot is fenced, neither retired nor stuck
+    logic [NUM_CLUSTERS_PER_CHIPLET-1:0] replay_move_cluster; // a MOVE step may push into the cluster
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_ready_flush;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_move;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_pop;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_push;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_push_ready;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0] replay_head_logical;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0] replay_head_logical_cluster;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_head_no_exec;
     logic                                  replay_move_fire;
     logic                                  replay_push_ready_q;
     bingo_hw_manager_assigned_core_id_t    replay_src_core;
     bingo_hw_manager_assigned_cluster_id_t replay_src_cluster;
     bingo_hw_manager_assigned_core_id_t    replay_dst_core;
+    bingo_hw_manager_assigned_cluster_id_t replay_dst_cluster;
     // Fenced slot that no live core can take over (sticky); replay_stuck: any
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_stuck_slot;
     logic                                  replay_stuck;
@@ -833,7 +837,8 @@ module bingo_hw_manager_top #(
         ) i_stream_demux_from_waiting_dep_check_queue_to_ready_and_checkout_queue (
             .inp_valid_i ( demux_ready_and_checkout_queue_inp_valid[core]    ),
             .inp_ready_o ( demux_ready_and_checkout_queue_inp_ready[core]    ),
-            .oup_sel_i   ( waiting_dep_check_task_desc[core].assigned_cluster_id ),
+            // Physical cluster: the logical one unless the task goes to a substitute
+            .oup_sel_i   ( remap_physical_cluster[core]                          ),
             .oup_valid_o ( demux_ready_and_checkout_queue_oup_valid[core]    ),
             .oup_ready_i ( demux_ready_and_checkout_queue_oup_ready[core]    )
         );
@@ -1494,10 +1499,10 @@ module bingo_hw_manager_top #(
     ) i_watchdog (
         .clk_i                 ( clk_i                          ),
         .rst_ni                ( rst_ni                         ),
-        .task_dispatched_i     ( ready_queue_pop                 ),
-        .task_done_i           ( done_q_push                     ),
-        .heartbeat_i           ( heartbeat_valid                 ),
-        .waiting_task_i        ( core_status_waiting_task        ),
+        .task_dispatched_i     ( ready_queue_pop                 ), // ready pop: busy, timer cleared
+        .task_done_i           ( done_q_push                     ), // done reached the done FIFO: idle
+        .heartbeat_i           ( heartbeat_valid                 ), // clears the timer (ignored once fenced)
+        .waiting_task_i        ( core_status_waiting_task        ), // only feeds core_available
         .core_busy_o           ( core_busy                       ),
         .core_available_o      ( core_available                  ),
         .core_dead_suspect_o   ( core_dead_suspect               ),
@@ -1514,7 +1519,8 @@ module bingo_hw_manager_top #(
     always_comb begin : compose_replay_inputs
         for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
             for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                replay_head_logical[c][cl] = checkout_queue_data_out[c][cl].assigned_core_id;
+                replay_head_logical[c][cl]         = checkout_queue_data_out[c][cl].assigned_core_id;
+                replay_head_logical_cluster[c][cl] = checkout_queue_data_out[c][cl].assigned_cluster_id;
                 replay_head_no_exec[c][cl] = (checkout_queue_data_out[c][cl].task_type == 2'b01);
             end
         end
@@ -1535,8 +1541,9 @@ module bingo_hw_manager_top #(
         .checkout_empty_i        ( checkout_queue_empty   ),
         .checkout_full_i         ( checkout_queue_full    ),
         .ready_full_i            ( ready_queue_full       ),
-        .checkout_logical_core_i ( replay_head_logical    ),
-        .checkout_no_exec_i      ( replay_head_no_exec    ),
+        .checkout_logical_core_i    ( replay_head_logical         ),
+        .checkout_logical_cluster_i ( replay_head_logical_cluster ),
+        .checkout_no_exec_i         ( replay_head_no_exec         ),
         .retired_o               ( core_retired           ),
         .ready_flush_o           ( replay_ready_flush     ),
         .move_o                  ( replay_move            ),
@@ -1545,6 +1552,7 @@ module bingo_hw_manager_top #(
         .src_core_o              ( replay_src_core        ),
         .src_cluster_o           ( replay_src_cluster     ),
         .dst_core_o              ( replay_dst_core        ),
+        .dst_cluster_o           ( replay_dst_cluster     ),
         .stuck_o                 ( replay_stuck_slot      )
     );
     assign replay_stuck   = |replay_stuck_slot;
@@ -1552,15 +1560,20 @@ module bingo_hw_manager_top #(
     assign replay_data    = checkout_queue_data_out[replay_src_core][replay_src_cluster];
 
     always_comb begin : compose_replay_signals
-        replay_pop             = '0;
-        replay_push            = '0;
-        replay_push_ready      = '0;
-        replay_pending_cluster = '0;
-        replay_move_cluster    = '0;
+        replay_pop          = '0;
+        replay_push         = '0;
+        replay_push_ready   = '0;
+        replay_pending      = 1'b0;
+        replay_move_cluster = '0;
         if (replay_move_fire) begin
             replay_pop[replay_src_core][replay_src_cluster]         = 1'b1;
-            replay_push[replay_dst_core][replay_src_cluster]        = 1'b1;
-            replay_push_ready[replay_dst_core][replay_src_cluster]  = replay_push_ready_q;
+            replay_push[replay_dst_core][replay_dst_cluster]        = 1'b1;
+            replay_push_ready[replay_dst_core][replay_dst_cluster]  = replay_push_ready_q;
+        end
+        // Nothing is routed into the slot being moved (fenced, not retired), only
+        // into its current destination, which may be in another cluster.
+        if (|replay_move) begin
+            replay_move_cluster[replay_dst_cluster] = 1'b1;
         end
         for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
             for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
@@ -1568,10 +1581,7 @@ module bingo_hw_manager_top #(
                 // need not wait for it (its entries could only go to a core of
                 // its own type, and none is live).
                 if (core_fenced[c][cl] && !core_retired[c][cl] && !replay_stuck_slot[c][cl]) begin
-                    replay_pending_cluster[cl] = 1'b1;
-                end
-                if (replay_move[c][cl]) begin
-                    replay_move_cluster[cl] = 1'b1;
+                    replay_pending = 1'b1;
                 end
             end
         end
@@ -1620,9 +1630,9 @@ module bingo_hw_manager_top #(
         // still fires after every earlier task of its logical core.
         // Healthy cores never have outstanding remapped tasks: no behaviour change.
         //
-        // A fenced logical core is also held while any slot of its cluster still
-        // waits to be replayed: its older tasks may sit in that slot and must reach
-        // their new core first.
+        // A fenced logical core is also held while any slot still waits to be
+        // replayed: its older tasks may sit in that slot (in any cluster, after a
+        // cross-cluster remap) and must reach their new core first.
         assign task_cluster = waiting_dep_check_task_desc[core].assigned_cluster_id;
         always_comb begin
             outstanding_clear = 1'b1;
@@ -1632,7 +1642,7 @@ module bingo_hw_manager_top #(
                     if (remap_outstanding_q[core][cl] != '0) begin
                         outstanding_clear = 1'b0;
                     end
-                    if (core_fenced[core][cl] && replay_pending_cluster[cl]) begin
+                    if (core_fenced[core][cl] && replay_pending) begin
                         replay_hold = 1'b1;
                     end
                 end
@@ -1644,22 +1654,27 @@ module bingo_hw_manager_top #(
     end
 
     // Track tasks per logical core that sit in the checkout queue of another
-    // physical core (remapped or replayed; checkout entries keep the logical id).
+    // physical core, in its own or another cluster (remapped or replayed;
+    // checkout entries keep the logical core and cluster).
     always_comb begin : update_remap_outstanding
         remap_outstanding_d = remap_outstanding_q;
         for (int unsigned p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
             for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
                 if (checkout_queue_push[p][cl] &&
-                    (checkout_queue_data_in[p][cl].assigned_core_id != bingo_hw_manager_assigned_core_id_t'(p)) &&
-                    (int'(checkout_queue_data_in[p][cl].assigned_core_id) < NUM_CORES_PER_CLUSTER)) begin
-                    remap_outstanding_d[checkout_queue_data_in[p][cl].assigned_core_id][cl] =
-                        remap_outstanding_d[checkout_queue_data_in[p][cl].assigned_core_id][cl] + 1'b1;
+                    ((checkout_queue_data_in[p][cl].assigned_core_id != bingo_hw_manager_assigned_core_id_t'(p)) ||
+                     (checkout_queue_data_in[p][cl].assigned_cluster_id != bingo_hw_manager_assigned_cluster_id_t'(cl))) &&
+                    (int'(checkout_queue_data_in[p][cl].assigned_core_id) < NUM_CORES_PER_CLUSTER) &&
+                    (int'(checkout_queue_data_in[p][cl].assigned_cluster_id) < NUM_CLUSTERS_PER_CHIPLET)) begin
+                    remap_outstanding_d[checkout_queue_data_in[p][cl].assigned_core_id][checkout_queue_data_in[p][cl].assigned_cluster_id] =
+                        remap_outstanding_d[checkout_queue_data_in[p][cl].assigned_core_id][checkout_queue_data_in[p][cl].assigned_cluster_id] + 1'b1;
                 end
                 if (checkout_queue_pop[p][cl] &&
-                    (checkout_queue_data_out[p][cl].assigned_core_id != bingo_hw_manager_assigned_core_id_t'(p)) &&
-                    (int'(checkout_queue_data_out[p][cl].assigned_core_id) < NUM_CORES_PER_CLUSTER)) begin
-                    remap_outstanding_d[checkout_queue_data_out[p][cl].assigned_core_id][cl] =
-                        remap_outstanding_d[checkout_queue_data_out[p][cl].assigned_core_id][cl] - 1'b1;
+                    ((checkout_queue_data_out[p][cl].assigned_core_id != bingo_hw_manager_assigned_core_id_t'(p)) ||
+                     (checkout_queue_data_out[p][cl].assigned_cluster_id != bingo_hw_manager_assigned_cluster_id_t'(cl))) &&
+                    (int'(checkout_queue_data_out[p][cl].assigned_core_id) < NUM_CORES_PER_CLUSTER) &&
+                    (int'(checkout_queue_data_out[p][cl].assigned_cluster_id) < NUM_CLUSTERS_PER_CHIPLET)) begin
+                    remap_outstanding_d[checkout_queue_data_out[p][cl].assigned_core_id][checkout_queue_data_out[p][cl].assigned_cluster_id] =
+                        remap_outstanding_d[checkout_queue_data_out[p][cl].assigned_core_id][checkout_queue_data_out[p][cl].assigned_cluster_id] - 1'b1;
                 end
             end
         end
@@ -1737,18 +1752,22 @@ module bingo_hw_manager_top #(
                                  checkout_queue_data_out[c][cl].assigned_core_id);
                     end
                     if (remap_route_fire[c][cl] &&
-                        (remap_route_src_core[c][cl] != bingo_hw_manager_assigned_core_id_t'(c))) begin
-                        $display("[BINGO_REMAP] %0t chip=%0d task=%0d logical_core=%0d -> physical_core=%0d cluster=%0d",
+                        ((remap_route_src_core[c][cl] != bingo_hw_manager_assigned_core_id_t'(c)) ||
+                         (waiting_dep_check_task_desc[remap_route_src_core[c][cl]].assigned_cluster_id !=
+                          bingo_hw_manager_assigned_cluster_id_t'(cl)))) begin
+                        $display("[BINGO_REMAP] %0t chip=%0d task=%0d logical_core=%0d -> physical_core=%0d cluster=%0d logical_cluster=%0d",
                                  $time, chip_id_i,
                                  waiting_dep_check_task_desc[remap_route_src_core[c][cl]].task_id,
-                                 remap_route_src_core[c][cl], c, cl);
+                                 remap_route_src_core[c][cl], c, cl,
+                                 waiting_dep_check_task_desc[remap_route_src_core[c][cl]].assigned_cluster_id);
                     end
                 end
             end
             if (replay_move_fire) begin
-                $display("[BINGO_REPLAY] %0t chip=%0d task=%0d type=%0d logical_core=%0d from=%0d to=%0d cluster=%0d",
+                $display("[BINGO_REPLAY] %0t chip=%0d task=%0d type=%0d logical_core=%0d from=%0d to=%0d cluster=%0d to_cluster=%0d logical_cluster=%0d",
                          $time, chip_id_i, replay_data.task_id, replay_data.task_type,
-                         replay_data.assigned_core_id, replay_src_core, replay_dst_core, replay_src_cluster);
+                         replay_data.assigned_core_id, replay_src_core, replay_dst_core, replay_src_cluster,
+                         replay_dst_cluster, replay_data.assigned_cluster_id);
             end
         end
     end
