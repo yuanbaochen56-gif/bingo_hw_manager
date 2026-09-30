@@ -47,6 +47,11 @@
 // the one the DFS path applied to the domain, or the one the host acknowledged
 // in DVFS mode (pm_mode_i[0]); without idle PM, or at or below the normal
 // level, the timer advances every cycle.
+//
+// Recovery boost: a live slot that is the substitute of a fenced core in the
+// table does the work of two cores. While it is busy (not polling), pm_boost_o
+// asks the PM to run its domain at the boost level (bingo_hw_manager_pm
+// boost_power_level_i, a faster clock than the normal level; 0 = off).
 module bingo_hw_manager_ctrl #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
@@ -85,6 +90,8 @@ module bingo_hw_manager_ctrl #(
     output logic [NumCores-1:0][NumClusters-1:0] load_clear_o,
     // Watchdog: the slot's timer advances this cycle
     output logic [NumCores-1:0][NumClusters-1:0] wd_tick_o,
+    // Power manager: slots that run a dead core's tasks and are busy
+    output logic [NumCores-1:0][NumClusters-1:0] pm_boost_o,
 
     // Slot mapping table, indexed by logical slot
     output logic [NumCores-1:0][NumClusters-1:0]                     smt_found_o,
@@ -209,6 +216,22 @@ module bingo_hw_manager_ctrl #(
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) tick_acc_q <= '0;
         else         tick_acc_q <= tick_acc_d;
+    end
+
+    // ------------------------------------------------------------------
+    // Recovery boost: substitutes of fenced cores, while busy
+    // ------------------------------------------------------------------
+    always_comb begin
+        pm_boost_o = '0;
+        for (int unsigned c = 0; c < NumCores; c++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                if (fenced_i[c][cl] && smt_found_q[c][cl] &&
+                    ((smt_core_q[c][cl] != c) || (smt_cluster_q[c][cl] != cl))) begin
+                    pm_boost_o[smt_core_q[c][cl]][smt_cluster_q[c][cl]] = 1'b1;
+                end
+            end
+        end
+        pm_boost_o = pm_boost_o & ~waiting_i & ~fenced_i;
     end
 
 `ifndef SYNTHESIS

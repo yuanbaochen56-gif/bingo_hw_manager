@@ -158,6 +158,9 @@ module bingo_hw_manager_top #(
     /// The interface to the Power Management Module
     // Host configuration interface
     input device_axi_lite_data_t                bingo_hw_manager_enable_idle_pm_i,
+    // Recovery boost level (a faster clock divider than the normal level) of a
+    // domain whose core runs a dead core's tasks; 0 disables the boost
+    input device_axi_lite_data_t                bingo_hw_manager_boost_power_level_i = '0,
     input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
     input device_axi_lite_data_t                bingo_hw_manager_normal_power_level_i,
     input device_axi_lite_addr_t                bingo_hw_manager_pm_base_addr_i,
@@ -703,6 +706,7 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_status_waiting_task;
     // Control plane (bingo_hw_manager_ctrl): power / load view of the slots
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_wd_tick;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_boost;
     logic [31:0][7:0]                                               pm_domain_level;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][5:0] ctrl_slot_domain;
     // Power domain of each slot (>= 32: none), as bingo_hw_manager_pm reads it
@@ -1776,6 +1780,8 @@ module bingo_hw_manager_top #(
         .enable_idle_pm_i      ( bingo_hw_manager_enable_idle_pm_i      ),
         .idle_power_level_i    ( bingo_hw_manager_idle_power_level_i    ),
         .normal_power_level_i  ( bingo_hw_manager_normal_power_level_i  ),
+        .boost_power_level_i   ( bingo_hw_manager_boost_power_level_i   ),
+        .core_boost_i          ( ctrl_pm_boost                          ),
         .pm_base_addr_i        ( bingo_hw_manager_pm_base_addr_i        ),
         .core_power_domain_i   ( bingo_hw_manager_core_power_domain_i   ),
         // Internal Core status: polling or fenced (bingo_hw_manager_ctrl), so a
@@ -1874,6 +1880,7 @@ module bingo_hw_manager_top #(
         .domain_level_i ( pm_domain_level  ),
         .slot_domain_i  ( ctrl_slot_domain ),
         .wd_tick_o      ( ctrl_wd_tick     ),
+        .pm_boost_o     ( ctrl_pm_boost    ),
         .pm_idle_o      ( ctrl_pm_idle     ),
         .load_clear_o   ( ctrl_load_clear  ),
         .smt_found_o    ( smt_found    ),
