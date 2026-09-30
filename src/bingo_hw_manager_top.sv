@@ -60,6 +60,10 @@ module bingo_hw_manager_top #(
     // fenced core (force remote) and still lets it run on a same-cluster core
     // when it comes back through a loopback link.
     parameter logic [2:0] ImportSubstituteLevelMask = SubstituteLevelMask & 3'b011,
+    // Substitute choice when a core dies (bingo_hw_manager_ctrl): 0 = lowest
+    // live core of the type, 1 = least loaded (checkout queue occupancy), both
+    // in the logical cluster first. Fixed until that substitute dies.
+    parameter int unsigned SubstitutePolicy = 0,
     // CSR number of the heartbeat write (see bingo_hw_manager_csr_to_fifo).
     parameter logic [11:0] CsrHeartbeatAddr = 12'h5fd,
     // AXI interface types
@@ -1828,6 +1832,13 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0]    smt_core;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0] smt_cluster;
     logic                                                           smt_update;
+    // Load of a slot: its checkout queue occupancy (full = highest)
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][CheckoutUsageWidth:0] ctrl_load;
+    for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_ctrl_load_core
+        for (genvar cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin : gen_ctrl_load_cluster
+            assign ctrl_load[c][cl] = {checkout_queue_full_raw[c][cl], checkout_queue_usage[c][cl]};
+        end
+    end
     bingo_hw_manager_ctrl #(
         .NumCores(NUM_CORES_PER_CLUSTER),
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
@@ -1835,12 +1846,15 @@ module bingo_hw_manager_top #(
         .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
         .CoreTypeIdWidth(CoreTypeIdWidth),
         .CoreTypeId(CoreTypeId),
-        .SubstituteLevelMask(SubstituteLevelMask)
+        .SubstituteLevelMask(SubstituteLevelMask),
+        .SubstitutePolicy(SubstitutePolicy),
+        .LoadWidth(CheckoutUsageWidth + 1)
     ) i_ctrl (
         .clk_i          ( clk_i        ),
         .rst_ni         ( rst_ni       ),
         .fenced_i       ( core_fenced  ),
         .waiting_i      ( core_status_waiting_task ),
+        .load_i         ( ctrl_load        ),
         .pm_idle_o      ( ctrl_pm_idle     ),
         .load_clear_o   ( ctrl_load_clear  ),
         .smt_found_o    ( smt_found    ),

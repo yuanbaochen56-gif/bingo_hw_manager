@@ -21,9 +21,14 @@
 // (the lowest live slot of the same type, logical cluster first) removing a slot
 // that is not the chosen one never changes a choice, so the table always equals
 // the combinational choice of bingo_hw_manager_substitute_sel (checked in
-// simulation). Keeping the choice in a register is what later lets a policy use
-// information that changes over time (load, power level) without moving a dead
-// core's tasks to a different substitute half-way.
+// simulation). Keeping the choice in a register is what lets a policy use
+// information that changes over time without moving a dead core's tasks to a
+// different substitute half-way:
+//   SubstitutePolicy 0  lowest live slot of the type (logical cluster first)
+//   SubstitutePolicy 1  least loaded live slot of the type (load_i: e.g. the
+//                       occupancy of its checkout queue), logical cluster first,
+//                       lowest index on a tie. The load is sampled when the
+//                       entry is recomputed, i.e. when the core dies.
 //
 // In the cycle a slot is fenced (and the cycle after reset) the table is being
 // written: smt_update_o asks its readers to wait one cycle.
@@ -42,7 +47,10 @@ module bingo_hw_manager_ctrl #(
     parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId =
         {(NumCores * NumClusters){CoreTypeIdWidth'(1)}},
     // Substitute levels (see bingo_hw_manager_top SubstituteLevelMask)
-    parameter logic [2:0] SubstituteLevelMask = 3'b001
+    parameter logic [2:0] SubstituteLevelMask = 3'b001,
+    // Substitute choice (see above) and width of load_i
+    parameter int unsigned SubstitutePolicy = 0,
+    parameter int unsigned LoadWidth = 4
 ) (
     input  logic clk_i,
     input  logic rst_ni,
@@ -51,6 +59,8 @@ module bingo_hw_manager_ctrl #(
     input  logic [NumCores-1:0][NumClusters-1:0] fenced_i,
     // Slots polling their ready queue (idle)
     input  logic [NumCores-1:0][NumClusters-1:0] waiting_i,
+    // Load of every slot (SubstitutePolicy 1)
+    input  logic [NumCores-1:0][NumClusters-1:0][LoadWidth-1:0] load_i,
 
     // Power manager: slots that do not keep their domain at the normal level
     output logic [NumCores-1:0][NumClusters-1:0] pm_idle_o,
@@ -81,11 +91,14 @@ module bingo_hw_manager_ctrl #(
                 .ClusterIdWidth(ClusterIdWidth),
                 .CoreTypeIdWidth(CoreTypeIdWidth),
                 .CoreTypeId(CoreTypeId),
-                .LevelMask(SubstituteLevelMask)
+                .LevelMask(SubstituteLevelMask),
+                .LeastWeight(SubstitutePolicy == 1),
+                .WeightWidth(LoadWidth)
             ) i_choice (
                 .logical_core_i(CoreIdWidth'(c)),
                 .logical_cluster_i(ClusterIdWidth'(cl)),
                 .fenced_i(fenced_i),
+                .weight_i(load_i),
                 .found_o(choice_found[c][cl]),
                 .core_o(choice_core[c][cl]),
                 .cluster_o(choice_cluster[c][cl])
@@ -149,9 +162,11 @@ module bingo_hw_manager_ctrl #(
     assign load_clear_o = fenced_i;
 
 `ifndef SYNTHESIS
-    // Outside an update cycle the table equals the combinational choice
+    // Outside an update cycle the table equals the combinational choice (only
+    // for the lowest-index policy: a load-based choice depends on the load when
+    // the core died)
     always @(posedge clk_i) begin : smt_equivalence
-        if (rst_ni && !smt_update_o) begin
+        if (rst_ni && !smt_update_o && (SubstitutePolicy == 0)) begin
             for (int unsigned c = 0; c < NumCores; c++) begin
                 for (int unsigned cl = 0; cl < NumClusters; cl++) begin
                     if ((smt_found_q[c][cl] != choice_found[c][cl]) ||
@@ -160,6 +175,23 @@ module bingo_hw_manager_ctrl #(
                         $error("[BINGO_ASSERT] SMT entry core %0d cluster %0d: found %0b core %0d cluster %0d, choice %0b core %0d cluster %0d",
                                c, cl, smt_found_q[c][cl], smt_core_q[c][cl], smt_cluster_q[c][cl],
                                choice_found[c][cl], choice_core[c][cl], choice_cluster[c][cl]);
+                    end
+                end
+            end
+        end
+    end
+    // Every policy: a substitute in the table is live and of the logical slot's type
+    always @(posedge clk_i) begin : smt_validity
+        if (rst_ni && !smt_update_o) begin
+            for (int unsigned c = 0; c < NumCores; c++) begin
+                for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                    if (smt_found_q[c][cl] &&
+                        (fenced_i[smt_core_q[c][cl]][smt_cluster_q[c][cl]] ||
+                         (((smt_core_q[c][cl] != c) || (smt_cluster_q[c][cl] != cl)) &&
+                          ((CoreTypeId[c][cl] == '0) ||
+                           (CoreTypeId[smt_core_q[c][cl]][smt_cluster_q[c][cl]] != CoreTypeId[c][cl]))))) begin
+                        $error("[BINGO_ASSERT] SMT entry core %0d cluster %0d -> core %0d cluster %0d is fenced or of another type",
+                               c, cl, smt_core_q[c][cl], smt_cluster_q[c][cl]);
                     end
                 end
             end

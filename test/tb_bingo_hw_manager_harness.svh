@@ -84,6 +84,10 @@ import axi_test::*;
 // Level 3: connect the remote dispatch / done streams of chiplet i to chiplet
 // (i + 1) % NUM_CHIPLET (back to back; needs TB_SUBSTITUTE_LEVEL_MASK[2])
 // Import stand-in levels (bingo_hw_manager_top ImportSubstituteLevelMask)
+// Substitute choice when a core dies (bingo_hw_manager_top SubstitutePolicy)
+`ifndef TB_SUBSTITUTE_POLICY
+  `define TB_SUBSTITUTE_POLICY 0
+`endif
 `ifndef TB_IMPORT_SUBSTITUTE_LEVEL_MASK
   `define TB_IMPORT_SUBSTITUTE_LEVEL_MASK (`TB_SUBSTITUTE_LEVEL_MASK & 3'b011)
 `endif
@@ -879,6 +883,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .CoreTypeIdWidth                     ( 4                                   ),
         .CoreTypeId                          ( `TB_CORE_TYPE_ID                    ),
         .SubstituteLevelMask                 ( `TB_SUBSTITUTE_LEVEL_MASK           ),
+        .SubstitutePolicy                    ( `TB_SUBSTITUTE_POLICY               ),
         .ImportSubstituteLevelMask           ( `TB_IMPORT_SUBSTITUTE_LEVEL_MASK    ),
         .CsrHeartbeatAddr                    ( `TB_CSR_HEARTBEAT_ADDR              ),
         .NUM_CORES_PER_CLUSTER               ( NUM_CORES_PER_CLUSTER               ),
