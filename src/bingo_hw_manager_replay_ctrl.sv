@@ -18,9 +18,10 @@
 //   DRAIN  flush D's ready FIFO; wait until D's done FIFO is empty (a done that
 //          arrived before the fence retires its task normally, no replay)
 //   MOVE   pop D's checkout head and push it to substitute S, chosen per entry
-//          from the entry's logical core and cluster (bingo_hw_manager_substitute_sel,
-//          so S may sit in another cluster with level 2); stall while S is full. If no live
-//          core may run the entry, mark D stuck and go back to IDLE.
+//          from the entry's logical core and cluster (slot mapping table of
+//          bingo_hw_manager_ctrl, so S may sit in another cluster with level 2);
+//          stall while S is full or the table is written. If no live core may
+//          run the entry, mark D stuck and go back to IDLE.
 //   FINISH mark D retired
 // A substitute S may be fenced while D is only partly moved (e.g. MOVE stalls
 // because S is full, and S is dead as well). D's entries already on S are older
@@ -90,6 +91,11 @@ module bingo_hw_manager_replay_ctrl #(
     input  logic [2**CoreTypeIdWidth-1:0]        remote_type_en_i,
     // Level 3: the reject register accepts a bounced entry
     input  logic                                 bounce_ready_i,
+    // Slot mapping table (bingo_hw_manager_ctrl), indexed by logical slot
+    input  logic [NumCores-1:0][NumClusters-1:0]                     smt_found_i,
+    input  logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    smt_core_i,
+    input  logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] smt_cluster_i,
+    input  logic                                                     smt_update_i,
 
     output logic [NumCores-1:0][NumClusters-1:0] retired_o,
     output logic [NumCores-1:0][NumClusters-1:0] ready_flush_o,
@@ -186,22 +192,10 @@ module bingo_hw_manager_replay_ctrl #(
     assign head_logical_core    = checkout_logical_core_i[src_core_q][src_cluster_q];
     assign head_logical_cluster = checkout_logical_cluster_i[src_core_q][src_cluster_q];
 
-    bingo_hw_manager_substitute_sel #(
-        .NumCores(NumCores),
-        .NumClusters(NumClusters),
-        .CoreIdWidth(CoreIdWidth),
-        .ClusterIdWidth(ClusterIdWidth),
-        .CoreTypeIdWidth(CoreTypeIdWidth),
-        .CoreTypeId(CoreTypeId),
-        .LevelMask(SubstituteLevelMask)
-    ) i_substitute_sel (
-        .logical_core_i(head_logical_core),
-        .logical_cluster_i(head_logical_cluster),
-        .fenced_i(fenced_i),
-        .found_o(dst_found),
-        .core_o(dst_core),
-        .cluster_o(dst_cluster)
-    );
+    assign dst_found   = (int'(head_logical_core) < NumCores) && (int'(head_logical_cluster) < NumClusters) &&
+                         smt_found_i[head_logical_core][head_logical_cluster];
+    assign dst_core    = smt_core_i[head_logical_core][head_logical_cluster];
+    assign dst_cluster = smt_cluster_i[head_logical_core][head_logical_cluster];
 
     logic head_no_exec;
     logic dst_space;
@@ -265,6 +259,8 @@ module bingo_hw_manager_replay_ctrl #(
                     // A substitute that already holds entries of this slot died:
                     // migrate it first (see above)
                     state_d = IDLE;
+                end else if (smt_update_i) begin
+                    // A slot was just fenced: the substitutes are being recomputed
                 end else if (!dst_found && can_rotate) begin
                     // Level 3: keep it on D as a remote proxy entry. Pop and push
                     // in one cycle leave the usage unchanged, so D's fullness

@@ -28,6 +28,7 @@ sources:
   - src/bingo_hw_manager_substitute_sel.sv     # Substitute of a fenced core (remap and replay)
   - src/bingo_hw_manager_core_remap.sv         # Core remap selector
   - src/bingo_hw_manager_replay_ctrl.sv        # Replay of a fenced core's outstanding tasks
+  - src/bingo_hw_manager_ctrl.sv             # Control plane: slot mapping table (substitutes)
   - src/bingo_hw_manager_dep_matrix.sv         # Dependency Matrix Module
   - src/bingo_hw_manager_chiplet_dep_set.sv    # Chiplet DependencySetModule (The Master port to send chiplet dep set info to other chiplets)
   - src/bingo_hw_manager_dep_check_manager.sv  # Dependency Check Manager Module

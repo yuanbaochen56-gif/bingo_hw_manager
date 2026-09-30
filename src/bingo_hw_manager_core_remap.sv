@@ -12,11 +12,13 @@
 //   outstanding tasks waiting to be replayed: its new tasks are held
 //   (select_valid_o = 0) so they cannot overtake the replayed ones.
 // - Once retired, an executing task (remappable_i) goes to the substitute of
-//   bingo_hw_manager_substitute_sel: a live core with the same non-zero
-//   CoreTypeId as the logical core, in the logical cluster if there is one
-//   (level 1), else in another cluster (level 2, if SubstituteLevelMask[1]).
-//   The choice only depends on the set of fenced cores, so consecutive tasks
-//   of one dead core land on the same substitute, in order. Without such a
+//   the logical core in the slot mapping table of bingo_hw_manager_ctrl
+//   (smt_*_i): a live core with the same non-zero CoreTypeId as the logical
+//   core, in the logical cluster if there is one (level 1), else in another
+//   cluster (level 2, if SubstituteLevelMask[1]). The table entry only changes
+//   when that substitute is fenced, so consecutive tasks of one dead core land
+//   on the same substitute, in order. While the table is written
+//   (smt_update_i) the task waits a cycle. Without such a
 //   substitute the task is held, unless level 3 (SubstituteLevelMask[2]) is
 //   enabled and the core has a non-zero type that the transport can export
 //   (remote_type_en_i): then it stays on its (retired) logical slot, which acts
@@ -57,6 +59,11 @@ module bingo_hw_manager_core_remap #(
     input  logic [2**CoreTypeIdWidth-1:0] remote_type_en_i,
     // Level 3: proxy slots whose exports were rejected (sticky)
     input  logic [NumCores-1:0][NumClusters-1:0] remote_rejected_i,
+    // Slot mapping table (bingo_hw_manager_ctrl), indexed by logical slot
+    input  logic [NumCores-1:0][NumClusters-1:0]                     smt_found_i,
+    input  logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    smt_core_i,
+    input  logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] smt_cluster_i,
+    input  logic                                                     smt_update_i,
     // Selected physical core/cluster
     output logic select_valid_o,
     output logic [CoreIdWidth-1:0] physical_core_o,
@@ -81,24 +88,11 @@ module bingo_hw_manager_core_remap #(
     assign logical_exportable = logical_typed && remote_type_en_i[CoreTypeId[logical_core_i][logical_cluster_i]] &&
                                 !remote_rejected_i[logical_core_i][logical_cluster_i];
 
-    // The logical core is fenced whenever its substitute is used, so the
-    // selector never returns the logical core itself here.
-    bingo_hw_manager_substitute_sel #(
-        .NumCores(NumCores),
-        .NumClusters(NumClusters),
-        .CoreIdWidth(CoreIdWidth),
-        .ClusterIdWidth(ClusterIdWidth),
-        .CoreTypeIdWidth(CoreTypeIdWidth),
-        .CoreTypeId(CoreTypeId),
-        .LevelMask(SubstituteLevelMask)
-    ) i_substitute_sel (
-        .logical_core_i(logical_core_i),
-        .logical_cluster_i(logical_cluster_i),
-        .fenced_i(core_fenced_i),
-        .found_o(sub_found),
-        .core_o(sub_core),
-        .cluster_o(sub_cluster)
-    );
+    // The logical core is fenced whenever its substitute is used, so the table
+    // never returns the logical core itself here.
+    assign sub_found   = logical_in_range && smt_found_i[logical_core_i][logical_cluster_i];
+    assign sub_core    = smt_core_i[logical_core_i][logical_cluster_i];
+    assign sub_cluster = smt_cluster_i[logical_core_i][logical_cluster_i];
 
     always_comb begin
         select_valid_o     = req_valid_i && logical_in_range;
@@ -109,6 +103,9 @@ module bingo_hw_manager_core_remap #(
         if (req_valid_i && logical_in_range && logical_fenced) begin
             if (!logical_retired) begin
                 // Outstanding tasks of this core are still being replayed.
+                select_valid_o = 1'b0;
+            end else if (remappable_i && smt_update_i) begin
+                // The substitute is being recomputed (a slot was just fenced)
                 select_valid_o = 1'b0;
             end else if (remappable_i) begin
                 select_valid_o = sub_found;

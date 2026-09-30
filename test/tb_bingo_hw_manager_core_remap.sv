@@ -1,5 +1,37 @@
 `timescale 1ns/1ps
 
+// Combinational slot mapping table for the unit test (bingo_hw_manager_ctrl
+// keeps the same choice in a register)
+module tb_core_remap_smt #(
+    parameter int unsigned NumCores = 3,
+    parameter int unsigned NumClusters = 2,
+    parameter int unsigned CoreIdWidth = 2,
+    parameter int unsigned ClusterIdWidth = 1,
+    parameter int unsigned CoreTypeIdWidth = 4,
+    parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId =
+        {(NumCores * NumClusters){CoreTypeIdWidth'(1)}},
+    parameter logic [2:0] LevelMask = 3'b001
+) (
+    input  logic [NumCores-1:0][NumClusters-1:0]                     fenced_i,
+    output logic [NumCores-1:0][NumClusters-1:0]                     found_o,
+    output logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    core_o,
+    output logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] cluster_o
+);
+    for (genvar c = 0; c < NumCores; c++) begin : gen_c
+        for (genvar cl = 0; cl < NumClusters; cl++) begin : gen_cl
+            bingo_hw_manager_substitute_sel #(
+                .NumCores(NumCores), .NumClusters(NumClusters), .CoreIdWidth(CoreIdWidth),
+                .ClusterIdWidth(ClusterIdWidth), .CoreTypeIdWidth(CoreTypeIdWidth),
+                .CoreTypeId(CoreTypeId), .LevelMask(LevelMask)
+            ) i_sel (
+                .logical_core_i(CoreIdWidth'(c)), .logical_cluster_i(ClusterIdWidth'(cl)),
+                .fenced_i(fenced_i), .found_o(found_o[c][cl]), .core_o(core_o[c][cl]),
+                .cluster_o(cluster_o[c][cl])
+            );
+        end
+    end
+endmodule
+
 // Unit test of bingo_hw_manager_core_remap (remap only once a fenced core is retired).
 module tb_bingo_hw_manager_core_remap;
 
@@ -47,6 +79,32 @@ module tb_bingo_hw_manager_core_remap;
     logic [CORE_ID_WIDTH-1:0] physical_core_l1;
     logic [CLUSTER_ID_WIDTH-1:0] physical_cluster_l1;
 
+    // Slot mapping tables of the four instances
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0]                       smt_d_found;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0][CORE_ID_WIDTH-1:0]    smt_d_core;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0][CLUSTER_ID_WIDTH-1:0] smt_d_cluster;
+    tb_core_remap_smt #(.NumCores(NUM_CORES), .NumClusters(NUM_CLUSTERS), .CoreIdWidth(CORE_ID_WIDTH), .ClusterIdWidth(CLUSTER_ID_WIDTH), .LevelMask(3'b011)) i_smt_d (
+        .fenced_i(core_fenced_i), .found_o(smt_d_found), .core_o(smt_d_core), .cluster_o(smt_d_cluster)
+    );
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0]                       smt_r_found;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0][CORE_ID_WIDTH-1:0]    smt_r_core;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0][CLUSTER_ID_WIDTH-1:0] smt_r_cluster;
+    tb_core_remap_smt #(.NumCores(NUM_CORES), .NumClusters(NUM_CLUSTERS), .CoreIdWidth(CORE_ID_WIDTH), .ClusterIdWidth(CLUSTER_ID_WIDTH), .CoreTypeIdWidth(4), .CoreTypeId(RESTRICTED_TYPES)) i_smt_r (
+        .fenced_i(core_fenced_i), .found_o(smt_r_found), .core_o(smt_r_core), .cluster_o(smt_r_cluster)
+    );
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0]                       smt_x_found;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0][CORE_ID_WIDTH-1:0]    smt_x_core;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0][CLUSTER_ID_WIDTH-1:0] smt_x_cluster;
+    tb_core_remap_smt #(.NumCores(NUM_CORES), .NumClusters(NUM_CLUSTERS), .CoreIdWidth(CORE_ID_WIDTH), .ClusterIdWidth(CLUSTER_ID_WIDTH), .CoreTypeIdWidth(4), .CoreTypeId(CROSS_TYPES), .LevelMask(3'b011)) i_smt_x (
+        .fenced_i(core_fenced_i), .found_o(smt_x_found), .core_o(smt_x_core), .cluster_o(smt_x_cluster)
+    );
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0]                       smt_l1_found;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0][CORE_ID_WIDTH-1:0]    smt_l1_core;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0][CLUSTER_ID_WIDTH-1:0] smt_l1_cluster;
+    tb_core_remap_smt #(.NumCores(NUM_CORES), .NumClusters(NUM_CLUSTERS), .CoreIdWidth(CORE_ID_WIDTH), .ClusterIdWidth(CLUSTER_ID_WIDTH), .CoreTypeIdWidth(4), .CoreTypeId(CROSS_TYPES)) i_smt_l1 (
+        .fenced_i(core_fenced_i), .found_o(smt_l1_found), .core_o(smt_l1_core), .cluster_o(smt_l1_cluster)
+    );
+
     // Levels 1 and 2 (substitutes in other clusters allowed)
     bingo_hw_manager_core_remap #(
         .NumCores(NUM_CORES),
@@ -56,6 +114,12 @@ module tb_bingo_hw_manager_core_remap;
         .SubstituteLevelMask(3'b011)
     ) dut (
         .req_valid_i(req_valid_i),
+        .smt_found_i(smt_d_found),
+        .smt_core_i(smt_d_core),
+        .smt_cluster_i(smt_d_cluster),
+        .smt_update_i(1'b0),
+        .remote_type_en_i('1),
+        .remote_rejected_i('0),
         .logical_core_i(logical_core_i),
         .logical_cluster_i(logical_cluster_i),
         .remappable_i(remappable_i),
@@ -75,6 +139,12 @@ module tb_bingo_hw_manager_core_remap;
         .CoreTypeId(RESTRICTED_TYPES)
     ) dut_restricted (
         .req_valid_i(req_valid_i),
+        .smt_found_i(smt_r_found),
+        .smt_core_i(smt_r_core),
+        .smt_cluster_i(smt_r_cluster),
+        .smt_update_i(1'b0),
+        .remote_type_en_i('1),
+        .remote_rejected_i('0),
         .logical_core_i(logical_core_i),
         .logical_cluster_i(logical_cluster_i),
         .remappable_i(remappable_i),
@@ -95,6 +165,12 @@ module tb_bingo_hw_manager_core_remap;
         .SubstituteLevelMask(3'b011)
     ) dut_cross (
         .req_valid_i(req_valid_i),
+        .smt_found_i(smt_x_found),
+        .smt_core_i(smt_x_core),
+        .smt_cluster_i(smt_x_cluster),
+        .smt_update_i(1'b0),
+        .remote_type_en_i('1),
+        .remote_rejected_i('0),
         .logical_core_i(logical_core_i),
         .logical_cluster_i(logical_cluster_i),
         .remappable_i(remappable_i),
@@ -115,6 +191,12 @@ module tb_bingo_hw_manager_core_remap;
         .CoreTypeId(CROSS_TYPES)
     ) dut_l1 (
         .req_valid_i(req_valid_i),
+        .smt_found_i(smt_l1_found),
+        .smt_core_i(smt_l1_core),
+        .smt_cluster_i(smt_l1_cluster),
+        .smt_update_i(1'b0),
+        .remote_type_en_i('1),
+        .remote_rejected_i('0),
         .logical_core_i(logical_core_i),
         .logical_cluster_i(logical_cluster_i),
         .remappable_i(remappable_i),

@@ -1817,6 +1817,31 @@ module bingo_hw_manager_top #(
         end
     end
 
+    //////////////////////////////////////////////////////////////////////
+    // Control plane: slot mapping table (substitute of every logical slot)
+    //////////////////////////////////////////////////////////////////////
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] smt_found;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0]    smt_core;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0] smt_cluster;
+    logic                                                           smt_update;
+    bingo_hw_manager_ctrl #(
+        .NumCores(NUM_CORES_PER_CLUSTER),
+        .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
+        .CoreIdWidth(cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)),
+        .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
+        .CoreTypeIdWidth(CoreTypeIdWidth),
+        .CoreTypeId(CoreTypeId),
+        .SubstituteLevelMask(SubstituteLevelMask)
+    ) i_ctrl (
+        .clk_i          ( clk_i        ),
+        .rst_ni         ( rst_ni       ),
+        .fenced_i       ( core_fenced  ),
+        .smt_found_o    ( smt_found    ),
+        .smt_core_o     ( smt_core     ),
+        .smt_cluster_o  ( smt_cluster  ),
+        .smt_update_o   ( smt_update   )
+    );
+
     bingo_hw_manager_replay_ctrl #(
         .NumCores(NUM_CORES_PER_CLUSTER),
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
@@ -1841,6 +1866,10 @@ module bingo_hw_manager_top #(
         .export_ready_i             ( !export_full                ),
         .remote_type_en_i           ( remote_export_type_en_i     ),
         .bounce_ready_i             ( !reject_valid_q             ),
+        .smt_found_i                ( smt_found                   ),
+        .smt_core_i                 ( smt_core                    ),
+        .smt_cluster_i              ( smt_cluster                 ),
+        .smt_update_i               ( smt_update                  ),
         .retired_o               ( core_retired           ),
         .ready_flush_o           ( replay_ready_flush     ),
         .move_o                  ( replay_move            ),
@@ -1931,6 +1960,10 @@ module bingo_hw_manager_top #(
             .core_retired_i(core_retired),
             .remote_type_en_i(remote_export_type_en_i),
             .remote_rejected_i(remote_rejected_q),
+            .smt_found_i(smt_found),
+            .smt_core_i(smt_core),
+            .smt_cluster_i(smt_cluster),
+            .smt_update_i(smt_update),
             .select_valid_o(remap_select_valid_raw[core]),
             .physical_core_o(remap_physical_core[core]),
             .physical_cluster_o(remap_physical_cluster[core]),
