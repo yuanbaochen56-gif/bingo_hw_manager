@@ -702,6 +702,16 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] heartbeat_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_status_waiting_task;
     // Control plane (bingo_hw_manager_ctrl): power / load view of the slots
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_wd_tick;
+    logic [31:0][7:0]                                               pm_domain_level;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][5:0] ctrl_slot_domain;
+    // Power domain of each slot (>= 32: none), as bingo_hw_manager_pm reads it
+    for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_slot_domain_core
+        for (genvar cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin : gen_slot_domain_cluster
+            assign ctrl_slot_domain[c][cl] = (bingo_hw_manager_core_power_domain_i[c][cl] < 32) ?
+                6'(bingo_hw_manager_core_power_domain_i[c][cl]) : 6'd32;
+        end
+    end
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_idle;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_load_clear;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
@@ -1776,6 +1786,7 @@ module bingo_hw_manager_top #(
         .dvfs_clint_msip_addr_i( bingo_hw_manager_dvfs_clint_msip_addr_i),
         .dvfs_ack_i            ( bingo_hw_manager_dvfs_ack_i            ),
         .dvfs_request_o        ( bingo_hw_manager_dvfs_request_o        ),
+        .domain_level_o        ( pm_domain_level                        ),
         // Interface to Host AXI Lite
         .pm_axi_lite_req_o     (pm_axi_lite_req_o                      ),
         .pm_axi_lite_resp_i    (pm_axi_lite_resp_i                     )
@@ -1799,6 +1810,7 @@ module bingo_hw_manager_top #(
         .task_done_i           ( done_q_push                     ), // done reached the done FIFO: idle
         .heartbeat_i           ( heartbeat_valid                 ), // clears the timer (ignored once fenced)
         .waiting_task_i        ( core_status_waiting_task        ), // only feeds core_available
+        .tick_i                ( ctrl_wd_tick                    ), // slowed down in a slow power domain
         .core_busy_o           ( core_busy                       ),
         .core_available_o      ( core_available                  ),
         .core_dead_suspect_o   ( core_dead_suspect               ),
@@ -1855,6 +1867,13 @@ module bingo_hw_manager_top #(
         .fenced_i       ( core_fenced  ),
         .waiting_i      ( core_status_waiting_task ),
         .load_i         ( ctrl_load        ),
+        .pm_enable_i    ( bingo_hw_manager_enable_idle_pm_i[0] ),
+        .pm_dvfs_i      ( bingo_hw_manager_pm_mode_i[0]        ),
+        .normal_level_i ( bingo_hw_manager_normal_power_level_i[7:0] ),
+        .dvfs_level_i   ( bingo_hw_manager_dvfs_ack_i[7:0]     ),
+        .domain_level_i ( pm_domain_level  ),
+        .slot_domain_i  ( ctrl_slot_domain ),
+        .wd_tick_o      ( ctrl_wd_tick     ),
         .pm_idle_o      ( ctrl_pm_idle     ),
         .load_clear_o   ( ctrl_load_clear  ),
         .smt_found_o    ( smt_found    ),

@@ -55,6 +55,8 @@ module bingo_hw_manager_pm #(
     input  cfg_t        dvfs_ack_i,
     // DVFS request published to the host: {target_level[15:8], direction[1], pending[0]}
     output cfg_t        dvfs_request_o,
+    // Level last applied to each domain by the DFS path (0: none yet)
+    output logic [31:0][7:0] domain_level_o,
     // AXI Lite Master Interface to Configure PMIC
     output req_lite_t              pm_axi_lite_req_o,
     input  resp_lite_t             pm_axi_lite_resp_i
@@ -163,6 +165,7 @@ module bingo_hw_manager_pm #(
     );
 
     assign update_req_valid = |pending_update;
+    assign domain_level_o   = current_power_level_q;
     assign update_domain_target_level = target_power_level[update_domain_id];
 
     // -------------------------------------------------------------------------

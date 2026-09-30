@@ -862,12 +862,14 @@ if (`TB_REMOTE_LINK == 2) begin : gen_rlink
     );
 end
 
-// PM bus: the clk/rst controller takes every write at once
+// PM bus: the clk/rst controller takes every write at once, unless a stimulus
+// stalls it (pm_bus_stall: the domain level cannot change)
+logic       pm_bus_stall = 1'b0;
 host_resp_t pm_ready_resp;
 always_comb begin
     pm_ready_resp          = '0;
-    pm_ready_resp.aw_ready = 1'b1;
-    pm_ready_resp.w_ready  = 1'b1;
+    pm_ready_resp.aw_ready = !pm_bus_stall;
+    pm_ready_resp.w_ready  = !pm_bus_stall;
 end
 
 // ---------------------------------------------------------------------------

@@ -37,6 +37,16 @@
 // no longer keeps its power domain at the normal level (pm_idle_o: polling for a
 // task, or fenced) and no longer counts as load (load_clear_o). A slot that is
 // only dead_suspect may still be working and keeps both.
+//
+// Frequency-aware watchdog: the power levels are clock dividers. While a slot's
+// domain runs at level L above the normal level N (slower), its core makes
+// progress N/L times as fast, so its heartbeat gaps stretch by L/N in manager
+// cycles. wd_tick_o advances the slot's watchdog timer only N/L of the cycles
+// (a fractional accumulator), so the timeouts count cycles of the normal clock
+// and can be set for the normal level instead of the slowest one. The level is
+// the one the DFS path applied to the domain, or the one the host acknowledged
+// in DVFS mode (pm_mode_i[0]); without idle PM, or at or below the normal
+// level, the timer advances every cycle.
 module bingo_hw_manager_ctrl #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
@@ -61,11 +71,20 @@ module bingo_hw_manager_ctrl #(
     input  logic [NumCores-1:0][NumClusters-1:0] waiting_i,
     // Load of every slot (SubstitutePolicy 1)
     input  logic [NumCores-1:0][NumClusters-1:0][LoadWidth-1:0] load_i,
+    // Power state (bingo_hw_manager_pm): enable, mode, levels, slot -> domain
+    input  logic                                     pm_enable_i,
+    input  logic                                     pm_dvfs_i,
+    input  logic [7:0]                               normal_level_i,
+    input  logic [7:0]                               dvfs_level_i,
+    input  logic [31:0][7:0]                         domain_level_i,
+    input  logic [NumCores-1:0][NumClusters-1:0][5:0] slot_domain_i,  // >= 32: no domain
 
     // Power manager: slots that do not keep their domain at the normal level
     output logic [NumCores-1:0][NumClusters-1:0] pm_idle_o,
     // Load monitor: slots whose pending count is cleared
     output logic [NumCores-1:0][NumClusters-1:0] load_clear_o,
+    // Watchdog: the slot's timer advances this cycle
+    output logic [NumCores-1:0][NumClusters-1:0] wd_tick_o,
 
     // Slot mapping table, indexed by logical slot
     output logic [NumCores-1:0][NumClusters-1:0]                     smt_found_o,
@@ -160,6 +179,37 @@ module bingo_hw_manager_ctrl #(
     // ------------------------------------------------------------------
     assign pm_idle_o    = waiting_i | fenced_i;
     assign load_clear_o = fenced_i;
+
+    // ------------------------------------------------------------------
+    // Frequency-aware watchdog ticks
+    // ------------------------------------------------------------------
+    logic [NumCores-1:0][NumClusters-1:0][7:0] slot_level;
+    logic [NumCores-1:0][NumClusters-1:0]      slot_slow;
+    logic [NumCores-1:0][NumClusters-1:0][8:0] tick_acc_q, tick_acc_d;
+    always_comb begin
+        for (int unsigned c = 0; c < NumCores; c++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                slot_level[c][cl] = pm_dvfs_i ? dvfs_level_i :
+                                    (slot_domain_i[c][cl] < 32) ? domain_level_i[slot_domain_i[c][cl][4:0]] : 8'd0;
+                slot_slow[c][cl]  = pm_enable_i && (normal_level_i != '0) && (slot_level[c][cl] > normal_level_i);
+                // Accumulate N per cycle, tick (and subtract L) once it reaches L
+                if (!slot_slow[c][cl]) begin
+                    wd_tick_o[c][cl]  = 1'b1;
+                    tick_acc_d[c][cl] = '0;
+                end else if ((tick_acc_q[c][cl] + 9'(normal_level_i)) >= 9'(slot_level[c][cl])) begin
+                    wd_tick_o[c][cl]  = 1'b1;
+                    tick_acc_d[c][cl] = tick_acc_q[c][cl] + 9'(normal_level_i) - 9'(slot_level[c][cl]);
+                end else begin
+                    wd_tick_o[c][cl]  = 1'b0;
+                    tick_acc_d[c][cl] = tick_acc_q[c][cl] + 9'(normal_level_i);
+                end
+            end
+        end
+    end
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) tick_acc_q <= '0;
+        else         tick_acc_q <= tick_acc_d;
+    end
 
 `ifndef SYNTHESIS
     // Outside an update cycle the table equals the combinational choice (only

@@ -99,6 +99,7 @@ sources:
       - test/tb_bingo_hw_manager_rlink_bounce.sv           # level 3 over remote_link: the executing core dies, imports bounce back
       - test/tb_bingo_hw_manager_pm_fault_aware.sv         # control plane: a fenced core does not keep its power domain awake
       - test/tb_bingo_hw_manager_substitute_least_loaded.sv # control plane: a dead core's tasks go to the least loaded core
+      - test/tb_bingo_hw_manager_pm_slow_watchdog.sv       # control plane: the watchdog counts normal-clock cycles in a slow domain
       - test/tb_bingo_hw_manager_rlink_random.sv           # level 3 over remote_link: random (scripts/run_replay_random.sh)
       - test/tb_bingo_hw_manager_rlink_random_reject.sv    # level 3 over remote_link: random, a hang on each chiplet (rejects)
       - test/tb_bingo_hw_manager_replay_random.sv          # random graph + random fault (scripts/run_replay_random.sh)
