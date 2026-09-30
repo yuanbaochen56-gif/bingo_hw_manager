@@ -253,6 +253,7 @@ bingo_hw_manager_top
 | `CoreTypeId` | all `1` | `[core][cluster]` type id; a fenced core's replayed and later tasks may run on a live core with the same non-zero type (`0` = never hands over or takes over tasks) |
 | `SubstituteLevelMask` | `3'b001` | Where a fenced core's tasks may go: bit 0 same cluster, bit 1 another cluster of the chiplet, bit 2 another chiplet (remote dispatch, see below) |
 | `ImportSubstituteLevelMask` | `SubstituteLevelMask & 3'b011` | Levels an imported (level-3) task may use to find a live core here; a different value is a debug / loopback aid |
+| `SubstitutePolicy` | 0 | Substitute chosen when a core dies: 0 = lowest live core of its type, 1 = least loaded (checkout occupancy); logical cluster first, fixed until that substitute dies |
 | `CsrHeartbeatAddr` | `12'h5fd` | CSR number of the heartbeat write (e.g. `12'h5fe` = write to the ready CSR) |
 
 ## Interface Modes
@@ -354,6 +355,26 @@ fenced core's migration is complete, `[BINGO_REPLAY_STUCK]` when no core may run
 `[BINGO_REMAP]` for every remapped task. Level 3 adds `[BINGO_EXPORT]`, `[BINGO_IMPORT]`,
 `[BINGO_REMOTE_DONE_OUT/IN]` and `[BINGO_REMOTE_REJECT_OUT/IN]`. `[BINGO_ASSERT]` errors flag
 replay invariant violations.
+
+### Control plane (`bingo_hw_manager_ctrl`)
+
+Replay, remap and power management share one module that holds their common state and makes
+the decisions that move work between cores; the mechanisms (queues, replay engine, PM bus
+master, CERF, remote link) only execute them.
+- **Slot mapping table (SMT).** For every logical slot, the live slot that runs its tasks once
+  it is fenced. `core_remap` (new tasks) and `replay_ctrl` (outstanding tasks) read it. It is a
+  register written only when a slot is fenced (entries whose logical slot or current substitute
+  was just fenced are recomputed; readers wait that one cycle), so a dead core's tasks always go
+  to one substitute, in order, whatever the policy (`SubstitutePolicy`).
+- **Fault-aware power.** A fenced core no longer keeps its power domain at the normal level, and
+  its load (pending tasks) is cleared.
+- **Frequency-aware watchdog.** The PM levels are clock dividers; while a slot's domain runs at a
+  level L above the normal level N, its watchdog timer advances only N/L of the cycles, so the
+  timeouts count cycles of the normal clock.
+- **Recovery boost.** While a substitute of a fenced core is busy, its domain runs at
+  `bingo_hw_manager_boost_power_level_i` (0 = off).
+
+The PM prints `[BINGO_PM]` for every level it applies (simulation only).
 
 ### Levels 2 and 3: other clusters and other chiplets
 
@@ -460,7 +481,8 @@ Evaluated via cycle-accurate Python simulator (`scripts/eval_darts.py`):
 | 1 | `bingo_hw_manager_cond_exec_controller.sv` | CERF (conditional execution) |
 | 1 | `bingo_hw_manager_load_monitor.sv` | Load monitoring |
 | 1 | `bingo_hw_manager_watchdog.sv` | Heartbeat watchdog: `dead_suspect` and fence |
-| 1 | `bingo_hw_manager_substitute_sel.sv` | Substitute choice (levels 1 and 2) |
+| 1 | `bingo_hw_manager_substitute_sel.sv` | Substitute choice (levels 1 and 2; lowest index or lowest weight) |
+| 1 | `bingo_hw_manager_ctrl.sv` | Control plane: slot mapping table, power / load view, watchdog ticks, boost |
 | 1 | `bingo_hw_manager_replay_ctrl.sv` | Replay of a fenced core's outstanding tasks (move, rotate, bounce) |
 | 1 | `bingo_hw_manager_core_remap.sv` | Placement of new tasks of a retired core |
 | 1 | `bingo_hw_manager_remote_link.sv` | Level-3 transport over AXI-Lite (next to the top, not inside it) |
