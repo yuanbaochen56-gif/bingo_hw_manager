@@ -61,7 +61,8 @@ initial begin : remote_no_executor_test
             $error("[REMOTE_NO_EXEC] chiplet %0d fenced %b retired %b", g, fenced_export[g], retired_export[g]);
         end
         if (remote_import_count[g] != 0) $error("[REMOTE_NO_EXEC] chiplet %0d imported %0d tasks", g, remote_import_count[g]);
-        if (rd_valid[g] !== 1'b1) $error("[REMOTE_NO_EXEC] chiplet %0d has no pending export", g);
+        // pending at the boundary: export not taken, or waiting in the peer's import mailbox
+        if (rd_in_valid[(g + 1) % 2] !== 1'b1) $error("[REMOTE_NO_EXEC] chiplet %0d has no pending export", g);
     end
     if (gen_dut[0].i_dut.replay_stuck !== 1'b0 || gen_dut[1].i_dut.replay_stuck !== 1'b0) begin
         $error("[REMOTE_NO_EXEC] a chiplet is stuck");

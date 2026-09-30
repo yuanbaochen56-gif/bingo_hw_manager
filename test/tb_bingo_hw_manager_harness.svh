@@ -79,6 +79,20 @@ import axi_test::*;
 `ifndef TB_REMOTE_LINK
   `define TB_REMOTE_LINK 0
 `endif
+// TB_REMOTE_LINK 2: real transport, one bingo_hw_manager_remote_link per
+// chiplet on an axi_lite_xbar addressed by chip id (ring: chiplet i exports to
+// i + 1), with random handshake stalls (TB_REMOTE_STALL) and
+// TB_REMOTE_CREDITS dispatch credits per peer
+`ifndef TB_REMOTE_CREDITS
+  `define TB_REMOTE_CREDITS 2
+`endif
+`ifndef TB_REMOTE_STALL
+  `define TB_REMOTE_STALL 1
+`endif
+// Link errors (remote_link error_o) are test failures unless allowed
+`ifndef TB_ALLOW_LINK_ERROR
+  `define TB_ALLOW_LINK_ERROR 0
+`endif
 // WatchdogCoreMask[core][cluster] of the DUT ('1: all slots monitored)
 // A remote done that does not match the proxy head is an error unless a test
 // provokes it
@@ -577,6 +591,8 @@ endtask
 // Level 3 remote streams (per chiplet, see TB_REMOTE_LINK)
 // ---------------------------------------------------------------------------
 localparam int unsigned REMOTE_SLOT_W = cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET);
+localparam host_axi_lite_addr_t REMOTE_LINK_BASE = 48'h5000_0000;  // 8 KiB: dispatch page, done page
+// Outputs of chiplet i
 logic                     rd_valid       [NUM_CHIPLET];
 logic                     rd_ready       [NUM_CHIPLET];
 host_axi_lite_data_t      rd_desc        [NUM_CHIPLET];
@@ -588,34 +604,208 @@ logic                     rdn_ready      [NUM_CHIPLET];
 chip_id_t                 rdn_chip       [NUM_CHIPLET];
 logic [REMOTE_SLOT_W-1:0] rdn_proxy_slot [NUM_CHIPLET];
 logic [TaskIdWidth-1:0]   rdn_task_id    [NUM_CHIPLET];
-// Inputs of chiplet i: exports of its predecessor, dones of its successor
-logic                     rd_in_valid    [NUM_CHIPLET];
-logic                     rd_in_ready    [NUM_CHIPLET];
-logic                     rdn_in_valid   [NUM_CHIPLET];
-logic                     rdn_in_ready   [NUM_CHIPLET];
+// Inputs of chiplet i (mode 1: exports of its predecessor and dones of its
+// successor wired directly; mode 2: from its remote_link)
+logic                     rd_in_valid       [NUM_CHIPLET];
+logic                     rd_in_ready       [NUM_CHIPLET];
+host_axi_lite_data_t      rd_in_desc        [NUM_CHIPLET];
+logic [3:0]               rd_in_core_type   [NUM_CHIPLET];
+chip_id_t                 rd_in_origin_chip [NUM_CHIPLET];
+logic [REMOTE_SLOT_W-1:0] rd_in_proxy_slot  [NUM_CHIPLET];
+logic                     rdn_in_valid      [NUM_CHIPLET];
+logic                     rdn_in_ready      [NUM_CHIPLET];
+logic [REMOTE_SLOT_W-1:0] rdn_in_proxy_slot [NUM_CHIPLET];
+logic [TaskIdWidth-1:0]   rdn_in_task_id    [NUM_CHIPLET];
 int unsigned              remote_export_count [NUM_CHIPLET];
 int unsigned              remote_import_count [NUM_CHIPLET];
+int unsigned              remote_done_in_count [NUM_CHIPLET];
+// mode 2 only
+logic [4:0]               remote_link_error   [NUM_CHIPLET];
+int unsigned              remote_credit_stall [NUM_CHIPLET];  // cycles an export waited for a credit
+int unsigned              remote_max_outstanding [NUM_CHIPLET];
 for (genvar i = 0; i < NUM_CHIPLET; i++) begin : gen_remote_link
     localparam int unsigned Pred = (i + NUM_CHIPLET - 1) % NUM_CHIPLET;
     localparam int unsigned Succ = (i + 1) % NUM_CHIPLET;
-    // chiplet i exports to Succ and gets the dones of its exports from Succ
-    assign rd_in_valid[i]  = (`TB_REMOTE_LINK != 0) && rd_valid[Pred];
-    assign rd_in_ready[i]  = (`TB_REMOTE_LINK != 0) && rd_ready[Succ];
-    assign rdn_in_valid[i] = (`TB_REMOTE_LINK != 0) && rdn_valid[Succ] && (rdn_chip[Succ] == chip_id_t'(i));
-    assign rdn_in_ready[i] = (`TB_REMOTE_LINK != 0) && rdn_ready[Pred];
-    initial begin
-        remote_export_count[i] = 0;
-        remote_import_count[i] = 0;
+    if (`TB_REMOTE_LINK != 2) begin : gen_direct
+        // chiplet i exports to Succ and gets the dones of its exports from Succ
+        assign rd_in_valid[i]       = (`TB_REMOTE_LINK != 0) && rd_valid[Pred];
+        assign rd_in_ready[i]       = (`TB_REMOTE_LINK != 0) && rd_ready[Succ];
+        assign rd_in_desc[i]        = rd_desc[Pred];
+        assign rd_in_core_type[i]   = rd_core_type[Pred];
+        assign rd_in_origin_chip[i] = rd_origin_chip[Pred];
+        assign rd_in_proxy_slot[i]  = rd_proxy_slot[Pred];
+        assign rdn_in_valid[i]      = (`TB_REMOTE_LINK != 0) && rdn_valid[Succ] && (rdn_chip[Succ] == chip_id_t'(i));
+        assign rdn_in_ready[i]      = (`TB_REMOTE_LINK != 0) && rdn_ready[Pred];
+        assign rdn_in_proxy_slot[i] = rdn_proxy_slot[Succ];
+        assign rdn_in_task_id[i]    = rdn_task_id[Succ];
+        assign remote_link_error[i] = '0;
     end
+    initial begin
+        remote_export_count[i]    = 0;
+        remote_import_count[i]    = 0;
+        remote_done_in_count[i]   = 0;
+        remote_credit_stall[i]    = 0;
+        remote_max_outstanding[i] = 0;
+    end
+    // Done order: per proxy slot, the dones come back in export order
+    int unsigned export_order [1 << REMOTE_SLOT_W][$];
     always @(posedge clk_i) begin
         if (rst_ni) begin
-            if (rd_valid[i] && rd_in_ready[i]) remote_export_count[i]++;
+            if (rd_valid[i] && rd_in_ready[i]) begin
+                automatic bingo_hw_manager_task_desc_full_t ed = bingo_hw_manager_task_desc_full_t'(rd_desc[i]);
+                remote_export_count[i]++;
+                export_order[rd_proxy_slot[i]].push_back(ed.task_id);
+                if (remote_export_count[i] - remote_done_in_count[i] > remote_max_outstanding[i]) begin
+                    remote_max_outstanding[i] = remote_export_count[i] - remote_done_in_count[i];
+                end
+            end
             if (rd_in_valid[i] && rd_ready[i]) remote_import_count[i]++;
+            if (rdn_in_valid[i] && rdn_ready[i]) begin
+                remote_done_in_count[i]++;
+                if (export_order[rdn_in_proxy_slot[i]].size() == 0) begin
+                    if (`TB_ALLOW_DONE_MISMATCH == 0)
+                        $error("[REMOTE_LINK] chip %0d: done of task %0d for slot %0d without an export",
+                               i, rdn_in_task_id[i], rdn_in_proxy_slot[i]);
+                end else begin
+                    if ((`TB_ALLOW_DONE_MISMATCH == 0) &&
+                        (export_order[rdn_in_proxy_slot[i]][0] != rdn_in_task_id[i])) begin
+                        $error("[REMOTE_LINK] chip %0d slot %0d: done of task %0d, expected task %0d",
+                               i, rdn_in_proxy_slot[i], rdn_in_task_id[i], export_order[rdn_in_proxy_slot[i]][0]);
+                    end
+                    void'(export_order[rdn_in_proxy_slot[i]].pop_front());
+                end
+            end
             if ((`TB_REMOTE_LINK != 0) && rdn_valid[i] && (rdn_chip[i] != chip_id_t'(Pred))) begin
                 $error("[REMOTE_LINK] chip %0d sends a done to chip %0d, expected %0d", i, rdn_chip[i], Pred);
             end
+            if ((`TB_ALLOW_LINK_ERROR == 0) && (remote_link_error[i] != '0)) begin
+                $error("[REMOTE_LINK] chip %0d: link error %b", i, remote_link_error[i]);
+            end
         end
     end
+end
+
+if (`TB_REMOTE_LINK == 2) begin : gen_rlink
+    localparam int unsigned RlNumPeers = (NUM_CHIPLET == 2) ? 1 : 2;
+    host_req_t  [NUM_CHIPLET-1:0] rl_mst_req, rl_xbar_in_req, rl_xbar_out_req, rl_slv_req;
+    host_resp_t [NUM_CHIPLET-1:0] rl_mst_resp, rl_xbar_in_resp, rl_xbar_out_resp, rl_slv_resp;
+    xbar_rule_48_t [NUM_CHIPLET-1:0] rl_addr_map;
+    localparam axi_pkg::xbar_cfg_t RlXbarCfg = '{
+        NoSlvPorts:         NUM_CHIPLET,
+        NoMstPorts:         NUM_CHIPLET,
+        MaxSlvTrans:        4,
+        MaxMstTrans:        4,
+        FallThrough:        0,
+        LatencyMode:        axi_pkg::CUT_ALL_PORTS,
+        PipelineStages:     0,
+        AxiIdWidthSlvPorts: 0,
+        AxiIdUsedSlvPorts:  0,
+        UniqueIds:          0,
+        AxiAddrWidth:       HOST_AW,
+        AxiDataWidth:       HOST_DW,
+        NoAddrRules:        NUM_CHIPLET
+    };
+    for (genvar i = 0; i < NUM_CHIPLET; i++) begin : gen_node
+        localparam int unsigned Pred = (i + NUM_CHIPLET - 1) % NUM_CHIPLET;
+        localparam int unsigned Succ = (i + 1) % NUM_CHIPLET;
+        localparam logic [RlNumPeers-1:0][ChipIdWidth-1:0] Peers =
+            (NUM_CHIPLET == 2) ? (RlNumPeers*ChipIdWidth)'(Succ) : (RlNumPeers*ChipIdWidth)'({8'(Succ), 8'(Pred)});
+        // every core type goes to the successor
+        localparam logic [15:0][ChipIdWidth:0] Targets = {16{1'b1, 8'(Succ)}};
+        logic [RlNumPeers-1:0][$clog2(`TB_REMOTE_CREDITS + 1)-1:0] credits;
+        assign rl_addr_map[i] = '{idx: i, start_addr: {8'(i), REMOTE_LINK_BASE[39:0]},
+                                  end_addr: {8'(i), REMOTE_LINK_BASE[39:0] + 40'h2000}};
+        bingo_hw_manager_remote_link #(
+            .ChipIdWidth       ( ChipIdWidth           ),
+            .CoreTypeIdWidth   ( 4                     ),
+            .RemoteSlotIdWidth ( REMOTE_SLOT_W         ),
+            .TaskIdWidth       ( TaskIdWidth           ),
+            .AxiAddrWidth      ( HOST_AW               ),
+            .AxiDataWidth      ( HOST_DW               ),
+            .NumPeers          ( RlNumPeers            ),
+            .PeerChipId        ( Peers                 ),
+            .RemoteTargetChip  ( Targets               ),
+            .DispatchCredits   ( `TB_REMOTE_CREDITS    ),
+            .req_t             ( host_req_t            ),
+            .resp_t            ( host_resp_t           )
+        ) i_link (
+            .clk_i                 ( clk_i                ),
+            .rst_ni                ( rst_ni               ),
+            .chip_id_i             ( chip_id[i]           ),
+            .base_addr_i           ( REMOTE_LINK_BASE     ),
+            .export_valid_i        ( rd_valid[i]          ),
+            .export_ready_o        ( rd_in_ready[i]       ),
+            .export_desc_i         ( rd_desc[i]           ),
+            .export_core_type_i    ( rd_core_type[i]      ),
+            .export_origin_chip_i  ( rd_origin_chip[i]    ),
+            .export_proxy_slot_i   ( rd_proxy_slot[i]     ),
+            .done_out_valid_i      ( rdn_valid[i]         ),
+            .done_out_ready_o      ( rdn_in_ready[i]      ),
+            .done_out_chip_i       ( rdn_chip[i]          ),
+            .done_out_proxy_slot_i ( rdn_proxy_slot[i]    ),
+            .done_out_task_id_i    ( rdn_task_id[i]       ),
+            .import_valid_o        ( rd_in_valid[i]       ),
+            .import_ready_i        ( rd_ready[i]          ),
+            .import_desc_o         ( rd_in_desc[i]        ),
+            .import_core_type_o    ( rd_in_core_type[i]   ),
+            .import_origin_chip_o  ( rd_in_origin_chip[i] ),
+            .import_proxy_slot_o   ( rd_in_proxy_slot[i]  ),
+            .done_in_valid_o       ( rdn_in_valid[i]      ),
+            .done_in_ready_i       ( rdn_ready[i]         ),
+            .done_in_proxy_slot_o  ( rdn_in_proxy_slot[i] ),
+            .done_in_task_id_o     ( rdn_in_task_id[i]    ),
+            .mst_req_o             ( rl_mst_req[i]        ),
+            .mst_resp_i            ( rl_mst_resp[i]       ),
+            .slv_req_i             ( rl_slv_req[i]        ),
+            .slv_resp_o            ( rl_slv_resp[i]       ),
+            .error_o               ( remote_link_error[i] ),
+            .credits_o             ( credits              )
+        );
+        // random stalls on both sides of the xbar
+        bingo_tb_axi_lite_stall #(
+            .Enable(`TB_REMOTE_STALL != 0), .Seed(16'(16'h1234 + 16 * i)),
+            .aw_chan_t(host_aw_chan_t), .w_chan_t(host_w_chan_t), .b_chan_t(host_b_chan_t),
+            .ar_chan_t(host_ar_chan_t), .r_chan_t(host_r_chan_t), .req_t(host_req_t), .resp_t(host_resp_t)
+        ) i_stall_mst (
+            .clk_i, .rst_ni,
+            .slv_req_i(rl_mst_req[i]), .slv_resp_o(rl_mst_resp[i]),
+            .mst_req_o(rl_xbar_in_req[i]), .mst_resp_i(rl_xbar_in_resp[i])
+        );
+        bingo_tb_axi_lite_stall #(
+            .Enable(`TB_REMOTE_STALL != 0), .Seed(16'(16'h4321 + 16 * i)),
+            .aw_chan_t(host_aw_chan_t), .w_chan_t(host_w_chan_t), .b_chan_t(host_b_chan_t),
+            .ar_chan_t(host_ar_chan_t), .r_chan_t(host_r_chan_t), .req_t(host_req_t), .resp_t(host_resp_t)
+        ) i_stall_slv (
+            .clk_i, .rst_ni,
+            .slv_req_i(rl_xbar_out_req[i]), .slv_resp_o(rl_xbar_out_resp[i]),
+            .mst_req_o(rl_slv_req[i]), .mst_resp_i(rl_slv_resp[i])
+        );
+        always @(posedge clk_i) begin
+            if (rst_ni && rd_valid[i] && !rd_in_ready[i] && (credits == '0)) remote_credit_stall[i]++;
+        end
+    end
+    axi_lite_xbar #(
+        .Cfg        ( RlXbarCfg       ),
+        .aw_chan_t  ( host_aw_chan_t  ),
+        .w_chan_t   ( host_w_chan_t   ),
+        .b_chan_t   ( host_b_chan_t   ),
+        .ar_chan_t  ( host_ar_chan_t  ),
+        .r_chan_t   ( host_r_chan_t   ),
+        .axi_req_t  ( host_req_t      ),
+        .axi_resp_t ( host_resp_t     ),
+        .rule_t     ( xbar_rule_48_t  )
+    ) i_rl_xbar (
+        .clk_i                 ( clk_i            ),
+        .rst_ni                ( rst_ni           ),
+        .test_i                ( 1'b0             ),
+        .slv_ports_req_i       ( rl_xbar_in_req   ),
+        .slv_ports_resp_o      ( rl_xbar_in_resp  ),
+        .mst_ports_req_o       ( rl_xbar_out_req  ),
+        .mst_ports_resp_i      ( rl_xbar_out_resp ),
+        .addr_map_i            ( rl_addr_map      ),
+        .en_default_mst_port_i ( '0               ),
+        .default_mst_port_i    ( '0               )
+    );
 end
 
 // ---------------------------------------------------------------------------
@@ -701,10 +891,10 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .remote_dispatch_proxy_slot_o         ( rd_proxy_slot[chiplet_idx]                                  ),
         .remote_dispatch_valid_i              ( rd_in_valid[chiplet_idx]                                    ),
         .remote_dispatch_ready_o              ( rd_ready[chiplet_idx]                                       ),
-        .remote_dispatch_desc_i               ( rd_desc[(chiplet_idx + NUM_CHIPLET - 1) % NUM_CHIPLET]      ),
-        .remote_dispatch_core_type_i          ( rd_core_type[(chiplet_idx + NUM_CHIPLET - 1) % NUM_CHIPLET] ),
-        .remote_dispatch_origin_chip_i        ( rd_origin_chip[(chiplet_idx + NUM_CHIPLET - 1) % NUM_CHIPLET] ),
-        .remote_dispatch_proxy_slot_i         ( rd_proxy_slot[(chiplet_idx + NUM_CHIPLET - 1) % NUM_CHIPLET] ),
+        .remote_dispatch_desc_i               ( rd_in_desc[chiplet_idx]                                     ),
+        .remote_dispatch_core_type_i          ( rd_in_core_type[chiplet_idx]                                ),
+        .remote_dispatch_origin_chip_i        ( rd_in_origin_chip[chiplet_idx]                              ),
+        .remote_dispatch_proxy_slot_i         ( rd_in_proxy_slot[chiplet_idx]                               ),
         .remote_done_valid_o                  ( rdn_valid[chiplet_idx]                                      ),
         .remote_done_ready_i                  ( rdn_in_ready[chiplet_idx]                                   ),
         .remote_done_chip_o                   ( rdn_chip[chiplet_idx]                                       ),
@@ -712,8 +902,8 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .remote_done_task_id_o                ( rdn_task_id[chiplet_idx]                                    ),
         .remote_done_valid_i                  ( rdn_in_valid[chiplet_idx]                                   ),
         .remote_done_ready_o                  ( rdn_ready[chiplet_idx]                                      ),
-        .remote_done_proxy_slot_i             ( rdn_proxy_slot[(chiplet_idx + 1) % NUM_CHIPLET]             ),
-        .remote_done_task_id_i                ( rdn_task_id[(chiplet_idx + 1) % NUM_CHIPLET]                ),
+        .remote_done_proxy_slot_i             ( rdn_in_proxy_slot[chiplet_idx]                              ),
+        .remote_done_task_id_i                ( rdn_in_task_id[chiplet_idx]                                 ),
         .remote_done_mismatch_o               ( /* probed below */                                          )
     );
     always @(posedge clk_i) begin
@@ -1277,6 +1467,16 @@ end
 initial begin : completion_monitor
     wait (completed_task_count == EXPECTED_TASK_COUNT);
     repeat (50) @(posedge clk_i);
+    // Level 3: the last remote dones may still be in flight on the link
+    for (int unsigned t = 0; t < 10000; t++) begin
+        automatic bit drained = 1'b1;
+        for (int gi = 0; gi < NUM_CHIPLET; gi++) begin
+            if (remote_done_in_count[gi] != remote_export_count[gi]) drained = 1'b0;
+        end
+        if (drained) break;
+        @(posedge clk_i);
+    end
+    repeat (20) @(posedge clk_i);
     $display("");
     $display("+===============================================+");
     $display("|           SIMULATION PASSED                   |");

@@ -44,6 +44,7 @@ sources:
     include_dirs:
       - test
     files:
+      - test/bingo_tb_axi_lite_stall.sv                    # helper: random AXI-Lite handshake stalls
       - test/tb_bingo_hw_manager_dep_matrix.sv
       - test/tb_bingo_hw_manager_top.sv
       - test/tb_bingo_hw_manager_cerf_basic.sv
@@ -86,6 +87,12 @@ sources:
       - test/tb_bingo_hw_manager_remote_no_executor.sv     # level 3: no live core of the type anywhere
       - test/tb_bingo_hw_manager_remote_done_mismatch.sv   # level 3: wrong remote done task id stops the proxy
       - test/tb_bingo_hw_manager_remote_link.sv            # level 3 transport adapter unit test
+      - test/tb_bingo_hw_manager_rlink_dispatch.sv         # level 3 over remote_link + xbar: remote_dispatch
+      - test/tb_bingo_hw_manager_rlink_full_queue.sv       # level 3 over remote_link + xbar: remote_full_queue
+      - test/tb_bingo_hw_manager_rlink_no_executor.sv      # level 3 over remote_link + xbar: remote_no_executor
+      - test/tb_bingo_hw_manager_rlink_done_order.sv       # level 3 over remote_link: two proxy slots, done order
+      - test/tb_bingo_hw_manager_rlink_credit_exhaust.sv   # level 3 over remote_link: one credit
+      - test/tb_bingo_hw_manager_rlink_random.sv           # level 3 over remote_link: random (scripts/run_replay_random.sh)
       - test/tb_bingo_hw_manager_replay_random.sv          # random graph + random fault (scripts/run_replay_random.sh)
 
   # NOTE: Generated test files in test/generated/ are NOT listed here.
