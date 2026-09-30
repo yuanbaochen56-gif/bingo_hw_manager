@@ -76,6 +76,11 @@ import axi_test::*;
 `endif
 // Level 3: connect the remote dispatch / done streams of chiplet i to chiplet
 // (i + 1) % NUM_CHIPLET (back to back; needs TB_SUBSTITUTE_LEVEL_MASK[2])
+// Import stand-in levels (bingo_hw_manager_top ImportSubstituteLevelMask)
+`ifndef TB_IMPORT_SUBSTITUTE_LEVEL_MASK
+  `define TB_IMPORT_SUBSTITUTE_LEVEL_MASK (`TB_SUBSTITUTE_LEVEL_MASK & 3'b011)
+`endif
+// With TB_NUM_CHIPLET 1 the single chiplet is its own successor (loopback)
 `ifndef TB_REMOTE_LINK
   `define TB_REMOTE_LINK 0
 `endif
@@ -686,7 +691,7 @@ for (genvar i = 0; i < NUM_CHIPLET; i++) begin : gen_remote_link
 end
 
 if (`TB_REMOTE_LINK == 2) begin : gen_rlink
-    localparam int unsigned RlNumPeers = (NUM_CHIPLET == 2) ? 1 : 2;
+    localparam int unsigned RlNumPeers = (NUM_CHIPLET <= 2) ? 1 : 2;
     host_req_t  [NUM_CHIPLET-1:0] rl_mst_req, rl_xbar_in_req, rl_xbar_out_req, rl_slv_req;
     host_resp_t [NUM_CHIPLET-1:0] rl_mst_resp, rl_xbar_in_resp, rl_xbar_out_resp, rl_slv_resp;
     xbar_rule_48_t [NUM_CHIPLET-1:0] rl_addr_map;
@@ -709,7 +714,7 @@ if (`TB_REMOTE_LINK == 2) begin : gen_rlink
         localparam int unsigned Pred = (i + NUM_CHIPLET - 1) % NUM_CHIPLET;
         localparam int unsigned Succ = (i + 1) % NUM_CHIPLET;
         localparam logic [RlNumPeers-1:0][ChipIdWidth-1:0] Peers =
-            (NUM_CHIPLET == 2) ? (RlNumPeers*ChipIdWidth)'(Succ) : (RlNumPeers*ChipIdWidth)'({8'(Succ), 8'(Pred)});
+            (NUM_CHIPLET <= 2) ? (RlNumPeers*ChipIdWidth)'(Succ) : (RlNumPeers*ChipIdWidth)'({8'(Succ), 8'(Pred)});
         // every core type goes to the successor
         localparam logic [15:0][ChipIdWidth:0] Targets = {16{1'b1, 8'(Succ)}};
         logic [RlNumPeers-1:0][$clog2(`TB_REMOTE_CREDITS + 1)-1:0] credits;
@@ -821,6 +826,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .CoreTypeIdWidth                     ( 4                                   ),
         .CoreTypeId                          ( `TB_CORE_TYPE_ID                    ),
         .SubstituteLevelMask                 ( `TB_SUBSTITUTE_LEVEL_MASK           ),
+        .ImportSubstituteLevelMask           ( `TB_IMPORT_SUBSTITUTE_LEVEL_MASK    ),
         .CsrHeartbeatAddr                    ( `TB_CSR_HEARTBEAT_ADDR              ),
         .NUM_CORES_PER_CLUSTER               ( NUM_CORES_PER_CLUSTER               ),
         .NUM_CLUSTERS_PER_CHIPLET            ( NUM_CLUSTERS_PER_CHIPLET            ),

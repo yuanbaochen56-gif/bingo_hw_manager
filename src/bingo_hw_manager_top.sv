@@ -52,6 +52,14 @@ module bingo_hw_manager_top #(
     // Default: level 1 only. Without WatchdogConfirmTimeoutCycles nothing is
     // fenced and this mask has no effect (detection only).
     parameter logic [2:0] SubstituteLevelMask = 3'b001,
+    // Levels an imported task (level 3, from another chiplet) may use to find a
+    // live stand-in for its home slot here (bit 2 is ignored: never re-exported).
+    // Default: the local levels of SubstituteLevelMask. Setting it apart from
+    // SubstituteLevelMask is a debug / loopback aid: e.g. SubstituteLevelMask =
+    // 3'b100 with ImportSubstituteLevelMask = 3'b001 exports every task of a
+    // fenced core (force remote) and still lets it run on a same-cluster core
+    // when it comes back through a loopback link.
+    parameter logic [2:0] ImportSubstituteLevelMask = SubstituteLevelMask & 3'b011,
     // CSR number of the heartbeat write (see bingo_hw_manager_csr_to_fifo).
     parameter logic [11:0] CsrHeartbeatAddr = 12'h5fd,
     // AXI interface types
@@ -168,6 +176,9 @@ module bingo_hw_manager_top #(
     output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    core_fenced_o,
     // Replay: a fenced core holds a task that no live core may run
     output logic                                replay_stuck_o,
+    // Watchdog: busy cores without heartbeat for WatchdogHeartbeatTimeoutCycles
+    // (not sticky, cleared by a heartbeat or a done)
+    output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    core_dead_suspect_o,
     // Level 3 remote dispatch (SubstituteLevelMask[2]; unused and tied off
     // otherwise, all inputs have defaults). valid/ready streams.
     // Export: a task of this chiplet that no live core here may run. Its
@@ -1733,6 +1744,7 @@ module bingo_hw_manager_top #(
         .core_fenced_o         ( core_fenced                     )
     );
     assign core_fenced_o = core_fenced;
+    assign core_dead_suspect_o = core_dead_suspect;
 
     //////////////////////////////////////////////////////////////////////
     // Task Replay
@@ -2062,7 +2074,7 @@ module bingo_hw_manager_top #(
             .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
             .CoreTypeIdWidth(CoreTypeIdWidth),
             .CoreTypeId(CoreTypeId),
-            .LevelMask(SubstituteLevelMask & 3'b011)
+            .LevelMask(ImportSubstituteLevelMask & 3'b011)
         ) i_import_sel (
             .logical_core_i(import_home_core),
             .logical_cluster_i(import_home_cluster),
