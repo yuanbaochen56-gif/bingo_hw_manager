@@ -13,12 +13,16 @@
 // dependents see the same producer as before.
 //
 // One slot is migrated at a time:
-//   IDLE   pick the lowest fenced, not yet retired slot D
+//   IDLE   pick the lowest fenced slot D that is neither retired nor stuck
 //   DRAIN  flush D's ready FIFO; wait until D's done FIFO is empty (a done that
 //          arrived before the fence retires its task normally, no replay)
 //   MOVE   pop D's checkout head and push it to substitute S, chosen per entry
-//          from the entry's logical core; stall while S is full or none exists
+//          from the entry's logical core; stall while S is full. If no live
+//          core may run the entry, mark D stuck and go back to IDLE.
 //   FINISH mark D retired
+// Stuck is sticky and final: fenced is sticky, so a missing substitute never
+// appears later. A stuck slot keeps its remaining entries (the top holds its
+// checkout output), and the other fenced slots are still migrated.
 // While a slot of a cluster is fenced and not retired, the top blocks normal
 // routing into that cluster, so the migrated (older) tasks of a logical core
 // always enter a substitute before its newer ones.
@@ -56,8 +60,9 @@ module bingo_hw_manager_replay_ctrl #(
     output logic [CoreIdWidth-1:0]    src_core_o,
     output logic [ClusterIdWidth-1:0] src_cluster_o,
     output logic [CoreIdWidth-1:0]    dst_core_o,
-    // A fenced slot holds an entry that no live core may run
-    output logic                      stuck_o
+    // Fenced slot whose next entry no live core may run (sticky); its checkout
+    // output must stay held
+    output logic [NumCores-1:0][NumClusters-1:0] stuck_o
 );
 
     typedef enum logic [1:0] {
@@ -71,8 +76,9 @@ module bingo_hw_manager_replay_ctrl #(
     logic [CoreIdWidth-1:0]    src_core_q, src_core_d;
     logic [ClusterIdWidth-1:0] src_cluster_q, src_cluster_d;
     logic [NumCores-1:0][NumClusters-1:0] retired_q, retired_d;
+    logic [NumCores-1:0][NumClusters-1:0] stuck_q, stuck_d;
 
-    // Lowest fenced, not yet retired slot
+    // Lowest fenced slot that is neither retired nor stuck
     logic                      pending_found;
     logic [CoreIdWidth-1:0]    pending_core;
     logic [ClusterIdWidth-1:0] pending_cluster;
@@ -83,7 +89,7 @@ module bingo_hw_manager_replay_ctrl #(
         pending_cluster = '0;
         for (int cl = NumClusters - 1; cl >= 0; cl--) begin
             for (int c = NumCores - 1; c >= 0; c--) begin
-                if (fenced_i[c][cl] && !retired_q[c][cl]) begin
+                if (fenced_i[c][cl] && !retired_q[c][cl] && !stuck_q[c][cl]) begin
                     pending_found   = 1'b1;
                     pending_core    = CoreIdWidth'(c);
                     pending_cluster = ClusterIdWidth'(cl);
@@ -127,12 +133,12 @@ module bingo_hw_manager_replay_ctrl #(
         src_core_d    = src_core_q;
         src_cluster_d = src_cluster_q;
         retired_d     = retired_q;
+        stuck_d       = stuck_q;
 
         ready_flush_o = '0;
         move_o        = '0;
         move_fire_o   = 1'b0;
         push_ready_o  = 1'b0;
-        stuck_o       = 1'b0;
 
         case (state_q)
             IDLE: begin
@@ -153,7 +159,8 @@ module bingo_hw_manager_replay_ctrl #(
                 if (checkout_empty_i[src_core_q][src_cluster_q]) begin
                     state_d = FINISH;
                 end else if (!dst_found) begin
-                    stuck_o = 1'b1;
+                    stuck_d[src_core_q][src_cluster_q] = 1'b1;
+                    state_d = IDLE;
                 end else if (dst_space) begin
                     move_fire_o  = 1'b1;
                     push_ready_o = !head_no_exec;
@@ -168,6 +175,7 @@ module bingo_hw_manager_replay_ctrl #(
     end
 
     assign retired_o     = retired_q;
+    assign stuck_o       = stuck_q;
     assign src_core_o    = src_core_q;
     assign src_cluster_o = src_cluster_q;
     assign dst_core_o    = dst_core;
@@ -178,11 +186,13 @@ module bingo_hw_manager_replay_ctrl #(
             src_core_q    <= '0;
             src_cluster_q <= '0;
             retired_q     <= '0;
+            stuck_q       <= '0;
         end else begin
             state_q       <= state_d;
             src_core_q    <= src_core_d;
             src_cluster_q <= src_cluster_d;
             retired_q     <= retired_d;
+            stuck_q       <= stuck_d;
         end
     end
 

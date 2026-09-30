@@ -544,6 +544,8 @@ module bingo_hw_manager_top #(
     bingo_hw_manager_assigned_core_id_t    replay_src_core;
     bingo_hw_manager_assigned_cluster_id_t replay_src_cluster;
     bingo_hw_manager_assigned_core_id_t    replay_dst_core;
+    // Fenced slot that no live core can take over (sticky); replay_stuck: any
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_stuck_slot;
     logic                                  replay_stuck;
     bingo_hw_manager_task_desc_t           replay_data;
 
@@ -1120,7 +1122,8 @@ module bingo_hw_manager_top #(
             // Pop on the handshake only: the downstream arbiters may raise ready without
             // valid, which would retire an executing head before its done arrived.
             // While a replay MOVE drains this queue, only the replay controller pops it
-            // (valid is held low then).
+            // (valid is held low then). A stuck slot keeps its remaining entries: a
+            // dummy-set among them must not fire before its lost source task.
             assign checkout_queue_pop[core][cluster] =
                 (stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] &&
                  stream_demux_checkout_queue_chiplet_dep_set_inp_ready[core][cluster]) ||
@@ -1142,6 +1145,7 @@ module bingo_hw_manager_top #(
                                                        (checkout_queue_data_out[core][cluster].task_type == 2'b10);
             assign stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] = !checkout_queue_empty[core][cluster] &&
                                                                                           !replay_move[core][cluster] &&
+                                                                                          !replay_stuck_slot[core][cluster] &&
                                                                                           (!checkout_head_exec[core][cluster] ||
                                                                                            !done_q_empty[core][cluster]);
             assign stream_demux_checkout_queue_chiplet_dep_set_oup_sel[core][cluster] = 
@@ -1541,8 +1545,9 @@ module bingo_hw_manager_top #(
         .src_core_o              ( replay_src_core        ),
         .src_cluster_o           ( replay_src_cluster     ),
         .dst_core_o              ( replay_dst_core        ),
-        .stuck_o                 ( replay_stuck           )
+        .stuck_o                 ( replay_stuck_slot      )
     );
+    assign replay_stuck   = |replay_stuck_slot;
     assign replay_stuck_o = replay_stuck;
     assign replay_data    = checkout_queue_data_out[replay_src_core][replay_src_cluster];
 
@@ -1559,11 +1564,13 @@ module bingo_hw_manager_top #(
         end
         for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
             for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
-                if (core_fenced[c][cl] && !core_retired[c][cl]) begin
+                // A stuck slot is never migrated, so a retired core's new tasks
+                // need not wait for it (its entries could only go to a core of
+                // its own type, and none is live).
+                if (core_fenced[c][cl] && !core_retired[c][cl] && !replay_stuck_slot[c][cl]) begin
                     replay_pending_cluster[cl] = 1'b1;
                 end
-                // A stuck MOVE never pushes, so it does not block the cluster.
-                if (replay_move[c][cl] && !replay_stuck) begin
+                if (replay_move[c][cl]) begin
                     replay_move_cluster[cl] = 1'b1;
                 end
             end
@@ -1700,18 +1707,18 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect_log_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_fenced_log_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_retired_log_q;
-    logic                                                           replay_stuck_log_q;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_stuck_log_q;
     always @(posedge clk_i or negedge rst_ni) begin : watchdog_remap_event_log
         if (!rst_ni) begin
             core_dead_suspect_log_q <= '0;
             core_fenced_log_q       <= '0;
             core_retired_log_q      <= '0;
-            replay_stuck_log_q      <= 1'b0;
+            replay_stuck_log_q      <= '0;
         end else begin
             core_dead_suspect_log_q <= core_dead_suspect;
             core_fenced_log_q       <= core_fenced;
             core_retired_log_q      <= core_retired;
-            replay_stuck_log_q      <= replay_stuck;
+            replay_stuck_log_q      <= replay_stuck_slot;
             for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
                 for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
                     if ((core_dead_suspect[c][cl] != core_dead_suspect_log_q[c][cl]) ||
@@ -1722,6 +1729,12 @@ module bingo_hw_manager_top #(
                     if (core_retired[c][cl] && !core_retired_log_q[c][cl]) begin
                         $display("[BINGO_RETIRED] %0t chip=%0d core=%0d cluster=%0d",
                                  $time, chip_id_i, c, cl);
+                    end
+                    if (replay_stuck_slot[c][cl] && !replay_stuck_log_q[c][cl]) begin
+                        $display("[BINGO_REPLAY_STUCK] %0t chip=%0d core=%0d cluster=%0d: no live core may run task %0d (logical core %0d)",
+                                 $time, chip_id_i, c, cl,
+                                 checkout_queue_data_out[c][cl].task_id,
+                                 checkout_queue_data_out[c][cl].assigned_core_id);
                     end
                     if (remap_route_fire[c][cl] &&
                         (remap_route_src_core[c][cl] != bingo_hw_manager_assigned_core_id_t'(c))) begin
@@ -1736,11 +1749,6 @@ module bingo_hw_manager_top #(
                 $display("[BINGO_REPLAY] %0t chip=%0d task=%0d type=%0d logical_core=%0d from=%0d to=%0d cluster=%0d",
                          $time, chip_id_i, replay_data.task_id, replay_data.task_type,
                          replay_data.assigned_core_id, replay_src_core, replay_dst_core, replay_src_cluster);
-            end
-            if (replay_stuck && !replay_stuck_log_q) begin
-                $display("[BINGO_REPLAY_STUCK] %0t chip=%0d core=%0d cluster=%0d: no live core may run task %0d (logical core %0d)",
-                         $time, chip_id_i, replay_src_core, replay_src_cluster,
-                         replay_data.task_id, replay_data.assigned_core_id);
             end
         end
     end
@@ -1793,10 +1801,16 @@ module bingo_hw_manager_top #(
                         $error("[BINGO_ASSERT] core %0d cluster %0d popped done of task %0d without retiring a task",
                                c, cl, done_q_info[c][cl].task_id);
                     end
-                    // A6: fenced / retired are sticky
+                    // A8: a stuck slot keeps its entries
+                    if (replay_stuck_slot[c][cl] && checkout_queue_pop[c][cl]) begin
+                        $error("[BINGO_ASSERT] stuck core %0d cluster %0d popped task %0d",
+                               c, cl, checkout_queue_data_out[c][cl].task_id);
+                    end
+                    // A6: fenced / retired / stuck are sticky
                     if ((core_fenced_log_q[c][cl] && !core_fenced[c][cl]) ||
-                        (core_retired_log_q[c][cl] && !core_retired[c][cl])) begin
-                        $error("[BINGO_ASSERT] fenced/retired of core %0d cluster %0d fell", c, cl);
+                        (core_retired_log_q[c][cl] && !core_retired[c][cl]) ||
+                        (replay_stuck_log_q[c][cl] && !replay_stuck_slot[c][cl])) begin
+                        $error("[BINGO_ASSERT] fenced/retired/stuck of core %0d cluster %0d fell", c, cl);
                     end
                 end
             end

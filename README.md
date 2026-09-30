@@ -305,7 +305,9 @@ already passed. `bingo_hw_manager_replay_ctrl` migrates one fenced core at a tim
 
 A replayed task keeps its logical core id, so its dep_set releases the same dependents as
 before, including a same-core sequencing edge behind the lost task. If no live core may run an
-entry, the migration stops and `replay_stuck_o` is raised; the other cores keep running.
+entry, that core is marked stuck (sticky; `replay_stuck_o` is raised): its remaining entries stay
+in its checkout queue, which no longer retires anything, and the replay controller moves on to
+the other fenced cores. The other cores keep running.
 While a replay step may push into a cluster, normal dispatch into that cluster pauses.
 
 **Remap (only once retired):**
