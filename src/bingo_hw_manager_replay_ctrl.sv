@@ -27,9 +27,10 @@ module bingo_hw_manager_replay_ctrl #(
     parameter int unsigned NumClusters = 2,
     parameter int unsigned CoreIdWidth = 2,
     parameter int unsigned ClusterIdWidth = 1,
-    // AllowMask[logical][physical] = 1: `physical` may run the tasks of `logical`
-    // (same as bingo_hw_manager_core_remap).
-    parameter logic [NumCores-1:0][NumCores-1:0] AllowMask = '1
+    // Type of each (core, cluster) slot (same as bingo_hw_manager_core_remap)
+    parameter int unsigned CoreTypeIdWidth = 4,
+    parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId =
+        {(NumCores * NumClusters){CoreTypeIdWidth'(1)}}
 ) (
     input  logic clk_i,
     input  logic rst_ni,
@@ -91,19 +92,22 @@ module bingo_hw_manager_replay_ctrl #(
         end
     end
 
-    // Substitute for the head of the slot being moved: the logical core itself
-    // if it is live, otherwise the lowest live core allowed by AllowMask.
-    logic [CoreIdWidth-1:0] head_logical;
-    logic                   dst_found;
-    logic [CoreIdWidth-1:0] dst_core;
+    // Substitute for the head of the slot being moved: the lowest live core of
+    // the cluster that is the logical core itself or has its (non-zero) type.
+    logic [CoreIdWidth-1:0]     head_logical;
+    logic [CoreTypeIdWidth-1:0] head_type;
+    logic                       dst_found;
+    logic [CoreIdWidth-1:0]     dst_core;
 
     assign head_logical = checkout_logical_core_i[src_core_q][src_cluster_q];
+    assign head_type    = CoreTypeId[head_logical][src_cluster_q];
 
     always_comb begin
         dst_found = 1'b0;
         dst_core  = '0;
         for (int c = NumCores - 1; c >= 0; c--) begin
-            if (((c == int'(head_logical)) || AllowMask[head_logical][c]) &&
+            if (((c == int'(head_logical)) ||
+                 ((head_type != '0) && (CoreTypeId[c][src_cluster_q] == head_type))) &&
                 !fenced_i[c][src_cluster_q]) begin
                 dst_found = 1'b1;
                 dst_core  = CoreIdWidth'(c);

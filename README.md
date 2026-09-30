@@ -249,7 +249,8 @@ bingo_hw_manager_top
 | `WatchdogHeartbeatTimeoutCycles` | 100000 | Cycles a busy core may go without heartbeat before it is `dead_suspect` |
 | `WatchdogConfirmTimeoutCycles` | 0 | Cycles without heartbeat before a busy core is fenced and its tasks are replayed; must exceed the heartbeat timeout; `0` = detection only (no fence, replay or remap); CSR interface only |
 | `WatchdogCoreMask` | `'1` | Per-(core, cluster) watchdog enable; masked slots are never `dead_suspect` |
-| `CoreRemapAllowMask` | `'1` | `[logical][physical]`: cores allowed to run a fenced core's replayed and later tasks (`'0` = none) |
+| `CoreTypeIdWidth` | 4 | Width of one `CoreTypeId` entry |
+| `CoreTypeId` | all `1` | `[core][cluster]` type id; a fenced core's replayed and later tasks may run on a live core of the same cluster with the same non-zero type (`0` = never hands over or takes over tasks) |
 | `CsrHeartbeatAddr` | `12'h5fd` | CSR number of the heartbeat write (e.g. `12'h5fe` = write to the ready CSR) |
 
 ## Interface Modes
@@ -298,8 +299,8 @@ retired, in order: the task it was running, then the tasks queued behind it. The
 already passed. `bingo_hw_manager_replay_ctrl` migrates one fenced core at a time:
 1. flush its ready queue and let a done that arrived before the fence retire its task;
 2. move its checkout entries, in order, into the ready + checkout queues of a live core
-   (per entry: the lowest live core allowed by `CoreRemapAllowMask` for the entry's logical
-   core; dummy-set / CERF-skipped entries only go to the checkout queue);
+   (per entry: the lowest live core of the cluster that is the entry's logical core or has its
+   non-zero `CoreTypeId`; dummy-set / CERF-skipped entries only go to the checkout queue);
 3. mark the core retired.
 
 A replayed task keeps its logical core id, so its dep_set releases the same dependents as
@@ -314,14 +315,16 @@ While a replay step may push into a cluster, normal dispatch into that cluster p
 - A fenced logical core's new tasks wait until it is retired and no other slot of its cluster
   is still being replayed, so its replayed (older) tasks reach their new core first.
 - Once retired, an executing task (normal/gating) goes to the lowest-indexed core of the same
-  cluster that is not fenced and is allowed by `CoreRemapAllowMask`; without one, it waits.
+  cluster that is not fenced and has the same non-zero `CoreTypeId`; without one, it waits.
   The choice only depends on the set of fenced cores, so a dead core's tasks go to one
   substitute, in order. Dependencies still use the logical core (dep-matrix column =
   `assigned_core_id`); ready/checkout/done queues are those of the physical core.
 - Dummy-set and CERF-skipped tasks are never remapped. They also wait until all earlier
   tasks of their logical core that run elsewhere have left their checkout queues.
-- Set `CoreRemapAllowMask = '0` when the cores of a cluster cannot run each other's kernels
-  (e.g. HeMAiA): a fenced core then stops at `replay_stuck_o`.
+- `CoreTypeId` describes which cores can run each other's kernels, per cluster, so clusters
+  may differ. Give a core type that appears only once in its cluster a unique id or `0` (e.g.
+  HeMAiA's accelerator core and DM core): a fenced core without a same-type live core stops at
+  `replay_stuck_o`.
 
 **Limitations:**
 - Replay assumes that re-running a task gives the same result (its inputs are intact and it

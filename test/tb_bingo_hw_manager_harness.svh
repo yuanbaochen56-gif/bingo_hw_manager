@@ -65,9 +65,10 @@ import axi_test::*;
 `ifndef TB_FAULT2_TASK_ID
   `define TB_FAULT2_TASK_ID 0
 `endif
-// CoreRemapAllowMask[logical][physical] of the DUT ('1: can remap to any core of the cluster)
-`ifndef TB_CORE_REMAP_ALLOW_MASK
-  `define TB_CORE_REMAP_ALLOW_MASK '1
+// CoreTypeId[core][cluster] of the DUT, 4 bits per slot (default: all type 1,
+// every core of a cluster may take over any other)
+`ifndef TB_CORE_TYPE_ID
+  `define TB_CORE_TYPE_ID {(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET){4'd1}}
 `endif
 // WatchdogCoreMask[core][cluster] of the DUT ('1: all slots monitored)
 `ifndef TB_WATCHDOG_CORE_MASK
@@ -567,7 +568,8 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .WatchdogHeartbeatTimeoutCycles      ( WATCHDOG_HEARTBEAT_TIMEOUT          ),
         .WatchdogConfirmTimeoutCycles        ( WATCHDOG_CONFIRM_TIMEOUT            ),
         .WatchdogCoreMask                    ( `TB_WATCHDOG_CORE_MASK              ),
-        .CoreRemapAllowMask                  ( `TB_CORE_REMAP_ALLOW_MASK           ),
+        .CoreTypeIdWidth                     ( 4                                   ),
+        .CoreTypeId                          ( `TB_CORE_TYPE_ID                    ),
         .CsrHeartbeatAddr                    ( `TB_CSR_HEARTBEAT_ADDR              ),
         .NUM_CORES_PER_CLUSTER               ( NUM_CORES_PER_CLUSTER               ),
         .NUM_CLUSTERS_PER_CHIPLET            ( NUM_CLUSTERS_PER_CHIPLET            ),

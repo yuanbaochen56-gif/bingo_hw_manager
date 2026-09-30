@@ -1,8 +1,8 @@
 // =============================================================================
-// Remap disabled (CoreRemapAllowMask = '0): detection only
+// No same-type core (CoreTypeId all different): detection only
 // =============================================================================
 // This is the HeMAiA configuration, where the cores of a cluster are not
-// interchangeable. Core 0 stalls on task 1 and becomes dead_suspect, but task 2
+// interchangeable (accelerator core, DM core, host slot). Core 0 stalls on task 1 and becomes dead_suspect, but task 2
 // of logical core 0 must stay queued on core 0 (idle core 1 gets nothing).
 // When core 0 recovers it completes task 1 and then runs task 2.
 
@@ -52,7 +52,7 @@ initial begin : remap_mask_off_test
     repeat (200) @(posedge clk_i);
 
     if (core1_read_done) begin
-        $fatal(1, "task %0d was remapped although CoreRemapAllowMask is 0",
+        $fatal(1, "task %0d was remapped although no core has the type of core 0",
                core1_task_id[TaskIdWidth-1:0]);
     end
     if (gen_dut[0].i_dut.ready_queue_empty[0][0] !== 1'b0) begin

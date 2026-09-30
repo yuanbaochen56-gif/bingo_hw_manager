@@ -1,15 +1,15 @@
 // =============================================================================
 // Replay: the substitute dies too
 // =============================================================================
-// AllowMask: logical core 0 may run on cores {1, 3}, logical core 1 only on {2}.
+// CoreTypeId: cores 0, 1 and 3 are type 1, core 2 is type 2.
 //   task 1 (core 0) hangs on core 0 -> replayed on core 1, hangs there as well
 //   task 2 (core 1) runs normally before that
 //   task 3 (logical core 0), pushed after core 0 retired -> remapped to core 1
 //   task 4 (core 1), sets core 2 col 1
 //   task 5 (core 2) checks col 0 (task 1) and col 1 (task 4)
 // When core 1 is fenced, its checkout holds task 1 (logical 0), task 3
-// (logical 0) and task 4 (logical 1): tasks 1 and 3 must move to core 3, task 4
-// to core 2.
+// (logical 0) and task 4 (logical 1): all of them must move to core 3, not to
+// the lower-indexed live core 2 of another type.
 // EXPECTED: tasks 1-5 complete, 4 replayed entries.
 
 localparam int unsigned EXPECTED_TASK_COUNT     = 5;
@@ -44,7 +44,7 @@ always @(posedge clk_i) begin
     if (rst_ni && gen_dut[0].i_dut.replay_move_fire && (gen_dut[0].i_dut.replay_src_core == 1)) begin
         automatic int logical = gen_dut[0].i_dut.replay_data.assigned_core_id;
         automatic int dst     = gen_dut[0].i_dut.replay_dst_core;
-        if ((logical == 0 && dst != 3) || (logical == 1 && dst != 2)) begin
+        if (dst != 3) begin
             $error("[CHAIN] task %0d of logical core %0d moved to core %0d",
                    gen_dut[0].i_dut.replay_data.task_id, logical, dst);
         end

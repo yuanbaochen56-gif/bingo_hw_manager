@@ -7,12 +7,13 @@ module tb_bingo_hw_manager_core_remap;
     localparam int unsigned NUM_CLUSTERS = 2;
     localparam int unsigned CORE_ID_WIDTH = 2;
     localparam int unsigned CLUSTER_ID_WIDTH = 1;
-    // Second instance: logical core 0 may only use core 2, core 2 may not be
-    // replaced at all ([logical][physical]).
-    localparam logic [NUM_CORES-1:0][NUM_CORES-1:0] RESTRICTED_MASK = '{
-        3'b000,  // logical 2: no substitute
-        3'b111,  // logical 1: any core
-        3'b100   // logical 0: only core 2
+    // Second instance, CoreTypeId[core][cluster] differs per cluster:
+    //   cluster 0: core 0 type 1, core 1 type 2, core 2 type 1
+    //   cluster 1: core 0 type 3, core 1 type 3, core 2 type 0 (never substituted)
+    localparam logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0][3:0] RESTRICTED_TYPES = '{
+        '{4'd0, 4'd1},  // core 2: cluster 1, cluster 0
+        '{4'd3, 4'd2},  // core 1
+        '{4'd3, 4'd1}   // core 0
     };
 
     logic req_valid_i;
@@ -52,7 +53,8 @@ module tb_bingo_hw_manager_core_remap;
         .NumClusters(NUM_CLUSTERS),
         .CoreIdWidth(CORE_ID_WIDTH),
         .ClusterIdWidth(CLUSTER_ID_WIDTH),
-        .AllowMask(RESTRICTED_MASK)
+        .CoreTypeIdWidth(4),
+        .CoreTypeId(RESTRICTED_TYPES)
     ) dut_restricted (
         .req_valid_i(req_valid_i),
         .logical_core_i(logical_core_i),
@@ -105,12 +107,16 @@ module tb_bingo_hw_manager_core_remap;
     begin
         #1;
         if (select_valid_r !== expected_valid) begin
-            $fatal(1, "restricted mask: select_valid mismatch: expected %0b got %0b",
+            $fatal(1, "restricted types: select_valid mismatch: expected %0b got %0b",
                    expected_valid, select_valid_r);
         end
         if (expected_valid && (physical_core_r !== expected_core)) begin
-            $fatal(1, "restricted mask: physical_core mismatch: expected %0d got %0d",
+            $fatal(1, "restricted types: physical_core mismatch: expected %0d got %0d",
                    expected_core, physical_core_r);
+        end
+        if (expected_valid && (physical_cluster_r !== logical_cluster_i)) begin
+            $fatal(1, "restricted types: physical_cluster mismatch: expected %0d got %0d",
+                   logical_cluster_i, physical_cluster_r);
         end
     end
     endtask
@@ -176,22 +182,35 @@ module tb_bingo_hw_manager_core_remap;
         core_retired_i[0][0] = 1'b1;
         expect_select(1'b1, 2'd0, 1'd0);      // then stays on its retired core
 
-        $display("Checking AllowMask restricts the substitute");
+        $display("Checking CoreTypeId restricts the substitute, per cluster");
         clear_inputs();
         req_valid_i = 1'b1;
         logical_core_i = 2'd0;
         retire(0, 0);
-        expect_restricted(1'b1, 2'd2);        // core 1 live but not allowed
+        expect_restricted(1'b1, 2'd2);        // core 1 live but of another type
         core_fenced_i[2][0] = 1'b1;
-        expect_restricted(1'b0, 2'd0);        // only allowed core fenced -> hold
+        expect_restricted(1'b0, 2'd0);        // only same-type core fenced -> hold
         clear_inputs();
         req_valid_i = 1'b1;
-        logical_core_i = 2'd2;
-        retire(2, 0);
-        expect_restricted(1'b0, 2'd2);        // logical 2 has no substitute
         logical_core_i = 2'd1;
         retire(1, 0);
-        expect_restricted(1'b1, 2'd0);        // logical 1: lowest live core
+        expect_restricted(1'b0, 2'd1);        // type 2 appears once in cluster 0
+        clear_inputs();
+        req_valid_i = 1'b1;
+        logical_cluster_i = 1'd1;
+        logical_core_i = 2'd2;
+        retire(2, 1);
+        expect_restricted(1'b0, 2'd2);        // type 0 never hands over its tasks
+        logical_core_i = 2'd1;
+        retire(1, 1);
+        expect_restricted(1'b1, 2'd0);        // cluster 1: core 0 has type 3 too
+        clear_inputs();
+        req_valid_i = 1'b1;
+        logical_cluster_i = 1'd1;
+        logical_core_i = 2'd0;
+        retire(0, 1);
+        core_fenced_i[1][0] = 1'b1;           // other cluster does not matter
+        expect_restricted(1'b1, 2'd1);
 
         $display("Checking out-of-range logical core");
         clear_inputs();

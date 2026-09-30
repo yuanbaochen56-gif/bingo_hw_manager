@@ -8,7 +8,8 @@
 `define TB_FAULT_CORE 0
 `define TB_FAULT_TASK_ID 1
 `define TB_FAULT_MODE 0
-`define TB_CORE_REMAP_ALLOW_MASK '0
+// HeMAiA-like types: core0 accelerator, core1 DM, core2 host (no two alike)
+`define TB_CORE_TYPE_ID {4'd0, 4'd2, 4'd1}
 
 module tb_bingo_hw_manager_replay_no_substitute;
   `include "tb_bingo_hw_manager_harness.svh"

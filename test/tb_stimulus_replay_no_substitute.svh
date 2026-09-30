@@ -1,5 +1,5 @@
 // =============================================================================
-// Replay: no allowed substitute (CoreRemapAllowMask = '0, e.g. HeMAiA)
+// Replay: no substitute (no other core has core 0's type, e.g. HeMAiA)
 // =============================================================================
 // Core 0 hangs on task 1 and is fenced, but no other core may run its tasks:
 // replay_stuck is raised, nothing is replayed or remapped. Task 3 (core 1)

@@ -32,11 +32,15 @@ module bingo_hw_manager_top #(
     // Watchdog enable per (core, cluster) slot. A masked slot is never reported
     // dead_suspect (e.g. a host slot that sends no heartbeats, or a tied-off slot).
     parameter logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] WatchdogCoreMask = '1,
-    // Core remap: CoreRemapAllowMask[logical][physical] = 1 lets `physical` run the
-    // tasks of `logical` (same cluster) once `logical` is fenced and its outstanding
-    // tasks were replayed. Set it to '0 when the cores of a cluster cannot run each
-    // other's kernels.
-    parameter logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CORES_PER_CLUSTER-1:0] CoreRemapAllowMask = '1,
+    // Core remap / replay: type id of each (core, cluster) slot. Two cores of the
+    // same cluster with the same non-zero type run the same kernels, so one may
+    // take over the tasks of the other once that one is fenced. Type 0: the slot
+    // neither hands over its tasks nor takes over others' (e.g. a host slot, or a
+    // core type that appears once per cluster). Default: all cores of a cluster
+    // are interchangeable.
+    parameter int unsigned CoreTypeIdWidth = 4,
+    parameter logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][CoreTypeIdWidth-1:0] CoreTypeId =
+        {(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET){CoreTypeIdWidth'(1)}},
     // CSR number of the heartbeat write (see bingo_hw_manager_csr_to_fifo).
     parameter logic [11:0] CsrHeartbeatAddr = 12'h5fd,
     // AXI interface types
@@ -1517,7 +1521,8 @@ module bingo_hw_manager_top #(
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
         .CoreIdWidth(cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)),
         .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
-        .AllowMask(CoreRemapAllowMask)
+        .CoreTypeIdWidth(CoreTypeIdWidth),
+        .CoreTypeId(CoreTypeId)
     ) i_replay_ctrl (
         .clk_i                   ( clk_i                  ),
         .rst_ni                  ( rst_ni                 ),
@@ -1588,7 +1593,8 @@ module bingo_hw_manager_top #(
             .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
             .CoreIdWidth(cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)),
             .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
-            .AllowMask(CoreRemapAllowMask)
+            .CoreTypeIdWidth(CoreTypeIdWidth),
+            .CoreTypeId(CoreTypeId)
         ) i_core_remap (
             .req_valid_i(!waiting_dep_check_queue_empty[core]),
             .logical_core_i(bingo_hw_manager_assigned_core_id_t'(core)),

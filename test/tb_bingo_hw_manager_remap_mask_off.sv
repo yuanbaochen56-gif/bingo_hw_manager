@@ -3,7 +3,8 @@
 `define TB_NUM_CLUSTERS_PER_CHIPLET 1
 `define TB_NUM_CORES_PER_CLUSTER 3
 `define TB_WATCHDOG_HEARTBEAT_TIMEOUT 32
-`define TB_CORE_REMAP_ALLOW_MASK '0
+// HeMAiA-like types: core0 accelerator, core1 DM, core2 host (no two alike)
+`define TB_CORE_TYPE_ID {4'd0, 4'd2, 4'd1}
 `define TB_DISABLE_CORE_WORKERS 1
 
 module tb_bingo_hw_manager_remap_mask_off;
