@@ -6,9 +6,12 @@
 // (logical_core_i, logical_cluster_i) once that core is fenced.
 //
 // Candidates are the logical slot itself and every slot of the chiplet with the
-// same non-zero CoreTypeId, minus the fenced slots. The logical cluster is
-// searched first, then the other clusters in index order; within a cluster the
-// lowest core wins. The choice only depends on the set of fenced slots, and the
+// same non-zero CoreTypeId that LevelMask allows, minus the fenced slots:
+//   LevelMask[0] (level 1) slots of the logical cluster
+//   LevelMask[1] (level 2) slots of the other clusters of the chiplet
+// The logical cluster is searched first, then the other clusters in index
+// order; within a cluster the lowest core wins. The choice only depends on the
+// set of fenced slots, and the
 // remap selector (new tasks) and the replay controller (outstanding tasks) both
 // use this module, so all tasks of one dead core go to the same substitute.
 module bingo_hw_manager_substitute_sel #(
@@ -19,7 +22,10 @@ module bingo_hw_manager_substitute_sel #(
     // Type of each (core, cluster) slot (see bingo_hw_manager_top)
     parameter int unsigned CoreTypeIdWidth = 4,
     parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId =
-        {(NumCores * NumClusters){CoreTypeIdWidth'(1)}}
+        {(NumCores * NumClusters){CoreTypeIdWidth'(1)}},
+    // Substitute levels (see bingo_hw_manager_top SubstituteLevelMask); bit 2
+    // (remote chiplet) is not handled here
+    parameter logic [2:0] LevelMask = 3'b001
 ) (
     input  logic [CoreIdWidth-1:0]               logical_core_i,
     input  logic [ClusterIdWidth-1:0]            logical_cluster_i,
@@ -41,7 +47,8 @@ module bingo_hw_manager_substitute_sel #(
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
                 candidate[c][cl] = logical_in_range && !fenced_i[c][cl] &&
                     (((c == int'(logical_core_i)) && (cl == int'(logical_cluster_i))) ||
-                     ((logical_type != '0) && (CoreTypeId[c][cl] == logical_type)));
+                     ((logical_type != '0) && (CoreTypeId[c][cl] == logical_type) &&
+                      ((cl == int'(logical_cluster_i)) ? LevelMask[0] : LevelMask[1])));
             end
         end
     end

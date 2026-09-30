@@ -43,11 +43,17 @@ module tb_bingo_hw_manager_core_remap;
     logic [CORE_ID_WIDTH-1:0] physical_core_x;
     logic [CLUSTER_ID_WIDTH-1:0] physical_cluster_x;
 
+    logic select_valid_l1;
+    logic [CORE_ID_WIDTH-1:0] physical_core_l1;
+    logic [CLUSTER_ID_WIDTH-1:0] physical_cluster_l1;
+
+    // Levels 1 and 2 (substitutes in other clusters allowed)
     bingo_hw_manager_core_remap #(
         .NumCores(NUM_CORES),
         .NumClusters(NUM_CLUSTERS),
         .CoreIdWidth(CORE_ID_WIDTH),
-        .ClusterIdWidth(CLUSTER_ID_WIDTH)
+        .ClusterIdWidth(CLUSTER_ID_WIDTH),
+        .SubstituteLevelMask(3'b011)
     ) dut (
         .req_valid_i(req_valid_i),
         .logical_core_i(logical_core_i),
@@ -85,7 +91,8 @@ module tb_bingo_hw_manager_core_remap;
         .CoreIdWidth(CORE_ID_WIDTH),
         .ClusterIdWidth(CLUSTER_ID_WIDTH),
         .CoreTypeIdWidth(4),
-        .CoreTypeId(CROSS_TYPES)
+        .CoreTypeId(CROSS_TYPES),
+        .SubstituteLevelMask(3'b011)
     ) dut_cross (
         .req_valid_i(req_valid_i),
         .logical_core_i(logical_core_i),
@@ -97,6 +104,44 @@ module tb_bingo_hw_manager_core_remap;
         .physical_core_o(physical_core_x),
         .physical_cluster_o(physical_cluster_x)
     );
+
+    // Same types, level 1 only (default): never leaves the cluster
+    bingo_hw_manager_core_remap #(
+        .NumCores(NUM_CORES),
+        .NumClusters(NUM_CLUSTERS),
+        .CoreIdWidth(CORE_ID_WIDTH),
+        .ClusterIdWidth(CLUSTER_ID_WIDTH),
+        .CoreTypeIdWidth(4),
+        .CoreTypeId(CROSS_TYPES)
+    ) dut_l1 (
+        .req_valid_i(req_valid_i),
+        .logical_core_i(logical_core_i),
+        .logical_cluster_i(logical_cluster_i),
+        .remappable_i(remappable_i),
+        .core_fenced_i(core_fenced_i),
+        .core_retired_i(core_retired_i),
+        .select_valid_o(select_valid_l1),
+        .physical_core_o(physical_core_l1),
+        .physical_cluster_o(physical_cluster_l1)
+    );
+
+    task automatic expect_l1(
+        input logic expected_valid,
+        input logic [CORE_ID_WIDTH-1:0] expected_core
+    );
+    begin
+        #1;
+        if (select_valid_l1 !== expected_valid) begin
+            $fatal(1, "level 1 only: select_valid mismatch: expected %0b got %0b",
+                   expected_valid, select_valid_l1);
+        end
+        if (expected_valid && ((physical_core_l1 !== expected_core) ||
+                               (physical_cluster_l1 !== logical_cluster_i))) begin
+            $fatal(1, "level 1 only: expected core %0d cluster %0d, got core %0d cluster %0d",
+                   expected_core, logical_cluster_i, physical_core_l1, physical_cluster_l1);
+        end
+    end
+    endtask
 
     task automatic clear_inputs;
     begin
@@ -292,6 +337,21 @@ module tb_bingo_hw_manager_core_remap;
         logical_core_i = 2'd2;
         retire(2, 1);
         expect_cross(1'b0, 2'd0, 1'd0);       // type 4 exists once in the chiplet
+
+        $display("Checking level 1 only keeps the substitute in the cluster");
+        clear_inputs();
+        req_valid_i = 1'b1;
+        logical_core_i = 2'd0;
+        retire(0, 0);
+        expect_l1(1'b0, 2'd0);                // type 1 only in cluster 1: hold
+        clear_inputs();
+        req_valid_i = 1'b1;
+        logical_core_i = 2'd1;
+        retire(1, 0);
+        expect_l1(1'b1, 2'd2);                // type 2: core 2 of cluster 0
+        core_fenced_i[2][0] = 1'b1;
+        expect_l1(1'b0, 2'd0);                // not core 0 of cluster 1
+        expect_cross(1'b1, 2'd0, 1'd1);       // which level 2 would take
 
         $display("Checking out-of-range logical core");
         clear_inputs();

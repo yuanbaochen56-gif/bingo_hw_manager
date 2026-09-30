@@ -19,7 +19,7 @@
 //          arrived before the fence retires its task normally, no replay)
 //   MOVE   pop D's checkout head and push it to substitute S, chosen per entry
 //          from the entry's logical core and cluster (bingo_hw_manager_substitute_sel,
-//          so S may sit in another cluster); stall while S is full. If no live
+//          so S may sit in another cluster with level 2); stall while S is full. If no live
 //          core may run the entry, mark D stuck and go back to IDLE.
 //   FINISH mark D retired
 // A substitute S may be fenced while D is only partly moved (e.g. MOVE stalls
@@ -47,7 +47,9 @@ module bingo_hw_manager_replay_ctrl #(
     // Type of each (core, cluster) slot (same as bingo_hw_manager_core_remap)
     parameter int unsigned CoreTypeIdWidth = 4,
     parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId =
-        {(NumCores * NumClusters){CoreTypeIdWidth'(1)}}
+        {(NumCores * NumClusters){CoreTypeIdWidth'(1)}},
+    // Substitute levels (see bingo_hw_manager_top SubstituteLevelMask)
+    parameter logic [2:0] SubstituteLevelMask = 3'b001
 ) (
     input  logic clk_i,
     input  logic rst_ni,
@@ -152,7 +154,8 @@ module bingo_hw_manager_replay_ctrl #(
         .CoreIdWidth(CoreIdWidth),
         .ClusterIdWidth(ClusterIdWidth),
         .CoreTypeIdWidth(CoreTypeIdWidth),
-        .CoreTypeId(CoreTypeId)
+        .CoreTypeId(CoreTypeId),
+        .LevelMask(SubstituteLevelMask)
     ) i_substitute_sel (
         .logical_core_i(head_logical_core),
         .logical_cluster_i(head_logical_cluster),

@@ -13,10 +13,10 @@
 //   (select_valid_o = 0) so they cannot overtake the replayed ones.
 // - Once retired, an executing task (remappable_i) goes to the substitute of
 //   bingo_hw_manager_substitute_sel: a live core with the same non-zero
-//   CoreTypeId as the logical core, in the logical cluster if there is one,
-//   else in another cluster. The choice only depends on the set of fenced
-//   cores, so consecutive tasks of one dead core land on the same substitute,
-//   in order. Without such a substitute the task is held.
+//   CoreTypeId as the logical core, in the logical cluster if there is one
+//   (level 1), else in another cluster (level 2, if SubstituteLevelMask[1]).
+//   The choice only depends on the set of fenced cores, so consecutive tasks
+//   of one dead core land on the same substitute, in order. Without such a substitute the task is held.
 // - Dummy-set and CERF-skipped tasks (remappable_i = 0) never execute on a
 //   core; they stay on their logical core even when it is retired (its checkout
 //   FIFO still retires them).
@@ -32,7 +32,9 @@ module bingo_hw_manager_core_remap #(
     // non-zero type.
     parameter int unsigned CoreTypeIdWidth = 4,
     parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId =
-        {(NumCores * NumClusters){CoreTypeIdWidth'(1)}}
+        {(NumCores * NumClusters){CoreTypeIdWidth'(1)}},
+    // Substitute levels (see bingo_hw_manager_top SubstituteLevelMask)
+    parameter logic [2:0] SubstituteLevelMask = 3'b001
 ) (
     input  logic req_valid_i,
     // Requested logical core/cluster (from the task descriptor)
@@ -69,7 +71,8 @@ module bingo_hw_manager_core_remap #(
         .CoreIdWidth(CoreIdWidth),
         .ClusterIdWidth(ClusterIdWidth),
         .CoreTypeIdWidth(CoreTypeIdWidth),
-        .CoreTypeId(CoreTypeId)
+        .CoreTypeId(CoreTypeId),
+        .LevelMask(SubstituteLevelMask)
     ) i_substitute_sel (
         .logical_core_i(logical_core_i),
         .logical_cluster_i(logical_cluster_i),

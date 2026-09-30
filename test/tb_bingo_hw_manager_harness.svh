@@ -70,6 +70,10 @@ import axi_test::*;
 `ifndef TB_CORE_TYPE_ID
   `define TB_CORE_TYPE_ID {(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET){4'd1}}
 `endif
+// SubstituteLevelMask of the DUT ([0] same cluster, [1] other clusters, [2] remote)
+`ifndef TB_SUBSTITUTE_LEVEL_MASK
+  `define TB_SUBSTITUTE_LEVEL_MASK 3'b001
+`endif
 // WatchdogCoreMask[core][cluster] of the DUT ('1: all slots monitored)
 `ifndef TB_WATCHDOG_CORE_MASK
   `define TB_WATCHDOG_CORE_MASK '1
@@ -570,6 +574,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .WatchdogCoreMask                    ( `TB_WATCHDOG_CORE_MASK              ),
         .CoreTypeIdWidth                     ( 4                                   ),
         .CoreTypeId                          ( `TB_CORE_TYPE_ID                    ),
+        .SubstituteLevelMask                 ( `TB_SUBSTITUTE_LEVEL_MASK           ),
         .CsrHeartbeatAddr                    ( `TB_CSR_HEARTBEAT_ADDR              ),
         .NUM_CORES_PER_CLUSTER               ( NUM_CORES_PER_CLUSTER               ),
         .NUM_CLUSTERS_PER_CHIPLET            ( NUM_CLUSTERS_PER_CHIPLET            ),

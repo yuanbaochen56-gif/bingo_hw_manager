@@ -34,8 +34,9 @@ module bingo_hw_manager_top #(
     parameter logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] WatchdogCoreMask = '1,
     // Core remap / replay: type id of each (core, cluster) slot, chiplet-wide. Two
     // cores with the same non-zero type can run each other's tasks, also from
-    // another cluster, so one may take over the tasks of the other once that one
-    // is fenced; a substitute in the dead core's own cluster is preferred. Give
+    // another cluster (level 2, see SubstituteLevelMask), so one may take over the
+    // tasks of the other once that one is fenced; a substitute in the dead core's
+    // own cluster is preferred. Give
     // cores whose tasks only work in their own cluster (e.g. operands in local
     // L1 at local addresses) a different type per cluster. Type 0: the slot
     // neither hands over its tasks nor takes over others' (e.g. a host slot).
@@ -43,6 +44,14 @@ module bingo_hw_manager_top #(
     parameter int unsigned CoreTypeIdWidth = 4,
     parameter logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][CoreTypeIdWidth-1:0] CoreTypeId =
         {(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET){CoreTypeIdWidth'(1)}},
+    // Where a fenced core's tasks (outstanding: replay, new: remap) may go, per
+    // level; the lowest enabled level with a live same-type core wins:
+    //   [0] level 1: a core of the same cluster
+    //   [1] level 2: a core of another cluster of this chiplet
+    //   [2] level 3: another chiplet, through the remote dispatch interface
+    // Default: level 1 only. Without WatchdogConfirmTimeoutCycles nothing is
+    // fenced and this mask has no effect (detection only).
+    parameter logic [2:0] SubstituteLevelMask = 3'b001,
     // CSR number of the heartbeat write (see bingo_hw_manager_csr_to_fifo).
     parameter logic [11:0] CsrHeartbeatAddr = 12'h5fd,
     // AXI interface types
@@ -1534,7 +1543,8 @@ module bingo_hw_manager_top #(
         .CoreIdWidth(cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)),
         .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
         .CoreTypeIdWidth(CoreTypeIdWidth),
-        .CoreTypeId(CoreTypeId)
+        .CoreTypeId(CoreTypeId),
+        .SubstituteLevelMask(SubstituteLevelMask)
     ) i_replay_ctrl (
         .clk_i                   ( clk_i                  ),
         .rst_ni                  ( rst_ni                 ),
@@ -1614,7 +1624,8 @@ module bingo_hw_manager_top #(
             .CoreIdWidth(cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)),
             .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
             .CoreTypeIdWidth(CoreTypeIdWidth),
-            .CoreTypeId(CoreTypeId)
+            .CoreTypeId(CoreTypeId),
+            .SubstituteLevelMask(SubstituteLevelMask)
         ) i_core_remap (
             .req_valid_i(!waiting_dep_check_queue_empty[core]),
             .logical_core_i(bingo_hw_manager_assigned_core_id_t'(core)),
