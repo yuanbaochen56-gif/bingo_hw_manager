@@ -307,6 +307,26 @@ module bingo_hw_manager_top #(
         $finish;
         end
     end
+    // bingo_hw_manager_remote_link only carries task_type and task_id of the
+    // descriptor and finds them at fixed bit positions (its DescTaskTypeLsb /
+    // DescTaskIdLsb defaults): keep them in sync with the layout above
+    localparam int unsigned RemoteLinkDescTaskTypeLsb = 7;
+    localparam int unsigned RemoteLinkDescTaskIdLsb   = 9;
+    if (RemoteEn) begin : gen_remote_desc_check
+        initial begin
+            automatic bingo_hw_manager_task_desc_full_t probe = '0;
+            automatic host_axi_lite_data_t expected = '0;
+            probe.task_type = '1;
+            probe.task_id   = '1;
+            expected[RemoteLinkDescTaskTypeLsb +: 2]         = '1;
+            expected[RemoteLinkDescTaskIdLsb +: TaskIdWidth] = '1;
+            if (($bits(bingo_hw_manager_task_type_t) != 2) || (host_axi_lite_data_t'(probe) != expected)) begin
+                $error("Descriptor layout does not match bingo_hw_manager_remote_link (task_type at %0d, task_id at %0d)",
+                       RemoteLinkDescTaskTypeLsb, RemoteLinkDescTaskIdLsb);
+                $finish;
+            end
+        end
+    end
     typedef logic [RemoteSlotIdWidth-1:0] remote_slot_t;
     // Side tag of each checkout entry (only stored with RemoteEn)
     typedef struct packed{

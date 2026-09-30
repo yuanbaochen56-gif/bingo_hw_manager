@@ -60,7 +60,8 @@ module bingo_hw_manager_remote_link #(
     parameter int unsigned DispatchFifoDepth = (NumPeers * DispatchCredits < 2) ? 2 : NumPeers * DispatchCredits,
     parameter int unsigned DoneFifoDepth     = (NumPeers * DispatchCredits < 2) ? 2 : NumPeers * DispatchCredits,
     // Position of task_type / task_id in bingo_hw_manager_task_desc_full_t
-    // (below them: cond_exec_en, cond_exec_group_id[4:0], cond_exec_invert)
+    // (below them: cond_exec_en, cond_exec_group_id[4:0], cond_exec_invert).
+    // bingo_hw_manager_top checks its layout against these defaults.
     parameter int unsigned DescTaskTypeLsb   = 7,
     parameter int unsigned DescTaskIdLsb     = 9,
     parameter type         req_t             = logic,
