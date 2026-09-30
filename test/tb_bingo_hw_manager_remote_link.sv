@@ -5,6 +5,8 @@
 //   T3 SLVERR from a full mailbox sets error bit 0
 //   T4 wrong kind on a page (dropped), T5 seq gap, T6 unknown peer,
 //   T7 done without an outstanding export (credit overflow)
+//   T8 reject: travels on the done page as kind 4'hC, returns the credit;
+//      target_valid_o lists the types with a target
 `include "axi/typedef.svh"
 `include "axi/assign.svh"
 module tb_bingo_hw_manager_remote_link;
@@ -35,6 +37,7 @@ module tb_bingo_hw_manager_remote_link;
     chip_id_t        dout_chip  [2];
     logic [SLW-1:0]  dout_slot  [2];
     logic [TIW-1:0]  dout_tid   [2];
+    logic            dout_reject [2];
     logic            imp_valid [2], imp_ready [2];
     data_t           imp_desc  [2];
     logic [CTW-1:0]  imp_type  [2];
@@ -43,6 +46,8 @@ module tb_bingo_hw_manager_remote_link;
     logic            din_valid [2], din_ready [2];
     logic [SLW-1:0]  din_slot  [2];
     logic [TIW-1:0]  din_tid   [2];
+    logic            din_reject [2];
+    logic [15:0]     tgt_valid  [2];
     logic [4:0]      err       [2];
     logic [0:0][1:0] credits   [2];
 
@@ -85,6 +90,7 @@ module tb_bingo_hw_manager_remote_link;
             .done_out_chip_i       ( dout_chip[i]      ),
             .done_out_proxy_slot_i ( dout_slot[i]      ),
             .done_out_task_id_i    ( dout_tid[i]       ),
+            .done_out_reject_i     ( dout_reject[i]    ),
             .import_valid_o        ( imp_valid[i]      ),
             .import_ready_i        ( imp_ready[i]      ),
             .import_desc_o         ( imp_desc[i]       ),
@@ -95,10 +101,12 @@ module tb_bingo_hw_manager_remote_link;
             .done_in_ready_i       ( din_ready[i]      ),
             .done_in_proxy_slot_o  ( din_slot[i]       ),
             .done_in_task_id_o     ( din_tid[i]        ),
+            .done_in_reject_o      ( din_reject[i]     ),
             .mst_req_o             ( xbar_in_req[i]    ),
             .mst_resp_i            ( xbar_in_resp[i]   ),
             .slv_req_i             ( xbar_out_req[i]   ),
             .slv_resp_o            ( xbar_out_resp[i]  ),
+            .target_valid_o        ( tgt_valid[i]      ),
             .error_o               ( err[i]            ),
             .credits_o             ( credits[i]        )
         );
@@ -162,7 +170,7 @@ module tb_bingo_hw_manager_remote_link;
     // Monitors
     // ------------------------------------------------------------------
     typedef struct { int unsigned tid; int unsigned ttype; int unsigned ctype; int unsigned origin; int unsigned slot; } imp_rec_t;
-    typedef struct { int unsigned tid; int unsigned slot; } done_rec_t;
+    typedef struct { int unsigned tid; int unsigned slot; bit reject; } done_rec_t;
     imp_rec_t  imports [2][$];
     done_rec_t dones   [2][$];
     int unsigned exports_acc [2];
@@ -179,7 +187,7 @@ module tb_bingo_hw_manager_remote_link;
                 end
             end
             if (rst_n && din_valid[i] && din_ready[i]) begin
-                dones[i].push_back('{tid: din_tid[i], slot: din_slot[i]});
+                dones[i].push_back('{tid: din_tid[i], slot: din_slot[i], reject: din_reject[i]});
                 if (first_done_cycle[i] == 0) first_done_cycle[i] = cycle;
             end
             if (rst_n && exp_valid[i] && exp_ready[i]) exports_acc[i]++;
@@ -206,7 +214,7 @@ module tb_bingo_hw_manager_remote_link;
         rst_n = 1'b0;
         for (int i = 0; i < 2; i++) begin
             exp_valid[i] = 1'b0; exp_desc[i] = '0; exp_type[i] = '0; exp_slot[i] = '0;
-            dout_valid[i] = 1'b0; dout_chip[i] = '0; dout_slot[i] = '0; dout_tid[i] = '0;
+            dout_valid[i] = 1'b0; dout_chip[i] = '0; dout_slot[i] = '0; dout_tid[i] = '0; dout_reject[i] = 1'b0;
             imp_ready[i] = 1'b1; din_ready[i] = 1'b1;
             imports[i].delete(); dones[i].delete(); exports_acc[i] = 0;
             first_done_cycle[i] = 0; first_import_cycle[i] = 0;
@@ -397,6 +405,32 @@ module tb_bingo_hw_manager_remote_link;
         repeat (20) @(posedge clk);
         expect_err(0, 5'b10000, "T7");
         if (credits[0][0] != Credits) $error("[T7] credits %0d, expected %0d", credits[0][0], Credits);
+
+        // ---------------- T8: reject ----------------
+        do_reset();
+        if (tgt_valid[0] !== 16'h0002 || tgt_valid[1] !== 16'h0002) begin
+            $error("[T8] target_valid %h / %h, expected 0002", tgt_valid[0], tgt_valid[1]);
+        end
+        send_export(0, 21, 0, 1, 1);
+        wait (imports[1].size() == 1);
+        #1 dout_reject[1] = 1'b1;
+        send_done(1, 0, 1, 21);                // chip 1 cannot run it: reject
+        #1 dout_reject[1] = 1'b0;
+        send_export(0, 22, 0, 1, 1);
+        wait (imports[1].size() == 2);
+        send_done(1, 0, 1, 22);                // normal done after the reject
+        wait (dones[0].size() == 2);
+        if (!dones[0][0].reject || dones[0][0].tid != 21 || dones[0][0].slot != 1) $error("[T8] first %p, expected reject of 21", dones[0][0]);
+        if (dones[0][1].reject || dones[0][1].tid != 22) $error("[T8] second %p, expected done of 22", dones[0][1]);
+        repeat (20) @(posedge clk);
+        if (credits[0][0] != Credits) $error("[T8] credits %0d, expected %0d", credits[0][0], Credits);
+        expect_err(0, '0, "T8");
+        expect_err(1, '0, "T8");
+        // a reject packet on the dispatch page is a wrong kind
+        inject(page(1, 0), mk_pkt(4'hC, 0, 0, 0, 0, 3), resp);
+        repeat (20) @(posedge clk);
+        expect_err(1, 5'b00010, "T8");
+        $display("[T8] reject done");
 
         $display("remote_link unit test passed");
         $finish;

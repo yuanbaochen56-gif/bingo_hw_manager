@@ -11,14 +11,15 @@
 //     Export destination: static table RemoteTargetChip[core type]
 //     ({valid, chip id}); an invalid entry is never exported (ready held low).
 //     target_valid_o tells bingo which types it may export at all.
-//     Done destination: done_out_chip_i (origin of the imported task).
+//     Done destination: done_out_chip_i (origin of the imported task). A
+//     reject (done_out_reject_i: the task cannot run there) travels as a done.
 // RX: one AXI-Lite slave spanning two 4 KiB pages at base_addr_i:
 //     page 0 (+0x0000) dispatch mailbox, page 1 (+0x1000) done mailbox. Each is
 //     a bingo_hw_manager_write_mailbox (write register at offset 0).
 //
 // Packets (64 bit, one per write):
-//   [63:60] kind      DISPATCH = 4'h5, DONE = 4'hA
-//   [59:52] chip      DISPATCH: origin chip, DONE: executing (sending) chip
+//   [63:60] kind      DISPATCH = 4'h5, DONE = 4'hA, REJECT = 4'hC (done page)
+//   [59:52] chip      DISPATCH: origin chip, DONE / REJECT: executing (sending) chip
 //   [51:44] proxy slot on the origin chip
 //   [43:40] core type (DISPATCH only)
 //   [39:32] seq       per (sender, receiver, stream), wraps
@@ -26,8 +27,8 @@
 //   [29: 0] task id   (TaskIdWidth bits, zero extended)
 //
 // Flow control: an export to peer p takes one of DispatchCredits credits of p;
-// the credit comes back when the done of that task leaves the done FIFO here
-// (delivered to bingo). A mailbox write to a full FIFO would be dropped with
+// the credit comes back when the done (or reject) of that task leaves the done
+// FIFO here (delivered to bingo). A mailbox write to a full FIFO would be dropped with
 // SLVERR, so the FIFOs are sized to never be full when a write arrives:
 //   outstanding exports of a sender to one receiver       <= DispatchCredits
 //   senders of a receiver, receivers of a sender           <= NumPeers
@@ -94,6 +95,7 @@ module bingo_hw_manager_remote_link #(
     input  chip_id_t                               done_out_chip_i,
     input  slot_t                                  done_out_proxy_slot_i,
     input  task_id_t                               done_out_task_id_i,
+    input  logic                                   done_out_reject_i = 1'b0,
     // link -> bingo: import (remote_dispatch_*_i)
     output logic                                   import_valid_o,
     input  logic                                   import_ready_i,
@@ -106,6 +108,7 @@ module bingo_hw_manager_remote_link #(
     input  logic                                   done_in_ready_i,
     output slot_t                                  done_in_proxy_slot_o,
     output task_id_t                               done_in_task_id_o,
+    output logic                                   done_in_reject_o,
     // AXI-Lite
     output req_t                                   mst_req_o,
     input  resp_t                                  mst_resp_i,
@@ -120,6 +123,7 @@ module bingo_hw_manager_remote_link #(
 );
     localparam logic [3:0] KindDispatch = 4'h5;
     localparam logic [3:0] KindDone     = 4'hA;
+    localparam logic [3:0] KindReject   = 4'hC;
     localparam int unsigned PageOffset  = 32'h1000;
     localparam int unsigned PeerIdxWidth = (NumPeers > 1) ? $clog2(NumPeers) : 1;
     typedef logic [PeerIdxWidth-1:0] peer_idx_t;
@@ -244,7 +248,7 @@ module bingo_hw_manager_remote_link #(
                 if (done_out_valid_i) begin
                     done_out_ready_o   = 1'b1;
                     tx_pkt_d           = '0;
-                    tx_pkt_d.kind      = KindDone;
+                    tx_pkt_d.kind      = done_out_reject_i ? KindReject : KindDone;
                     tx_pkt_d.chip      = 8'(chip_id_i);
                     tx_pkt_d.slot      = 8'(done_out_proxy_slot_i);
                     tx_pkt_d.seq       = tx_done_peer_ok ? tx_seq_done_q[tx_done_peer] : '0;
@@ -272,7 +276,7 @@ module bingo_hw_manager_remote_link #(
             TxSend: begin
                 mst_req_o.aw_valid = !tx_aw_done_q;
                 mst_req_o.aw.addr  = {tx_dest_q, base_addr_i[AxiAddrWidth-ChipIdWidth-1:0]} +
-                                     ((tx_pkt_q.kind == KindDone) ? addr_t'(PageOffset) : addr_t'(0));
+                                     ((tx_pkt_q.kind != KindDispatch) ? addr_t'(PageOffset) : addr_t'(0));
                 mst_req_o.aw.prot  = '0;
                 mst_req_o.w_valid  = !tx_w_done_q;
                 mst_req_o.w.data   = data_t'(tx_pkt_q);
@@ -436,7 +440,7 @@ module bingo_hw_manager_remote_link #(
     // Done page
     logic rx_done_kind_ok;
     assign rx_done_pkt     = pkt_t'(rx_done_data);
-    assign rx_done_kind_ok = (rx_done_pkt.kind == KindDone);
+    assign rx_done_kind_ok = (rx_done_pkt.kind == KindDone) || (rx_done_pkt.kind == KindReject);
     always_comb begin
         rx_done_peer_ok = 1'b0;
         rx_done_peer    = '0;
@@ -452,6 +456,7 @@ module bingo_hw_manager_remote_link #(
     assign rx_done_pop          = rx_done_deliver || (!rx_done_empty && !rx_done_kind_ok);
     assign done_in_proxy_slot_o = slot_t'(rx_done_pkt.slot);
     assign done_in_task_id_o    = task_id_t'(rx_done_pkt.task_id);
+    assign done_in_reject_o     = (rx_done_pkt.kind == KindReject);
 
     // Sequence checks (on delivery) and sticky errors
     always_comb begin
