@@ -250,7 +250,9 @@ bingo_hw_manager_top
 | `WatchdogConfirmTimeoutCycles` | 0 | Cycles without heartbeat before a busy core is fenced and its tasks are replayed; must exceed the heartbeat timeout; `0` = detection only (no fence, replay or remap); CSR interface only |
 | `WatchdogCoreMask` | `'1` | Per-(core, cluster) watchdog enable; masked slots are never `dead_suspect` |
 | `CoreTypeIdWidth` | 4 | Width of one `CoreTypeId` entry |
-| `CoreTypeId` | all `1` | `[core][cluster]` type id; a fenced core's replayed and later tasks may run on a live core of the same cluster with the same non-zero type (`0` = never hands over or takes over tasks) |
+| `CoreTypeId` | all `1` | `[core][cluster]` type id; a fenced core's replayed and later tasks may run on a live core with the same non-zero type (`0` = never hands over or takes over tasks) |
+| `SubstituteLevelMask` | `3'b001` | Where a fenced core's tasks may go: bit 0 same cluster, bit 1 another cluster of the chiplet, bit 2 another chiplet (remote dispatch, see below) |
+| `ImportSubstituteLevelMask` | `SubstituteLevelMask & 3'b011` | Levels an imported (level-3) task may use to find a live core here; a different value is a debug / loopback aid |
 | `CsrHeartbeatAddr` | `12'h5fd` | CSR number of the heartbeat write (e.g. `12'h5fe` = write to the ready CSR) |
 
 ## Interface Modes
@@ -299,8 +301,10 @@ retired, in order: the task it was running, then the tasks queued behind it. The
 already passed. `bingo_hw_manager_replay_ctrl` migrates one fenced core at a time:
 1. flush its ready queue and let a done that arrived before the fence retire its task;
 2. move its checkout entries, in order, into the ready + checkout queues of a live core
-   (per entry: the lowest live core of the cluster that is the entry's logical core or has its
-   non-zero `CoreTypeId`; dummy-set / CERF-skipped entries only go to the checkout queue);
+   (per entry, `bingo_hw_manager_substitute_sel`: the entry's logical core if it is live, else
+   the lowest live core with the same non-zero `CoreTypeId`, first in the logical cluster, then
+   in the other clusters if `SubstituteLevelMask[1]`; dummy-set / CERF-skipped entries only go
+   to the checkout queue);
 3. mark the core retired.
 
 A replayed task keeps its logical core id, so its dep_set releases the same dependents as
@@ -316,8 +320,9 @@ While a replay step may push into a cluster, normal dispatch into that cluster p
   waits for its source task because both sit in the same core's checkout FIFO.
 - A fenced logical core's new tasks wait until it is retired and no other slot of its cluster
   is still being replayed, so its replayed (older) tasks reach their new core first.
-- Once retired, an executing task (normal/gating) goes to the lowest-indexed core of the same
-  cluster that is not fenced and has the same non-zero `CoreTypeId`; without one, it waits.
+- Once retired, an executing task (normal/gating) goes to the same substitute as its replayed
+  entries (`bingo_hw_manager_substitute_sel`, same cluster first); without one, it waits (or is
+  exported, level 3).
   The choice only depends on the set of fenced cores, so a dead core's tasks go to one
   substitute, in order. Dependencies still use the logical core (dep-matrix column =
   `assigned_core_id`); ready/checkout/done queues are those of the physical core.
@@ -335,7 +340,8 @@ While a replay step may push into a cluster, normal dispatch into that cluster p
 - A fenced core's memory side effects are not stopped by the manager; the system has to reset
   or isolate it (`core_fenced_o`).
 - A core that dies while idle is not detected (only busy cores are timed).
-- Replay and remap stay within a cluster; there is no cross-cluster or cross-chiplet replay.
+- Level 3 assumes the executing chiplet can run the task by its id (same task tables, reachable
+  arguments and data); see "Levels 2 and 3" for what the transport does and does not cover.
 - A fenced core is only released by reset.
 - Replay needs the CSR ready/done interface (`READY_AND_DONE_QUEUE_INTERFACE_TYPE = 1`).
 - The waiting queues are per core index and shared by the clusters, so a held task of a
@@ -345,8 +351,44 @@ While a replay step may push into a cluster, normal dispatch into that cluster p
 Simulation prints `[BINGO_WD]` on every `dead_suspect` / `fenced` change, `[BINGO_FENCE]` for
 every dropped done, `[BINGO_REPLAY]` for every moved checkout entry, `[BINGO_RETIRED]` when a
 fenced core's migration is complete, `[BINGO_REPLAY_STUCK]` when no core may run an entry, and
-`[BINGO_REMAP]` for every remapped task. `[BINGO_ASSERT]` errors flag replay invariant
-violations.
+`[BINGO_REMAP]` for every remapped task. Level 3 adds `[BINGO_EXPORT]`, `[BINGO_IMPORT]`,
+`[BINGO_REMOTE_DONE_OUT/IN]` and `[BINGO_REMOTE_REJECT_OUT/IN]`. `[BINGO_ASSERT]` errors flag
+replay invariant violations.
+
+### Levels 2 and 3: other clusters and other chiplets
+
+`SubstituteLevelMask` widens the search for a substitute. Level 1 (bit 0) is the logical
+cluster, level 2 (bit 1) the other clusters of the chiplet (same `CoreTypeId`, lowest cluster
+index first). Dependencies keep using the descriptor's logical core and cluster; done and
+checkout queues are those of the physical slot.
+
+Level 3 (bit 2, CSR interface only) sends a task to another chiplet when no live core of its
+type is left on this one:
+- **Export.** The dead core's slot stays the *proxy* of its tasks. During replay, an entry
+  without a local substitute is rotated to the tail of the proxy's own checkout queue (marked
+  exported) and copied to the export stream; new tasks of the retired core are exported the
+  same way. Only types the transport can deliver are exported (`remote_export_type_en_i`, e.g.
+  `bingo_hw_manager_remote_link` `target_valid_o`); any other type is stuck as without level 3.
+- **Import.** The receiving chiplet runs the task on a live core of the same type (home slot =
+  lowest slot of the type, substitute by `ImportSubstituteLevelMask`), with its dependency
+  fields cleared, and returns a remote done when it retires. Imported tasks are never exported
+  again.
+- **Remote done.** It enters the proxy's done queue; the proxy's checkout head then retires in
+  order, with its normal dep_set. The dones of a proxy come back in export order; a done that
+  does not belong to the proxy's exported head sets `remote_done_mismatch_o` and stops the slot.
+- **Reject.** If the receiving chiplet has no live core of the type (on arrival, or because the
+  core running its imports died and none is left), it returns a reject instead of holding the
+  link. The proxy slot then stops retiring and exporting, and `replay_stuck_o` is raised, as
+  when no local core may run a task.
+
+`bingo_hw_manager_remote_link` carries these streams between chiplets as one 64-bit AXI-Lite
+write per message (dispatch page and done page of an 8 KiB mailbox region): a static
+`RemoteTargetChip[core type]` table picks the destination, per-peer credits keep the receive
+FIFOs from overflowing, and sequence numbers, unknown peers and write errors set sticky
+`error_o` bits. It does not retransmit: a lost packet leaves the proxy entry waiting.
+Level 3 also needs the executing chiplet to be able to run a task given only its id: task
+tables, argument records and data must be reachable from there (not true for chiplet-local
+task tables or 32-bit L1 pointers).
 
 ## Dependencies
 
@@ -417,6 +459,11 @@ Evaluated via cycle-accurate Python simulator (`scripts/eval_darts.py`):
 | 1 | `bingo_hw_manager_pm.sv` | Power manager |
 | 1 | `bingo_hw_manager_cond_exec_controller.sv` | CERF (conditional execution) |
 | 1 | `bingo_hw_manager_load_monitor.sv` | Load monitoring |
+| 1 | `bingo_hw_manager_watchdog.sv` | Heartbeat watchdog: `dead_suspect` and fence |
+| 1 | `bingo_hw_manager_substitute_sel.sv` | Substitute choice (levels 1 and 2) |
+| 1 | `bingo_hw_manager_replay_ctrl.sv` | Replay of a fenced core's outstanding tasks (move, rotate, bounce) |
+| 1 | `bingo_hw_manager_core_remap.sv` | Placement of new tasks of a retired core |
+| 1 | `bingo_hw_manager_remote_link.sv` | Level-3 transport over AXI-Lite (next to the top, not inside it) |
 | 2 | `bingo_hw_manager_top.sv` | Top-level integration |
 
 ## Testing
@@ -443,6 +490,11 @@ Two layers, both self-contained in this repo:
 # RTL: compile + simulate one testbench (requires QuestaSim)
 make compile.log
 make sim-bingo_hw_manager_top.log           # or _tagged / _dep_matrix / _cerf_basic / _cerf_skip
+
+# ESAT servers: compile once, run tests by short name (logs in build/)
+scripts/sim.sh remap_full_flow rlink_reject
+# Full regression: every Bender test tb, then the random replay / level-3 tests with seeds
+scripts/run_regression.sh 40 mytag
 
 # Python model + compiler tests
 make test-model                             # python3 -m pytest model/tests/
