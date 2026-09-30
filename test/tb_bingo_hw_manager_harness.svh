@@ -145,6 +145,9 @@ localparam int unsigned FAULT_HANG                 = 0;
 int          fault_core    = FAULT_CORE;
 int unsigned fault_task_id = FAULT_TASK_ID;
 int unsigned fault_mode    = FAULT_MODE;
+// second fault, settable at run time as well (random stimuli)
+int          fault2_core    = FAULT2_CORE;
+int unsigned fault2_task_id = FAULT2_TASK_ID;
 localparam int unsigned FAULT_ZOMBIE               = 1;
 localparam int unsigned FAULT_SLOW                 = 2;
 
@@ -1340,9 +1343,9 @@ task automatic core_worker(
         $display("[TRACE] %0t,TASK_DISPATCHED,%0d,%0d,%0d,%0d",
                  $time, chip, cluster, core, data[TaskIdWidth-1:0]);
 
-        if ((idx == FAULT2_CORE) && (data[TaskIdWidth-1:0] == FAULT2_TASK_ID[TaskIdWidth-1:0])) begin
+        if ((idx == fault2_core) && (data[TaskIdWidth-1:0] == fault2_task_id[TaskIdWidth-1:0])) begin
             $display("[FAULT] %0t chip %0d cluster %0d core %0d: second fault (hang) on task %0d",
-                     $time, chip, cluster, core, FAULT2_TASK_ID);
+                     $time, chip, cluster, core, fault2_task_id);
             forever @(posedge clk_i);
         end
         if ((idx == FAULT3_CORE) && (data[TaskIdWidth-1:0] == FAULT3_TASK_ID[TaskIdWidth-1:0])) begin
