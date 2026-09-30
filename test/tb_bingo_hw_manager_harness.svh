@@ -765,6 +765,55 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_counters
 end
 
 // ---------------------------------------------------------------------------
+// Replay / remap SVA (white-box, always on)
+// ---------------------------------------------------------------------------
+// Concurrent properties on the DUT state; the per-task properties (retired
+// exactly once, per-logical-core order, none lost) are checked by the retire
+// scoreboard above and the final check below.
+for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_sva
+    typedef logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] slot_mask_t;
+    slot_mask_t fenced, retired, stuck, hold;
+    assign fenced  = gen_dut[gi].i_dut.core_fenced;
+    assign retired = gen_dut[gi].i_dut.core_retired;
+    assign stuck   = gen_dut[gi].i_dut.replay_stuck_slot;
+    assign hold    = gen_dut[gi].i_dut.replay_hold_slot;
+
+    default clocking cb_sva @(posedge clk_i); endclocking
+    default disable iff (!rst_ni);
+
+    // fenced / retired / stuck are sticky; retired and stuck imply fenced and
+    // exclude each other
+    a_fenced_sticky:  assert property (($past(fenced)  & ~fenced)  == '0);
+    a_retired_sticky: assert property (($past(retired) & ~retired) == '0);
+    a_stuck_sticky:   assert property (($past(stuck)   & ~stuck)   == '0);
+    a_retired_fenced: assert property ((retired & ~fenced) == '0);
+    a_stuck_fenced:   assert property ((stuck & ~fenced) == '0);
+    a_retired_stuck:  assert property ((retired & stuck) == '0);
+    // A MOVE step goes from a fenced, unretired slot to a live other slot
+    a_move_src: assert property (gen_dut[gi].i_dut.replay_move_fire |->
+        fenced[gen_dut[gi].i_dut.replay_src_core][gen_dut[gi].i_dut.replay_src_cluster] &&
+        !retired[gen_dut[gi].i_dut.replay_src_core][gen_dut[gi].i_dut.replay_src_cluster]);
+    a_move_dst: assert property (gen_dut[gi].i_dut.replay_move_fire |->
+        !fenced[gen_dut[gi].i_dut.replay_dst_core][gen_dut[gi].i_dut.replay_dst_cluster]);
+    // A held (moved / partly moved) or stuck slot retires nothing
+    a_hold_no_retire: assert property (
+        ((hold | stuck) & gen_dut[gi].i_dut.checkout_queue_pop & ~gen_dut[gi].i_dut.replay_pop) == '0);
+    // Replay pushes and routed pushes never meet in one queue
+    a_push_excl: assert property ((gen_dut[gi].i_dut.replay_push & gen_dut[gi].i_dut.remap_route_fire) == '0);
+    // A fenced slot gets no ready push (it would never run the task)
+    a_no_ready_push_fenced: assert property ((fenced & gen_dut[gi].i_dut.ready_queue_push) == '0);
+
+    c_fence:       cover property ($rose(|fenced));
+    c_retire:      cover property ($rose(|retired));
+    c_stuck:       cover property ($rose(|stuck));
+    c_cross_move:  cover property (gen_dut[gi].i_dut.replay_move_fire &&
+        (gen_dut[gi].i_dut.replay_src_cluster != gen_dut[gi].i_dut.replay_dst_cluster));
+    c_move_abort:  cover property ((gen_dut[gi].i_dut.i_replay_ctrl.state_q == 2) &&
+                                   (gen_dut[gi].i_dut.i_replay_ctrl.state_d == 0) &&
+                                   (|(hold & ~gen_dut[gi].i_dut.replay_move)));
+end
+
+// ---------------------------------------------------------------------------
 // CSR Helper Tasks
 // ---------------------------------------------------------------------------
 task automatic reset_csr_interface();
@@ -1158,3 +1207,20 @@ end
 // ---------------------------------------------------------------------------
 // Stimulus file was included above (before deadlock watchdog)
 // ---------------------------------------------------------------------------
+
+// None lost: once all expected tasks completed, every task that entered a
+// checkout queue has retired
+final begin
+    if (completed_task_count == EXPECTED_TASK_COUNT) begin
+        for (int gi = 0; gi < NUM_CHIPLET; gi++) begin
+            for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+                    if (retire_expected[gi][cl][c].size() != 0) begin
+                        $error("[RETIRE_CHECK] chip %0d: logical core %0d cluster %0d never retired tasks %p",
+                               gi, c, cl, retire_expected[gi][cl][c]);
+                    end
+                end
+            end
+        end
+    end
+end
