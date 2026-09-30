@@ -536,6 +536,8 @@ module bingo_hw_manager_top #(
     logic [NUM_CLUSTERS_PER_CHIPLET-1:0] replay_move_cluster; // a MOVE step may push into the cluster
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_ready_flush;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_move;
+    // Checkout output held by the replay controller (being moved or partly moved)
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_hold_slot;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_pop;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_push;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_push_ready;
@@ -1149,7 +1151,7 @@ module bingo_hw_manager_top #(
             assign checkout_head_exec[core][cluster] = (checkout_queue_data_out[core][cluster].task_type == 2'b00) ||
                                                        (checkout_queue_data_out[core][cluster].task_type == 2'b10);
             assign stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] = !checkout_queue_empty[core][cluster] &&
-                                                                                          !replay_move[core][cluster] &&
+                                                                                          !replay_hold_slot[core][cluster] &&
                                                                                           !replay_stuck_slot[core][cluster] &&
                                                                                           (!checkout_head_exec[core][cluster] ||
                                                                                            !done_q_empty[core][cluster]);
@@ -1547,6 +1549,7 @@ module bingo_hw_manager_top #(
         .retired_o               ( core_retired           ),
         .ready_flush_o           ( replay_ready_flush     ),
         .move_o                  ( replay_move            ),
+        .hold_o                  ( replay_hold_slot       ),
         .move_fire_o             ( replay_move_fire       ),
         .push_ready_o            ( replay_push_ready_q    ),
         .src_core_o              ( replay_src_core        ),

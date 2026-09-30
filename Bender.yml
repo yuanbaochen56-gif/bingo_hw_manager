@@ -71,6 +71,7 @@ sources:
       - test/tb_bingo_hw_manager_replay_done_race.sv       # done vs confirm timeout, exactly once
       - test/tb_bingo_hw_manager_replay_no_substitute.sv   # AllowMask '0: replay_stuck, rest runs
       - test/tb_bingo_hw_manager_replay_chain.sv           # substitute dies too
+      - test/tb_bingo_hw_manager_replay_chain_partial.sv   # substitute dies mid-MOVE: order kept
       - test/tb_bingo_hw_manager_replay_stuck_other_core.sv # a stuck core does not block another replay
       - test/tb_bingo_hw_manager_replay_two_clusters.sv    # replay inside cluster 1
       - test/tb_bingo_hw_manager_replay_disabled.sv        # confirm timeout 0: detection only

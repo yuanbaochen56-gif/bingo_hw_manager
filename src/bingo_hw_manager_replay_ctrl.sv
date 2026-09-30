@@ -13,7 +13,8 @@
 // dependents see the same producer as before.
 //
 // One slot is migrated at a time:
-//   IDLE   pick the lowest fenced slot D that is neither retired nor stuck
+//   IDLE   pick the lowest fenced slot D that is neither retired nor stuck and
+//          does not wait for another slot (see below)
 //   DRAIN  flush D's ready FIFO; wait until D's done FIFO is empty (a done that
 //          arrived before the fence retires its task normally, no replay)
 //   MOVE   pop D's checkout head and push it to substitute S, chosen per entry
@@ -21,6 +22,17 @@
 //          so S may sit in another cluster); stall while S is full. If no live
 //          core may run the entry, mark D stuck and go back to IDLE.
 //   FINISH mark D retired
+// A substitute S may be fenced while D is only partly moved (e.g. MOVE stalls
+// because S is full, and S is dead as well). D's entries already on S are older
+// than the ones still on D, so moving the rest of D to the next substitute S2
+// before S itself is migrated would put D's newest tasks ahead of its oldest
+// ones on S2. MOVE therefore aborts D (back to IDLE, not retired) as soon as a
+// slot it pushed into is fenced; D waits until every such slot is retired (S's
+// entries, including D's older ones, reached S2 first) and then resumes. If
+// such a slot is stuck, D is marked stuck as well. The wait-for relation is
+// acyclic: D only waits for slots fenced after they received D's entries.
+// While D is partly moved, its checkout output stays held (hold_o), so a
+// dummy-set left on D cannot fire before D's moved tasks.
 // Stuck is sticky and final: fenced is sticky, so a missing substitute never
 // appears later. A stuck slot keeps its remaining entries (the top holds its
 // checkout output), and the other fenced slots are still migrated.
@@ -54,6 +66,9 @@ module bingo_hw_manager_replay_ctrl #(
     output logic [NumCores-1:0][NumClusters-1:0] ready_flush_o,
     // Slot currently drained by MOVE: its normal checkout output must be held
     output logic [NumCores-1:0][NumClusters-1:0] move_o,
+    // Fenced slot whose checkout output must be held: being moved, or partly
+    // moved and waiting to resume
+    output logic [NumCores-1:0][NumClusters-1:0] hold_o,
     // One MOVE step: pop the head of (src_core_o, src_cluster_o) and push it to
     // (dst_core_o, dst_cluster_o); push_ready_o also pushes its task id to the
     // ready FIFO of the destination.
@@ -80,8 +95,26 @@ module bingo_hw_manager_replay_ctrl #(
     logic [ClusterIdWidth-1:0] src_cluster_q, src_cluster_d;
     logic [NumCores-1:0][NumClusters-1:0] retired_q, retired_d;
     logic [NumCores-1:0][NumClusters-1:0] stuck_q, stuck_d;
+    // used_q[s]: slots that received entries of slot s during its (possibly
+    // aborted) migration; cleared when s is retired
+    logic [NumCores-1:0][NumClusters-1:0][NumCores-1:0][NumClusters-1:0] used_q, used_d;
+    // Per slot: a slot it pushed into is fenced and not retired (wait), or stuck
+    logic [NumCores-1:0][NumClusters-1:0] wait_used;
+    logic [NumCores-1:0][NumClusters-1:0] stuck_used;
+    logic [NumCores-1:0][NumClusters-1:0] partly_moved;
 
-    // Lowest fenced slot that is neither retired nor stuck
+    always_comb begin
+        for (int unsigned c = 0; c < NumCores; c++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                wait_used[c][cl]    = |(used_q[c][cl] & fenced_i & ~retired_q);
+                stuck_used[c][cl]   = |(used_q[c][cl] & stuck_q);
+                partly_moved[c][cl] = |used_q[c][cl];
+            end
+        end
+    end
+
+    // Lowest fenced slot that is neither retired nor stuck, nor waits for a
+    // slot it partly moved into
     logic                      pending_found;
     logic [CoreIdWidth-1:0]    pending_core;
     logic [ClusterIdWidth-1:0] pending_cluster;
@@ -92,7 +125,8 @@ module bingo_hw_manager_replay_ctrl #(
         pending_cluster = '0;
         for (int cl = NumClusters - 1; cl >= 0; cl--) begin
             for (int c = NumCores - 1; c >= 0; c--) begin
-                if (fenced_i[c][cl] && !retired_q[c][cl] && !stuck_q[c][cl]) begin
+                if (fenced_i[c][cl] && !retired_q[c][cl] && !stuck_q[c][cl] &&
+                    !wait_used[c][cl]) begin
                     pending_found   = 1'b1;
                     pending_core    = CoreIdWidth'(c);
                     pending_cluster = ClusterIdWidth'(cl);
@@ -141,6 +175,16 @@ module bingo_hw_manager_replay_ctrl #(
         src_cluster_d = src_cluster_q;
         retired_d     = retired_q;
         stuck_d       = stuck_q;
+        used_d        = used_q;
+
+        // A partly moved slot waiting for a stuck slot can never resume
+        for (int unsigned c = 0; c < NumCores; c++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                if (fenced_i[c][cl] && !retired_q[c][cl] && stuck_used[c][cl]) begin
+                    stuck_d[c][cl] = 1'b1;
+                end
+            end
+        end
 
         ready_flush_o = '0;
         move_o        = '0;
@@ -165,16 +209,22 @@ module bingo_hw_manager_replay_ctrl #(
                 move_o[src_core_q][src_cluster_q] = 1'b1;
                 if (checkout_empty_i[src_core_q][src_cluster_q]) begin
                     state_d = FINISH;
+                end else if (wait_used[src_core_q][src_cluster_q]) begin
+                    // A substitute that already holds entries of this slot died:
+                    // migrate it first (see above)
+                    state_d = IDLE;
                 end else if (!dst_found) begin
                     stuck_d[src_core_q][src_cluster_q] = 1'b1;
                     state_d = IDLE;
                 end else if (dst_space) begin
                     move_fire_o  = 1'b1;
                     push_ready_o = !head_no_exec;
+                    used_d[src_core_q][src_cluster_q][dst_core][dst_cluster] = 1'b1;
                 end
             end
             FINISH: begin
                 retired_d[src_core_q][src_cluster_q] = 1'b1;
+                used_d[src_core_q][src_cluster_q]    = '0;
                 state_d = IDLE;
             end
             default: state_d = IDLE;
@@ -183,6 +233,14 @@ module bingo_hw_manager_replay_ctrl #(
 
     assign retired_o     = retired_q;
     assign stuck_o       = stuck_q;
+    always_comb begin
+        for (int unsigned c = 0; c < NumCores; c++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                hold_o[c][cl] = move_o[c][cl] ||
+                                (fenced_i[c][cl] && !retired_q[c][cl] && partly_moved[c][cl]);
+            end
+        end
+    end
     assign src_core_o    = src_core_q;
     assign src_cluster_o = src_cluster_q;
     assign dst_core_o    = dst_core;
@@ -195,12 +253,14 @@ module bingo_hw_manager_replay_ctrl #(
             src_cluster_q <= '0;
             retired_q     <= '0;
             stuck_q       <= '0;
+            used_q        <= '0;
         end else begin
             state_q       <= state_d;
             src_core_q    <= src_core_d;
             src_cluster_q <= src_cluster_d;
             retired_q     <= retired_d;
             stuck_q       <= stuck_d;
+            used_q        <= used_d;
         end
     end
 
