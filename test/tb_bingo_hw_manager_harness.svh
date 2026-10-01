@@ -663,10 +663,21 @@ end
 // ---------------------------------------------------------------------------
 logic [NUM_CHIPLET-1:0]      cerf_write_en;
 logic [31:0]                 cerf_write_data [NUM_CHIPLET];
+// Degradation table (core type -> clear/set). Width 16 matches CoreTypeIdWidth 4.
+localparam int unsigned CERF_FB_NUM_TYPES = 16;
+logic [CERF_FB_NUM_TYPES-1:0]      cerf_fb_en    [NUM_CHIPLET];
+logic [CERF_FB_NUM_TYPES-1:0][4:0] cerf_fb_clear [NUM_CHIPLET];
+logic [CERF_FB_NUM_TYPES-1:0][4:0] cerf_fb_set   [NUM_CHIPLET];
+logic [CERF_FB_NUM_TYPES-1:0]      cerf_fb_evt   [NUM_CHIPLET];
 
 initial begin
     cerf_write_en = '0;
-    for (int i = 0; i < NUM_CHIPLET; i++) cerf_write_data[i] = '0;
+    for (int i = 0; i < NUM_CHIPLET; i++) begin
+        cerf_write_data[i] = '0;
+        cerf_fb_en[i]      = '0;
+        cerf_fb_clear[i]   = '0;
+        cerf_fb_set[i]     = '0;
+    end
 end
 
 task automatic cerf_write_bitmask(input int chip, input logic [31:0] mask);
@@ -1044,6 +1055,10 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .cerf_write_en_i                      ( cerf_write_en[chiplet_idx]                                   ),
         .cerf_write_data_i                    ( cerf_write_data[chiplet_idx]                                 ),
         .cerf_state_o                         ( /* read-back, unused in standalone TB */                     ),
+        .cerf_fb_en_i                         ( cerf_fb_en[chiplet_idx]                                      ),
+        .cerf_fb_clear_i                      ( cerf_fb_clear[chiplet_idx]                                   ),
+        .cerf_fb_set_i                        ( cerf_fb_set[chiplet_idx]                                     ),
+        .cerf_fb_evt_o                        ( cerf_fb_evt[chiplet_idx]                                     ),
         // DARTS: Load monitor
         .load_total_pending_o                 ( /* unused */                                                ),
         // Watchdog / replay status (probed hierarchically by the stimuli)

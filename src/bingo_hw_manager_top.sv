@@ -200,6 +200,13 @@ module bingo_hw_manager_top #(
     input  logic                                cerf_write_en_i,
     input  logic [31:0]                         cerf_write_data_i,
     output logic [31:0]                         cerf_state_o,
+    // Degradation (bingo_hw_manager_ctrl): per core type, once any slot of that
+    // type is stuck or rejected, clear one CERF group and set another.
+    // Enable 0 leaves the CERF unchanged. evt is sticky until that enable drops.
+    input  logic [2**CoreTypeIdWidth-1:0]       cerf_fb_en_i = '0,
+    input  logic [2**CoreTypeIdWidth-1:0][4:0]  cerf_fb_clear_i = '0,
+    input  logic [2**CoreTypeIdWidth-1:0][4:0]  cerf_fb_set_i = '0,
+    output logic [2**CoreTypeIdWidth-1:0]       cerf_fb_evt_o,
     // DARTS: Load Monitor output (CSR readable)
     output logic [10:0]                         load_total_pending_o,
     // Watchdog: confirmed dead cores (sticky). The system may reset / isolate them.
@@ -1924,6 +1931,12 @@ module bingo_hw_manager_top #(
     assign park_block = park_hold | park_unpark;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_fail;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_slot_push;
+    // CERF degradation request (ctrl) and the cycle the register file commits it
+    logic                        cerf_fb_req;
+    logic [CoreTypeIdWidth-1:0]  cerf_fb_type;
+    logic [4:0]                  cerf_fb_clear;
+    logic [4:0]                  cerf_fb_set;
+    logic                        cerf_fb_done;
     always_comb begin
         bingo_hw_manager_park_fail_o = '0;
         for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
@@ -1980,6 +1993,12 @@ module bingo_hw_manager_top #(
         .ready_empty_i  ( ready_queue_empty ),
         .slot_push_i    ( park_slot_push   ),
         .moved_i        ( park_moved       ),
+        .stuck_i        ( replay_stuck_slot ),
+        .rejected_i     ( remote_rejected_q ),
+        .cerf_fb_en_i   ( cerf_fb_en_i     ),
+        .cerf_fb_clear_i( cerf_fb_clear_i  ),
+        .cerf_fb_set_i  ( cerf_fb_set_i    ),
+        .cerf_fb_done_i ( cerf_fb_done     ),
         .wd_tick_o      ( ctrl_wd_tick     ),
         .pm_boost_o     ( ctrl_pm_boost    ),
         .pm_idle_o      ( ctrl_pm_idle     ),
@@ -1991,7 +2010,12 @@ module bingo_hw_manager_top #(
         .park_hold_o    ( park_hold    ),
         .park_parked_o  ( park_parked  ),
         .park_unpark_o  ( park_unpark  ),
-        .park_fail_o    ( park_fail    )
+        .park_fail_o    ( park_fail    ),
+        .cerf_fb_req_o  ( cerf_fb_req  ),
+        .cerf_fb_type_o ( cerf_fb_type ),
+        .cerf_fb_clear_o( cerf_fb_clear ),
+        .cerf_fb_set_o  ( cerf_fb_set  ),
+        .cerf_fb_evt_o  ( cerf_fb_evt_o )
     );
 
     bingo_hw_manager_replay_ctrl #(
@@ -2782,7 +2806,11 @@ module bingo_hw_manager_top #(
         .rst_ni           ( rst_ni                 ),
         .cerf_state_o     ( cerf_state             ),
         .cerf_write_data_i( cerf_write_data_i      ),
-        .cerf_write_en_i  ( cerf_write_en_i        )
+        .cerf_write_en_i  ( cerf_write_en_i        ),
+        .policy_req_i     ( cerf_fb_req            ),
+        .policy_clear_i   ( cerf_fb_clear          ),
+        .policy_set_i     ( cerf_fb_set            ),
+        .policy_done_o    ( cerf_fb_done           )
     );
 
 endmodule
