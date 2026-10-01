@@ -669,7 +669,7 @@ int unsigned              remote_export_count [NUM_CHIPLET];
 int unsigned              remote_import_count [NUM_CHIPLET];
 int unsigned              remote_done_in_count [NUM_CHIPLET];
 // mode 2 only
-logic [4:0]               remote_link_error   [NUM_CHIPLET];
+logic [5:0]               remote_link_error   [NUM_CHIPLET];
 int unsigned              remote_credit_stall [NUM_CHIPLET];  // cycles an export waited for a credit
 int unsigned              remote_max_outstanding [NUM_CHIPLET];
 for (genvar i = 0; i < NUM_CHIPLET; i++) begin : gen_remote_link

@@ -41,14 +41,22 @@
 //
 // Write errors: a packet whose write gets an error response is sent again
 // after RetryBackoff cycles, with the same sequence number, up to RetryLimit
-// more times (e.g. a mailbox that is full for a while); then it is dropped,
-// and a dropped dispatch gives its credit back (its task is lost, but later
-// exports to that peer do not stall).
+// more times (e.g. a transient interconnect error); then it is dropped
+// (error_o[5]), and a dropped dispatch gives its credit back (its task is
+// lost, but later exports to that peer do not stall). A dropped done or
+// reject leaves the origin's proxy waiting: the TX is shared by all peers,
+// so retrying forever would stall every other packet of this chiplet too,
+// and with the FIFO sizing above a mailbox is never full when a write
+// arrives, so an error that outlasts the retries is not transient.
+// Receiver contract (bingo_hw_manager_write_mailbox meets it): a write that
+// answers an error must not have been enqueued, or a resend duplicates the
+// packet (the receiver would see it as a seq gap, error_o[2]).
 //
 // Errors (sticky, error_o):
-//   [0] SLVERR / DECERR on a write (retried) [1] wrong kind on a page (dropped)
+//   [0] SLVERR / DECERR on a write (resent)  [1] wrong kind on a page (dropped)
 //   [2] seq gap from a peer                  [3] unknown peer chip
 //   [4] done from a peer without an outstanding export (credit overflow)
+//   [5] a packet dropped after its last resend (lost)
 `include "common_cells/registers.svh"
 `include "axi/typedef.svh"
 module bingo_hw_manager_remote_link #(
@@ -129,7 +137,7 @@ module bingo_hw_manager_remote_link #(
     // remote_export_type_en_i: the other types are never exported)
     output logic [NumCoreTypes-1:0]                target_valid_o,
     // Status
-    output logic [4:0]                             error_o,
+    output logic [5:0]                             error_o,
     output logic [NumPeers-1:0][CreditWidth-1:0]   credits_o
 );
     localparam logic [3:0] KindDispatch = 4'h5;
@@ -225,7 +233,7 @@ module bingo_hw_manager_remote_link #(
     logic [NumPeers-1:0][CreditWidth-1:0] credit_q, credit_d;
     seq_t [NumPeers-1:0] tx_seq_disp_q, tx_seq_disp_d, tx_seq_done_q, tx_seq_done_d;
     seq_t [NumPeers-1:0] rx_seq_disp_q, rx_seq_disp_d, rx_seq_done_q, rx_seq_done_d;
-    logic [4:0] error_q, error_d;
+    logic [5:0] error_q, error_d;
 
     // ------------------------------------------------------------------
     // TX
@@ -528,6 +536,7 @@ module bingo_hw_manager_remote_link #(
         error_d       = error_q;
         if ((tx_state_q == TxWaitB) && mst_resp_i.b_valid && (mst_resp_i.b.resp != axi_pkg::RESP_OKAY)) begin
             error_d[0] = 1'b1;
+            if (tx_retry_q == RetryWidth'(RetryLimit)) error_d[5] = 1'b1;
         end
         if ((!rx_disp_empty && !rx_disp_kind_ok) || (!rx_done_empty && !rx_done_kind_ok)) error_d[1] = 1'b1;
         if (rx_disp_deliver) begin
@@ -564,6 +573,12 @@ module bingo_hw_manager_remote_link #(
         if (base_addr_i[12:0] != '0) $error("[REMOTE_LINK] base_addr_i %h is not 8 KiB aligned", base_addr_i);
     end
     always @(posedge clk_i) begin
+        if (rst_ni && (tx_state_q == TxWaitB) && mst_resp_i.b_valid && (mst_resp_i.b.resp != axi_pkg::RESP_OKAY)) begin
+            $display("[REMOTE_LINK] %0t chip=%0d write error %0d: kind=%h to chip=%0d seq=%0d slot=%0d task=%0d, %s",
+                     $time, chip_id_i, mst_resp_i.b.resp, tx_pkt_q.kind, tx_dest_q, tx_pkt_q.seq, tx_pkt_q.slot,
+                     tx_pkt_q.task_id, (tx_retry_q == RetryWidth'(RetryLimit)) ? "final drop" :
+                     $sformatf("resend %0d/%0d", tx_retry_q + 1, RetryLimit));
+        end
         if (rst_ni && (error_d != error_q)) begin
             $display("[REMOTE_LINK] %0t chip=%0d error %b -> %b", $time, chip_id_i, error_q, error_d);
         end

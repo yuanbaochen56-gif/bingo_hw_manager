@@ -3,9 +3,10 @@
 //   T1 pack / unpack, done priority, invalid target held back
 //   T2 credits run out: export stalls, resumes on the delivered done
 //   T3 SLVERR from a full mailbox sets error bit 0; the packet is resent and
-//      arrives once the mailbox drains
+//      arrives once the mailbox drains (not lost: bit 5 stays clear)
 //   T3b a mailbox that stays full: the packet is dropped after RetryLimit
-//      resends and its credit comes back
+//      resends (error bit 5) and its credit comes back
+//   T3c the same for a done: dropped (bit 5), and the TX takes the next packet
 //   T4 wrong kind on a page (dropped), T5 seq gap, T6 unknown peer,
 //   T7 done without an outstanding export (credit overflow)
 //   T8 reject: travels on the done page as kind 4'hC, returns the credit;
@@ -53,7 +54,7 @@ module tb_bingo_hw_manager_remote_link;
     logic [TIW-1:0]  din_tid   [2];
     logic            din_reject [2];
     logic [15:0]     tgt_valid  [2];
-    logic [4:0]      err       [2];
+    logic [5:0]      err       [2];
     logic [0:0][1:0] credits   [2];
 
     lite_req_t  [2:0] xbar_in_req;
@@ -252,7 +253,7 @@ module tb_bingo_hw_manager_remote_link;
         return {8'(chip), LinkBase[39:0] + 40'(p * 32'h1000)};
     endfunction
 
-    task automatic expect_err(input int i, input logic [4:0] exp, input string what);
+    task automatic expect_err(input int i, input logic [5:0] exp, input string what);
         if (err[i] !== exp) $error("[%s] chip %0d error %b, expected %b", what, i, err[i], exp);
     endtask
 
@@ -360,7 +361,7 @@ module tb_bingo_hw_manager_remote_link;
         if (resp != axi_pkg::RESP_SLVERR) $error("[T3] write to a full mailbox answered %0d", resp);
         send_export(0, 4, 0, 1, 0);
         repeat (50) @(posedge clk);
-        expect_err(0, 5'b00001, "T3");
+        expect_err(0, 6'b000001, "T3");
         #1 imp_ready[1] = 1'b1;
         wait (imports[1].size() == 3);
         repeat (20) @(posedge clk);
@@ -369,7 +370,7 @@ module tb_bingo_hw_manager_remote_link;
         end
         // the injected packets used chip 0's sequence numbers 0 and 1: the resent
         // export (seq 0) arrives as a gap
-        expect_err(1, 5'b00100, "T3");
+        expect_err(1, 6'b000100, "T3");
 
         // ---------------- T3b: retries run out ----------------
         do_reset();
@@ -379,26 +380,46 @@ module tb_bingo_hw_manager_remote_link;
         send_export(0, 4, 0, 1, 0);
         repeat (2000) @(posedge clk);               // > RetryLimit * (RetryBackoff + handshake)
         if (credits[0][0] != Credits) $error("[T3b] credits %0d after the drop, expected %0d", credits[0][0], Credits);
-        expect_err(0, 5'b00001, "T3b");
+        expect_err(0, 6'b100001, "T3b");
         #1 imp_ready[1] = 1'b1;
         repeat (100) @(posedge clk);
         if (imports[1].size() != 2) $error("[T3b] %0d imports, expected 2 (task 4 dropped)", imports[1].size());
+
+        // ---------------- T3c: a done whose retries run out ----------------
+        do_reset();
+        din_ready[0] = 1'b0;
+        // fill chip 0's done mailbox (depth 2) behind the link's back
+        inject(page(0, 1), mk_pkt(4'hA, 1, 0, 0, 0, 1), resp);
+        inject(page(0, 1), mk_pkt(4'hA, 1, 0, 0, 1, 2), resp);
+        send_done(1, 0, 1, 5);
+        repeat (2000) @(posedge clk);
+        expect_err(1, 6'b100001, "T3c");
+        expect_err(0, '0, "T3c");
+        // the dropped done no longer holds chip 1's TX
+        fork : t3c_free
+            send_done(1, 0, 2, 6);
+            begin
+                repeat (50) @(posedge clk);
+                $error("[T3c] chip 1 does not take a done after the drop");
+            end
+        join_any
+        disable t3c_free;
 
         // ---------------- T4: wrong kind ----------------
         do_reset();
         inject(page(1, 0), mk_pkt(4'hA, 0, 0, 1, 0, 1), resp);   // done packet on the dispatch page
         repeat (20) @(posedge clk);
-        expect_err(1, 5'b00010, "T4a");
+        expect_err(1, 6'b000010, "T4a");
         inject(page(1, 1), mk_pkt(4'h5, 0, 0, 1, 0, 1), resp);   // dispatch packet on the done page
         inject(page(1, 1), '0, resp);                            // garbage
         repeat (20) @(posedge clk);
         if (imports[1].size() != 0 || dones[1].size() != 0) $error("[T4] a bad packet was delivered");
-        expect_err(1, 5'b00010, "T4b");
+        expect_err(1, 6'b000010, "T4b");
         // the link still works after dropping them
         send_export(0, 8, 0, 1, 0);
         wait (imports[1].size() == 1);
         repeat (5) @(posedge clk);
-        expect_err(1, 5'b00010, "T4c");
+        expect_err(1, 6'b000010, "T4c");
         expect_err(0, '0, "T4c");
 
         // ---------------- T5: seq gap ----------------
@@ -408,14 +429,14 @@ module tb_bingo_hw_manager_remote_link;
         expect_err(1, '0, "T5a");
         inject(page(1, 0), mk_pkt(4'h5, 0, 0, 1, 2, 2), resp);   // seq 2: gap
         repeat (20) @(posedge clk);
-        expect_err(1, 5'b00100, "T5b");
+        expect_err(1, 6'b000100, "T5b");
         if (imports[1].size() != 2) $error("[T5] %0d imports, expected 2", imports[1].size());
 
         // ---------------- T6: unknown peer ----------------
         do_reset();
         inject(page(1, 0), mk_pkt(4'h5, 7, 0, 1, 0, 1), resp);
         repeat (20) @(posedge clk);
-        expect_err(1, 5'b01000, "T6a");
+        expect_err(1, 6'b001000, "T6a");
         do_reset();
         send_done(0, 7, 0, 1);                                   // done to a chip that is no peer
         repeat (20) @(posedge clk);
@@ -425,7 +446,7 @@ module tb_bingo_hw_manager_remote_link;
         do_reset();
         inject(page(0, 1), mk_pkt(4'hA, 1, 0, 0, 0, 1), resp);   // done, but chip 0 exported nothing
         repeat (20) @(posedge clk);
-        expect_err(0, 5'b10000, "T7");
+        expect_err(0, 6'b010000, "T7");
         if (credits[0][0] != Credits) $error("[T7] credits %0d, expected %0d", credits[0][0], Credits);
 
         // ---------------- T8: reject ----------------
@@ -451,7 +472,7 @@ module tb_bingo_hw_manager_remote_link;
         // a reject packet on the dispatch page is a wrong kind
         inject(page(1, 0), mk_pkt(4'hC, 0, 0, 0, 0, 3), resp);
         repeat (20) @(posedge clk);
-        expect_err(1, 5'b00010, "T8");
+        expect_err(1, 6'b000010, "T8");
         $display("[T8] reject done");
 
         // ---------------- T9: no remote register writes ----------------

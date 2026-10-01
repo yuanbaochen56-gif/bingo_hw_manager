@@ -409,7 +409,13 @@ type is left on this one:
 write per message (dispatch page and done page of an 8 KiB mailbox region): a static
 `RemoteTargetChip[core type]` table picks the destination, per-peer credits keep the receive
 FIFOs from overflowing, and sequence numbers, unknown peers and write errors set sticky
-`error_o` bits. It does not retransmit: a lost packet leaves the proxy entry waiting.
+`error_o` bits. A write that answers an error is resent with the same sequence number, up to
+`RetryLimit` times `RetryBackoff` cycles apart; after that the packet is dropped and `error_o[5]`
+is set (a dropped dispatch returns its credit; a dropped done or reject leaves the origin's proxy
+waiting). This relies on the receiving mailbox not enqueuing a write it answers with an error
+(true for `bingo_hw_manager_write_mailbox`), or a resend would duplicate the packet. The
+receive mailboxes, and the top's chiplet done-queue mailbox, accept remote writes only to their
+write register: the others answer SLVERR, so a peer cannot flush them.
 Level 3 also needs the executing chiplet to be able to run a task given only its id: task
 tables, argument records and data must be reachable from there (not true for chiplet-local
 task tables or 32-bit L1 pointers).
