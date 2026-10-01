@@ -373,6 +373,9 @@ master, CERF, remote link) only execute them.
   timeouts count cycles of the normal clock.
 - **Recovery boost.** While a substitute of a fenced core is busy, its domain runs at
   `bingo_hw_manager_boost_power_level_i` (0 = off).
+- **Idle entry delay.** A slot only counts as idle for the PM after
+  `bingo_hw_manager_idle_entry_delay_i` idle cycles (0 = at once), so short gaps between
+  tasks keep the normal level and avoid the wake-up cost.
 
 The PM prints `[BINGO_PM]` for every level it applies (simulation only).
 
@@ -527,3 +530,12 @@ python3 model/tests/test_dep_sync.py --seeds 20 --clusters 2
 
 All Python model tests and all RTL testbenches pass; the per-edge identity tags
 drive the dispatch-before-producer hazard to zero.
+
+The Python model covers the dependency pipeline (dep matrix, tags, chiplet
+dep sets, CERF). It does not model the fault-tolerance and control-plane parts:
+watchdog fencing, replay, remap, substitute levels 2 and 3, the remote link
+and rejects, the slot mapping table and the power policies (a core that is
+dead from the start is only modelled as a core that never gets work). Those are
+verified by the RTL testbenches (`replay_*`, `remap_*`, `xcl_*`, `remote_*`,
+`rlink_*`, `pm_*`, `substitute_*`) and the random tests in
+`scripts/run_regression.sh`.
