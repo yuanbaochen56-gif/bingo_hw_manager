@@ -773,6 +773,11 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_retired;
     // Checkout queue head executes on a core (normal / gating): retires with its done
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_head_exec;
+    // Stuck or rejected slot whose head may still retire without running: its
+    // own logical core, nothing of that core elsewhere, not imported
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stuck_drain;
+    // ... and the head is a task the current CERF skips (retires as skipped)
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stuck_head_skip;
 
     // Replay (see bingo_hw_manager_replay_ctrl)
     logic                                replay_pending;      // a slot is fenced, neither retired nor stuck
@@ -1170,9 +1175,10 @@ module bingo_hw_manager_top #(
                     stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_matrix_set_tag = checkout_queue_data_out[core][cluster].dep_set_info.dep_set_tag;
                     stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_set_code  = checkout_queue_data_out[core][cluster].dep_set_info.dep_set_code;
                     // Handshake from the checkout demux and the per-(core,cluster) done queue
-                    // Dummy set: no done queue check needed
+                    // Dummy set (or a stuck slot's head the CERF skips): no done queue check needed
                     // Normal: per-(core,cluster) done queue must be non-empty
-                    stream_arbiter_dep_matrix_set_inp_valid[stream_arbiter_inp_idx] = (checkout_queue_data_out[core][cluster].task_type == 2'b01) ?
+                    stream_arbiter_dep_matrix_set_inp_valid[stream_arbiter_inp_idx] = ((checkout_queue_data_out[core][cluster].task_type == 2'b01) ||
+                                                                                       stuck_head_skip[core][cluster]) ?
                                                                                       stream_filter_checkout_queue_dep_set_enable_oup_valid[core][cluster] :
                                                                                       ((stream_filter_checkout_queue_dep_set_enable_oup_valid[core][cluster]) &&
                                                                                        (!done_q_empty[core][cluster]));
@@ -1430,7 +1436,8 @@ module bingo_hw_manager_top #(
             // valid, which would retire an executing head before its done arrived.
             // While a replay MOVE drains this queue, only the replay controller pops it
             // (valid is held low then). A stuck slot keeps its remaining entries: a
-            // dummy-set among them must not fire before its lost source task.
+            // dummy-set among them must not fire before its lost source task
+            // (only heads that run on no core leave it, see stuck_drain).
             // An imported head retires into the remote done stream instead.
             assign checkout_queue_pop[core][cluster] =
                 (stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] &&
@@ -1449,10 +1456,30 @@ module bingo_hw_manager_top #(
                 .oup_ready_i ( stream_demux_checkout_queue_chiplet_dep_set_oup_ready[core][cluster]    )
             );
 
+            // A stuck or rejected slot runs nothing more. Its head may still retire
+            // the way a skipped task does (dep_set, no done) when it never runs on
+            // a core anyway (dummy-set, or skipped at dispatch) or when the CERF
+            // now skips it (degradation, see bingo_hw_manager_ctrl). Only for the
+            // slot's own logical core with no task in another slot: then every
+            // older task of that core has left this FIFO. Anything else waits.
+            assign stuck_drain[core][cluster] =
+                (replay_stuck_slot[core][cluster] || remote_rejected_q[core][cluster]) &&
+                !checkout_queue_empty[core][cluster] && !checkout_head_imported[core][cluster] &&
+                (checkout_queue_data_out[core][cluster].assigned_core_id ==
+                 bingo_hw_manager_assigned_core_id_t'(core)) &&
+                (checkout_queue_data_out[core][cluster].assigned_cluster_id ==
+                 bingo_hw_manager_assigned_cluster_id_t'(cluster)) &&
+                (remap_outstanding_q[core][cluster] == '0);
+            assign stuck_head_skip[core][cluster] = stuck_drain[core][cluster] &&
+                checkout_queue_data_out[core][cluster].cond_exec_en &&
+                (checkout_queue_data_out[core][cluster].cond_exec_invert ?
+                    cerf_state[checkout_queue_data_out[core][cluster].cond_exec_group_id] :
+                    !cerf_state[checkout_queue_data_out[core][cluster].cond_exec_group_id]);
             // An executing task (normal / gating) only leaves the checkout queue with its
             // own done, for the local and the chiplet dep_set path alike.
-            assign checkout_head_exec[core][cluster] = (checkout_queue_data_out[core][cluster].task_type == 2'b00) ||
-                                                       (checkout_queue_data_out[core][cluster].task_type == 2'b10);
+            assign checkout_head_exec[core][cluster] = ((checkout_queue_data_out[core][cluster].task_type == 2'b00) ||
+                                                        (checkout_queue_data_out[core][cluster].task_type == 2'b10)) &&
+                                                       !stuck_head_skip[core][cluster];
             // Level 3: an exported head only retires on the remote done of the
             // same task (the dones of a proxy slot come back in export order)
             assign remote_head_mismatch[core][cluster] = RemoteEn &&
@@ -1462,9 +1489,11 @@ module bingo_hw_manager_top #(
                 (done_q_info[core][cluster].task_id != checkout_queue_data_out[core][cluster].task_id);
             assign checkout_retire_valid[core][cluster] = !checkout_queue_empty[core][cluster] &&
                                                           !replay_hold_slot[core][cluster] &&
-                                                          !replay_stuck_slot[core][cluster] &&
+                                                          (!(replay_stuck_slot[core][cluster] ||
+                                                             remote_rejected_q[core][cluster]) ||
+                                                           (stuck_drain[core][cluster] &&
+                                                            !checkout_head_exec[core][cluster])) &&
                                                           !remote_head_mismatch[core][cluster] &&
-                                                          !remote_rejected_q[core][cluster] &&
                                                           (!checkout_head_exec[core][cluster] ||
                                                            !done_q_empty[core][cluster]);
             assign stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] =
@@ -2135,6 +2164,7 @@ module bingo_hw_manager_top #(
             .remappable_i(remap_remappable[core]),
             .core_fenced_i(core_fenced),
             .core_retired_i(core_retired),
+            .core_stuck_i(replay_stuck_slot),
             .remote_type_en_i(remote_export_type_en_i),
             .remote_rejected_i(remote_rejected_q),
             .smt_found_i(smt_found),
@@ -2722,14 +2752,15 @@ module bingo_hw_manager_top #(
                                c, cl, ready_queue_pop[c][cl], done_q_push[c][cl]);
                     end
                     // A2: a fenced core receives no executing task; before it is
-                    // retired it receives nothing at all
+                    // retired or stuck it receives nothing at all
                     if (core_fenced[c][cl] && ready_queue_push[c][cl]) begin
                         $error("[BINGO_ASSERT] ready push into fenced core %0d cluster %0d", c, cl);
                     end
                     // (level 3: exported entries stay on their fenced proxy slot)
                     if (core_fenced[c][cl] && checkout_queue_push[c][cl] &&
                         !checkout_remote_tag_in[c][cl].exported &&
-                        (!core_retired[c][cl] || (checkout_queue_data_in[c][cl].task_type != 2'b01))) begin
+                        (!(core_retired[c][cl] || replay_stuck_slot[c][cl]) ||
+                         (checkout_queue_data_in[c][cl].task_type != 2'b01))) begin
                         $error("[BINGO_ASSERT] checkout push of task %0d (type %0d) into fenced core %0d cluster %0d (retired %0b)",
                                checkout_queue_data_in[c][cl].task_id, checkout_queue_data_in[c][cl].task_type,
                                c, cl, core_retired[c][cl]);
@@ -2748,8 +2779,9 @@ module bingo_hw_manager_top #(
                         $error("[BINGO_ASSERT] replay and routed push into core %0d cluster %0d", c, cl);
                     end
                     // A7: an executing task retires together with its own done
+                    // (a stuck slot's head that the CERF skips does not execute)
                     if (checkout_queue_pop[c][cl] && !replay_pop[c][cl] &&
-                        (checkout_queue_data_out[c][cl].task_type != 2'b01) &&
+                        (checkout_queue_data_out[c][cl].task_type != 2'b01) && !stuck_head_skip[c][cl] &&
                         (!done_q_pop[c][cl] || done_q_empty[c][cl] ||
                          (done_q_info[c][cl].task_id != checkout_queue_data_out[c][cl].task_id))) begin
                         $error("[BINGO_ASSERT] core %0d cluster %0d retired task %0d with done pop %0b (done task %0d)",
@@ -2761,8 +2793,10 @@ module bingo_hw_manager_top #(
                         $error("[BINGO_ASSERT] core %0d cluster %0d popped done of task %0d without retiring a task",
                                c, cl, done_q_info[c][cl].task_id);
                     end
-                    // A8: a stuck slot keeps its entries
-                    if (replay_stuck_slot[c][cl] && checkout_queue_pop[c][cl]) begin
+                    // A8: a stuck slot keeps its entries, except heads that run on
+                    // no core (dummy-set or CERF-skipped) of its own logical core
+                    if (replay_stuck_slot[c][cl] && checkout_queue_pop[c][cl] &&
+                        !(stuck_drain[c][cl] && !checkout_head_exec[c][cl])) begin
                         $error("[BINGO_ASSERT] stuck core %0d cluster %0d popped task %0d",
                                c, cl, checkout_queue_data_out[c][cl].task_id);
                     end

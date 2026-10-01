@@ -15,7 +15,9 @@
 //   Dummy-set and CERF-skipped tasks wait with the rest.
 // - A fenced (confirmed dead) logical core that is not retired yet still has
 //   outstanding tasks waiting to be replayed: its new tasks are held
-//   (select_valid_o = 0) so they cannot overtake the replayed ones.
+//   (select_valid_o = 0) so they cannot overtake the replayed ones. Once it is
+//   stuck (no live core may run them), its dummy-set and CERF-skipped tasks
+//   join its own checkout FIFO, which retires them behind its earlier tasks.
 // - Once PARKED, an executing task follows the same table as a retired core.
 //   Dummy-set and CERF-skipped tasks stay on the logical core. A parked slot
 //   is not a remote proxy: level 3 does not export it.
@@ -63,6 +65,7 @@ module bingo_hw_manager_core_remap #(
     // Core status from the watchdog / replay controller
     input  logic [NumCores-1:0][NumClusters-1:0] core_fenced_i,
     input  logic [NumCores-1:0][NumClusters-1:0] core_retired_i,
+    input  logic [NumCores-1:0][NumClusters-1:0] core_stuck_i = '0,
     // Level 3: core types with an export target (index: CoreTypeId)
     input  logic [2**CoreTypeIdWidth-1:0] remote_type_en_i,
     // Level 3: proxy slots whose exports were rejected (sticky)
@@ -87,6 +90,7 @@ module bingo_hw_manager_core_remap #(
     logic logical_in_range;
     logic logical_fenced;
     logic logical_retired;
+    logic logical_stuck;
     logic logical_hold;
     logic logical_parked;
     logic                      sub_found;
@@ -99,6 +103,7 @@ module bingo_hw_manager_core_remap #(
                               (int'(logical_cluster_i) < NumClusters);
     assign logical_fenced   = logical_in_range && core_fenced_i[logical_core_i][logical_cluster_i];
     assign logical_retired  = logical_in_range && core_retired_i[logical_core_i][logical_cluster_i];
+    assign logical_stuck    = logical_in_range && core_stuck_i[logical_core_i][logical_cluster_i];
     assign logical_hold     = logical_in_range && park_hold_i[logical_core_i][logical_cluster_i];
     assign logical_parked   = logical_in_range && park_parked_i[logical_core_i][logical_cluster_i];
     assign logical_typed    = logical_in_range && (CoreTypeId[logical_core_i][logical_cluster_i] != '0);
@@ -119,8 +124,9 @@ module bingo_hw_manager_core_remap #(
 
         if (req_valid_i && logical_in_range && logical_fenced) begin
             if (!logical_retired) begin
-                // Outstanding tasks of this core are still being replayed.
-                select_valid_o = 1'b0;
+                // Outstanding tasks of this core are still being replayed. A
+                // stuck core only takes the tasks that never run on a core.
+                select_valid_o = logical_stuck && !remappable_i;
             end else if (remappable_i && smt_update_i) begin
                 // The substitute is being recomputed (a slot was just fenced)
                 select_valid_o = 1'b0;

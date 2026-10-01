@@ -36,7 +36,8 @@
 // dummy-set left on D cannot fire before D's moved tasks.
 // Stuck is sticky and final: fenced is sticky, so a missing substitute never
 // appears later. A stuck slot keeps its remaining entries (the top holds its
-// checkout output), and the other fenced slots are still migrated.
+// checkout output, except for heads that run on no core: stuck_drain there),
+// and the other fenced slots are still migrated.
 // While a slot is fenced and not retired, the top holds the new tasks of every
 // fenced logical core, so the migrated (older) tasks of a logical core always
 // enter a substitute before its newer ones.
