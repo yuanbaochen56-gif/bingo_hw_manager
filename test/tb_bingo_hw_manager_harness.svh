@@ -546,6 +546,28 @@ axi_lite_xbar #(
     .default_mst_port_i     ( '0                          )
 );
 
+// Probe of chiplet 0's chiplet done-queue port: while h2h_probe_en is set
+// (by a stimulus, only while the xbar has nothing in flight to chiplet 0),
+// h2h_probe_master drives that port instead of the xbar
+AXI_LITE_DV #(.AXI_ADDR_WIDTH(HOST_AW), .AXI_DATA_WIDTH(HOST_DW)) h2h_probe_if (.clk_i(clk_i));
+host_req_t                    h2h_probe_req;
+host_resp_t                   h2h_probe_resp;
+logic                         h2h_probe_en = 1'b0;
+host_req_t  [NUM_CHIPLET-1:0] h2h_dut_req;
+host_resp_t [NUM_CHIPLET-1:0] h2h_dut_resp;
+`AXI_LITE_ASSIGN_TO_REQ   (h2h_probe_req, h2h_probe_if);
+`AXI_LITE_ASSIGN_FROM_RESP(h2h_probe_if,  h2h_probe_resp);
+assign h2h_probe_resp = h2h_dut_resp[0];
+for (genvar i = 0; i < NUM_CHIPLET; i++) begin : gen_h2h_probe_mux
+    if (i == 0) begin : gen_probe
+        assign h2h_dut_req[i]                = h2h_probe_en ? h2h_probe_req : h2h_axi_lite_xbar_out_req[i];
+        assign h2h_axi_lite_xbar_out_resp[i] = h2h_probe_en ? host_resp_t'('0) : h2h_dut_resp[i];
+    end else begin : gen_pass
+        assign h2h_dut_req[i]                = h2h_axi_lite_xbar_out_req[i];
+        assign h2h_axi_lite_xbar_out_resp[i] = h2h_dut_resp[i];
+    end
+end
+
 // ---------------------------------------------------------------------------
 // AXI Drivers
 // ---------------------------------------------------------------------------
@@ -562,6 +584,12 @@ typedef axi_test::axi_lite_rand_master #(
     .MIN_ADDR ( 48'h0 ), .MAX_ADDR ( {8'(NUM_CHIPLET-1), 40'h8000_0000} ),
     .MAX_READ_TXNS  ( 10 ), .MAX_WRITE_TXNS ( 10 )
 ) dev_rand_lite_master_t;
+
+host_rand_lite_master_t h2h_probe_master;
+initial begin
+    h2h_probe_master = new(h2h_probe_if, "h2h_probe_master");
+    h2h_probe_master.reset();
+end
 
 host_rand_lite_master_t task_queue_master [NUM_CHIPLET];
 for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : gen_task_queue_master
@@ -927,8 +955,8 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .chiplet_mailbox_base_addr_i          ( {chip_id[chiplet_idx], H2H_DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]} ),
         .to_remote_chiplet_axi_lite_req_o     ( h2h_axi_lite_xbar_in_req[chiplet_idx]                       ),
         .to_remote_chiplet_axi_lite_resp_i    ( h2h_axi_lite_xbar_in_resp[chiplet_idx]                      ),
-        .from_remote_axi_lite_req_i           ( h2h_axi_lite_xbar_out_req[chiplet_idx]                      ),
-        .from_remote_axi_lite_resp_o          ( h2h_axi_lite_xbar_out_resp[chiplet_idx]                     ),
+        .from_remote_axi_lite_req_i           ( h2h_dut_req[chiplet_idx]                                    ),
+        .from_remote_axi_lite_resp_o          ( h2h_dut_resp[chiplet_idx]                                   ),
         .done_queue_base_addr_i               ( {chip_id[chiplet_idx], DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]}  ),
         .done_queue_axi_lite_req_i            ( local_done_queue_req[chiplet_idx]                            ),
         .done_queue_axi_lite_resp_o           ( local_done_queue_resp[chiplet_idx]                           ),

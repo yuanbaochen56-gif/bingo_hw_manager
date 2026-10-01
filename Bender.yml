@@ -89,6 +89,7 @@ sources:
       - test/tb_bingo_hw_manager_remote_done_mismatch.sv   # level 3: wrong remote done task id stops the proxy
       - test/tb_bingo_hw_manager_remote_done_stray.sv      # level 3: a done / reject for no proxy slot is dropped
       - test/tb_bingo_hw_manager_remote_link.sv            # level 3 transport adapter unit test
+      - test/tb_bingo_hw_manager_chiplet_mailbox_ro.sv     # chiplet done-queue mailbox: only MBOXW is writable remotely
       - test/tb_bingo_hw_manager_rlink_dispatch.sv         # level 3 over remote_link + xbar: remote_dispatch
       - test/tb_bingo_hw_manager_rlink_full_queue.sv       # level 3 over remote_link + xbar: remote_full_queue
       - test/tb_bingo_hw_manager_rlink_no_executor.sv      # level 3 over remote_link + xbar: remote_no_executor
