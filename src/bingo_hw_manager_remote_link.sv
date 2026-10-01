@@ -15,7 +15,9 @@
 //     reject (done_out_reject_i: the task cannot run there) travels as a done.
 // RX: one AXI-Lite slave spanning two 4 KiB pages at base_addr_i:
 //     page 0 (+0x0000) dispatch mailbox, page 1 (+0x1000) done mailbox. Each is
-//     a bingo_hw_manager_write_mailbox (write register at offset 0).
+//     a bingo_hw_manager_write_mailbox (write register at offset 0). Its other
+//     registers are not writable from the link (SLVERR), so a peer cannot
+//     flush a mailbox (CTRL) and lose packets and credits.
 //
 // Packets (64 bit, one per write):
 //   [63:60] kind      DISPATCH = 4'h5, DONE = 4'hA, REJECT = 4'hC (done page)
@@ -369,6 +371,7 @@ module bingo_hw_manager_remote_link #(
         .AxiAddrWidth ( AxiAddrWidth      ),
         .AxiDataWidth ( AxiDataWidth      ),
         .ChipIdWidth  ( ChipIdWidth       ),
+        .RegWriteEn   ( 1'b0              ),
         .req_lite_t   ( req_t             ),
         .resp_lite_t  ( resp_t            )
     ) i_dispatch_mailbox (
@@ -392,6 +395,7 @@ module bingo_hw_manager_remote_link #(
         .AxiAddrWidth ( AxiAddrWidth      ),
         .AxiDataWidth ( AxiDataWidth      ),
         .ChipIdWidth  ( ChipIdWidth       ),
+        .RegWriteEn   ( 1'b0              ),
         .req_lite_t   ( req_t             ),
         .resp_lite_t  ( resp_t            )
     ) i_done_mailbox (

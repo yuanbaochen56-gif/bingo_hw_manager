@@ -23,6 +23,9 @@ module bingo_hw_manager_write_mailbox #(
     parameter int unsigned AxiAddrWidth = 32'd0,
     parameter int unsigned AxiDataWidth = 32'd0,
     parameter int unsigned ChipIdWidth  = 8,
+    // 0: only the mailbox write register (offset 0) is writable, see
+    // bingo_hw_manager_mailbox_adapter
+    parameter bit          RegWriteEn   = 1'b1,
     parameter type         req_lite_t   = logic,
     parameter type         resp_lite_t  = logic,
     // DEPENDENT PARAMETERS, DO NOT OVERRIDE!
@@ -62,6 +65,7 @@ module bingo_hw_manager_write_mailbox #(
         .MailboxDepth ( MailboxDepth ),
         .AxiAddrWidth ( AxiAddrWidth ),
         .AxiDataWidth ( AxiDataWidth ),
+        .RegWriteEn   ( RegWriteEn   ),
         .req_lite_t   ( req_lite_t   ),
         .resp_lite_t  ( resp_lite_t  ),
         .addr_t       ( addr_t       ),

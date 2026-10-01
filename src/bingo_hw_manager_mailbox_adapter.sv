@@ -17,6 +17,10 @@ module bingo_hw_manager_mailbox_adapter #(
   parameter int unsigned AxiAddrWidth = 32'd32,
   parameter int unsigned AxiDataWidth = 32'd32,
   parameter int unsigned ChipIdWidth  = 8,
+  // Writes to the registers other than MBOXW (thresholds, IRQ, CTRL flush).
+  // 0: only MBOXW is writable, any other write answers SLVERR without effect
+  // (a port that other chiplets write must not let them flush the FIFO).
+  parameter bit          RegWriteEn   = 1'b1,
   parameter type         chip_id_t    = logic [ChipIdWidth-1:0],
   parameter type         req_lite_t   = logic,
   parameter type         resp_lite_t  = logic,
@@ -227,7 +231,7 @@ module bingo_hw_manager_mailbox_adapter #(
       b_valid = 1'b1;
       if (b_ready) begin
         // write to the register if required
-        if (dec_w_valid) begin
+        if (dec_w_valid && (RegWriteEn || (reg_e'(w_reg_idx) == MBOXW))) begin
           unique case (reg_e'(w_reg_idx))
             MBOXW:  begin
               if (!mbox_w_full_i) begin

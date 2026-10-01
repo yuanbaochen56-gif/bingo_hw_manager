@@ -7,6 +7,8 @@
 //   T7 done without an outstanding export (credit overflow)
 //   T8 reject: travels on the done page as kind 4'hC, returns the credit;
 //      target_valid_o lists the types with a target
+//   T9 the mailbox registers other than the write register are read-only
+//      from the link: a CTRL flush answers SLVERR and loses no packet
 `include "axi/typedef.svh"
 `include "axi/assign.svh"
 module tb_bingo_hw_manager_remote_link;
@@ -431,6 +433,29 @@ module tb_bingo_hw_manager_remote_link;
         repeat (20) @(posedge clk);
         expect_err(1, 5'b00010, "T8");
         $display("[T8] reject done");
+
+        // ---------------- T9: no remote register writes ----------------
+        do_reset();
+        imp_ready[1] = 1'b0;
+        send_export(0, 31, 0, 1, 0);             // queued in chip 1's dispatch mailbox
+        repeat (50) @(posedge clk);
+        // WIRQT .. CTRL of both pages; CTRL (offset 0x48) = 2'b11 flushes both FIFOs
+        for (int p = 0; p < 2; p++) begin
+            for (int r = 4; r <= 9; r++) begin
+                inject(page(1, p) + addr_t'(r * 8), data_t'(3), resp);
+                if (resp != axi_pkg::RESP_SLVERR) $error("[T9] page %0d register %0d write answered %0d", p, r, resp);
+            end
+        end
+        #1 imp_ready[1] = 1'b1;
+        repeat (20) @(posedge clk);
+        if (imports[1].size() != 1 || imports[1][0].tid != 31) $error("[T9] queued dispatch lost: %p", imports[1]);
+        // the link still works
+        send_export(0, 32, 0, 1, 0);
+        wait (imports[1].size() == 2);
+        repeat (5) @(posedge clk);
+        expect_err(1, '0, "T9");
+        expect_err(0, '0, "T9");
+        $display("[T9] remote register writes done");
 
         $display("remote_link unit test passed");
         $finish;
