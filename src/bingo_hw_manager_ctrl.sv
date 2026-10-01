@@ -42,6 +42,13 @@
 // drops to the idle level after all its slots were idle that long. Short gaps
 // between tasks then keep the normal level and avoid the wake-up cost; 0 =
 // at once (the PM's own behaviour).
+// External access wake (access_hold_i, host-configured): a cluster whose memory
+// is accessed from outside (cluster_access_i, e.g. the host reading its L1)
+// runs on its own clock, so while it is accessed, and for access_hold_i cycles
+// after the last access, none of its slots counts as idle, not even a fenced
+// one. The access path is not held at the idle level; 0 = off. This only ever
+// makes a slot idle later: the idle entry delay keeps counting the core's own
+// polling, so once the hold ends a long idle core lets its domain drop at once.
 //
 // Frequency-aware watchdog: the power levels are clock dividers. While a slot's
 // domain runs at level L above the normal level N (slower), its core makes
@@ -90,6 +97,10 @@ module bingo_hw_manager_ctrl #(
     input  logic [NumCores-1:0][NumClusters-1:0][5:0] slot_domain_i,  // >= 32: no domain
     // Cycles a slot must be idle before the PM may count it as idle (0: at once)
     input  logic [31:0]                              idle_delay_i,
+    // External access to a cluster's memory this cycle, and the cycles its
+    // slots stay awake after the last one (0: off)
+    input  logic [NumClusters-1:0]                   cluster_access_i,
+    input  logic [31:0]                              access_hold_i,
 
     // Power manager: slots that do not keep their domain at the normal level
     output logic [NumCores-1:0][NumClusters-1:0] pm_idle_o,
@@ -191,6 +202,22 @@ module bingo_hw_manager_ctrl #(
     // ------------------------------------------------------------------
     // Fault-aware power and load view
     // ------------------------------------------------------------------
+    // Clusters accessed from outside within the last access_hold_i cycles
+    logic [NumClusters-1:0]       cluster_awake;
+    logic [NumClusters-1:0][31:0] access_cnt_q;
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            access_cnt_q <= '0;
+        end else begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                if (cluster_access_i[cl])        access_cnt_q[cl] <= access_hold_i;
+                else if (access_cnt_q[cl] != '0) access_cnt_q[cl] <= access_cnt_q[cl] - 32'd1;
+            end
+        end
+    end
+    for (genvar cl = 0; cl < NumClusters; cl++) begin : gen_cluster_awake
+        assign cluster_awake[cl] = (access_hold_i != '0) && (cluster_access_i[cl] || (access_cnt_q[cl] != '0));
+    end
     logic [NumCores-1:0][NumClusters-1:0]       slot_idle;
     logic [NumCores-1:0][NumClusters-1:0][31:0] idle_cnt_q;
     assign slot_idle = waiting_i | fenced_i;
@@ -209,7 +236,7 @@ module bingo_hw_manager_ctrl #(
     always_comb begin
         for (int unsigned c = 0; c < NumCores; c++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                pm_idle_o[c][cl] = slot_idle[c][cl] && (idle_cnt_q[c][cl] >= idle_delay_i);
+                pm_idle_o[c][cl] = slot_idle[c][cl] && (idle_cnt_q[c][cl] >= idle_delay_i) && !cluster_awake[cl];
             end
         end
     end

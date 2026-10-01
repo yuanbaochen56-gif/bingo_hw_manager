@@ -111,7 +111,8 @@ import axi_test::*;
 `ifndef TB_REMOTE_TARGET_TYPES
   `define TB_REMOTE_TARGET_TYPES 16'hffff
 `endif
-// Idle power management (DFS): every slot in domain 1, idle level 25, normal
+// Idle power management (DFS): every slot in domain 1 (TB_PM_CLUSTER_DOMAINS:
+// cluster c in domain 1 + c), idle level 25, normal
 // level 6 (HeMAiA's values); the PM's clk/rst controller writes always complete
 `ifndef TB_PM_ENABLE
   `define TB_PM_ENABLE 0
@@ -126,6 +127,15 @@ localparam int unsigned PM_BOOST_LEVEL  = `TB_PM_BOOST_LEVEL;
 // Idle entry delay in cycles (0: at once)
 `ifndef TB_PM_IDLE_DELAY
   `define TB_PM_IDLE_DELAY 0
+`endif
+// External access wake: cycles a cluster stays awake after an access (0: off);
+// the stimulus drives cluster_access
+`ifndef TB_PM_ACCESS_HOLD
+  `define TB_PM_ACCESS_HOLD 0
+`endif
+// 1: the slots of cluster c are in power domain 1 + c (default: all in domain 1)
+`ifndef TB_PM_CLUSTER_DOMAINS
+  `define TB_PM_CLUSTER_DOMAINS 0
 `endif
 // Link errors (remote_link error_o) are test failures unless allowed
 `ifndef TB_ALLOW_LINK_ERROR
@@ -902,6 +912,16 @@ end
 // PM bus: the clk/rst controller takes every write at once, unless a stimulus
 // stalls it (pm_bus_stall: the domain level cannot change)
 logic       pm_bus_stall = 1'b0;
+// External accesses into each chiplet's clusters (driven by a stimulus)
+logic [NUM_CLUSTERS_PER_CHIPLET-1:0] cluster_access [NUM_CHIPLET];
+initial for (int i = 0; i < NUM_CHIPLET; i++) cluster_access[i] = '0;
+// Power domain of every slot
+device_axi_lite_data_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] pm_core_domain;
+for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_pm_domain_core
+    for (genvar cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin : gen_pm_domain_cluster
+        assign pm_core_domain[c][cl] = device_axi_lite_data_t'((`TB_PM_CLUSTER_DOMAINS != 0) ? 1 + cl : 1);
+    end
+end
 host_resp_t pm_ready_resp;
 always_comb begin
     pm_ready_resp          = '0;
@@ -974,8 +994,10 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .bingo_hw_manager_normal_power_level_i( device_axi_lite_data_t'(PM_NORMAL_LEVEL)                      ),
         .bingo_hw_manager_boost_power_level_i ( device_axi_lite_data_t'(PM_BOOST_LEVEL)                       ),
         .bingo_hw_manager_idle_entry_delay_i  ( device_axi_lite_data_t'(`TB_PM_IDLE_DELAY)                    ),
+        .bingo_hw_manager_cluster_access_i    ( cluster_access[chiplet_idx]                                 ),
+        .bingo_hw_manager_access_wake_hold_i  ( device_axi_lite_data_t'(`TB_PM_ACCESS_HOLD)                   ),
         .bingo_hw_manager_pm_base_addr_i      ( '0                                                          ),
-        .bingo_hw_manager_core_power_domain_i ( {(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET){device_axi_lite_data_t'(1)}} ),
+        .bingo_hw_manager_core_power_domain_i ( pm_core_domain                                              ),
         .bingo_hw_manager_pm_mode_i           ( '0                                                          ),
         .pm_axi_lite_req_o                    ( /* unused */                                                ),
         .pm_axi_lite_resp_i                   ( pm_ready_resp                                               ),

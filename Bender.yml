@@ -104,6 +104,8 @@ sources:
       - test/tb_bingo_hw_manager_pm_slow_watchdog.sv       # control plane: the watchdog counts normal-clock cycles in a slow domain
       - test/tb_bingo_hw_manager_pm_recovery_boost.sv      # control plane: a dead core's substitute runs at the boost level
       - test/tb_bingo_hw_manager_pm_idle_delay.sv          # control plane: idle level only after an idle entry delay
+      - test/tb_bingo_hw_manager_pm_access_wake.sv         # control plane: an external access keeps the cluster awake
+      - test/tb_bingo_hw_manager_pm_access_wake_delay.sv   # same, with an idle entry delay
       - test/tb_bingo_hw_manager_rlink_random.sv           # level 3 over remote_link: random (scripts/run_replay_random.sh)
       - test/tb_bingo_hw_manager_rlink_random_reject.sv    # level 3 over remote_link: random, a hang on each chiplet (rejects)
       - test/tb_bingo_hw_manager_replay_random.sv          # random graph + random fault (scripts/run_replay_random.sh)

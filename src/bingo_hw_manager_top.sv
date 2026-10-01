@@ -164,6 +164,11 @@ module bingo_hw_manager_top #(
     // Cycles a core must be idle before it lets its domain drop to the idle
     // level (bingo_hw_manager_ctrl); 0 = at once
     input device_axi_lite_data_t                bingo_hw_manager_idle_entry_delay_i = '0,
+    // External access wake (bingo_hw_manager_ctrl): a request from outside into
+    // a cluster's memory this cycle (e.g. the host reading its L1), and the
+    // cycles the cluster's domain stays awake after the last one; 0 = off
+    input logic [NUM_CLUSTERS_PER_CHIPLET-1:0]  bingo_hw_manager_cluster_access_i = '0,
+    input device_axi_lite_data_t                bingo_hw_manager_access_wake_hold_i = '0,
     input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
     input device_axi_lite_data_t                bingo_hw_manager_normal_power_level_i,
     input device_axi_lite_addr_t                bingo_hw_manager_pm_base_addr_i,
@@ -1903,6 +1908,8 @@ module bingo_hw_manager_top #(
         .domain_level_i ( pm_domain_level  ),
         .slot_domain_i  ( ctrl_slot_domain ),
         .idle_delay_i   ( 32'(bingo_hw_manager_idle_entry_delay_i) ),
+        .cluster_access_i ( bingo_hw_manager_cluster_access_i ),
+        .access_hold_i  ( 32'(bingo_hw_manager_access_wake_hold_i) ),
         .wd_tick_o      ( ctrl_wd_tick     ),
         .pm_boost_o     ( ctrl_pm_boost    ),
         .pm_idle_o      ( ctrl_pm_idle     ),

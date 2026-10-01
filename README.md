@@ -376,6 +376,11 @@ master, CERF, remote link) only execute them.
 - **Idle entry delay.** A slot only counts as idle for the PM after
   `bingo_hw_manager_idle_entry_delay_i` idle cycles (0 = at once), so short gaps between
   tasks keep the normal level and avoid the wake-up cost.
+- **External access wake.** A cluster runs its memory on its own clock, so a cluster whose
+  memory is accessed from outside (`bingo_hw_manager_cluster_access_i`, e.g. the host reading
+  its L1) does not count as idle while accessed and for `bingo_hw_manager_access_wake_hold_i`
+  cycles after the last access (0 = off), fenced slots included. It only delays the idle
+  level: the idle entry delay keeps counting the cores' own idle time.
 
 The PM prints `[BINGO_PM]` for every level it applies (simulation only).
 
