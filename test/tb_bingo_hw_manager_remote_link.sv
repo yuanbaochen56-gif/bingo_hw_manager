@@ -2,7 +2,10 @@
 // and an injector master on an axi_lite_xbar addressed by chip id.
 //   T1 pack / unpack, done priority, invalid target held back
 //   T2 credits run out: export stalls, resumes on the delivered done
-//   T3 SLVERR from a full mailbox sets error bit 0
+//   T3 SLVERR from a full mailbox sets error bit 0; the packet is resent and
+//      arrives once the mailbox drains
+//   T3b a mailbox that stays full: the packet is dropped after RetryLimit
+//      resends and its credit comes back
 //   T4 wrong kind on a page (dropped), T5 seq gap, T6 unknown peer,
 //   T7 done without an outstanding export (credit overflow)
 //   T8 reject: travels on the done page as kind 4'hC, returns the credit;
@@ -359,10 +362,27 @@ module tb_bingo_hw_manager_remote_link;
         repeat (50) @(posedge clk);
         expect_err(0, 5'b00001, "T3");
         #1 imp_ready[1] = 1'b1;
-        wait (imports[1].size() == 2);
+        wait (imports[1].size() == 3);
         repeat (20) @(posedge clk);
-        if (imports[1].size() != 2) $error("[T3] %0d imports, expected 2", imports[1].size());
-        expect_err(1, '0, "T3");
+        if ((imports[1].size() != 3) || (imports[1][2].tid != 4)) begin
+            $error("[T3] %0d imports (last %0d), expected the resent task 4 third", imports[1].size(), imports[1][imports[1].size()-1].tid);
+        end
+        // the injected packets used chip 0's sequence numbers 0 and 1: the resent
+        // export (seq 0) arrives as a gap
+        expect_err(1, 5'b00100, "T3");
+
+        // ---------------- T3b: retries run out ----------------
+        do_reset();
+        imp_ready[1] = 1'b0;
+        inject(page(1, 0), mk_pkt(4'h5, 0, 0, 1, 0, 1), resp);
+        inject(page(1, 0), mk_pkt(4'h5, 0, 0, 1, 1, 2), resp);
+        send_export(0, 4, 0, 1, 0);
+        repeat (2000) @(posedge clk);               // > RetryLimit * (RetryBackoff + handshake)
+        if (credits[0][0] != Credits) $error("[T3b] credits %0d after the drop, expected %0d", credits[0][0], Credits);
+        expect_err(0, 5'b00001, "T3b");
+        #1 imp_ready[1] = 1'b1;
+        repeat (100) @(posedge clk);
+        if (imports[1].size() != 2) $error("[T3b] %0d imports, expected 2 (task 4 dropped)", imports[1].size());
 
         // ---------------- T4: wrong kind ----------------
         do_reset();

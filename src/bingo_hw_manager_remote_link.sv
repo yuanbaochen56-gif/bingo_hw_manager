@@ -39,8 +39,14 @@
 // (every chiplet of the system uses the same DispatchCredits, and PeerChipId
 // lists every chiplet this one exchanges messages with, in either direction).
 //
+// Write errors: a packet whose write gets an error response is sent again
+// after RetryBackoff cycles, with the same sequence number, up to RetryLimit
+// more times (e.g. a mailbox that is full for a while); then it is dropped,
+// and a dropped dispatch gives its credit back (its task is lost, but later
+// exports to that peer do not stall).
+//
 // Errors (sticky, error_o):
-//   [0] SLVERR / DECERR on a write           [1] wrong kind on a page (dropped)
+//   [0] SLVERR / DECERR on a write (retried) [1] wrong kind on a page (dropped)
 //   [2] seq gap from a peer                  [3] unknown peer chip
 //   [4] done from a peer without an outstanding export (credit overflow)
 `include "common_cells/registers.svh"
@@ -60,6 +66,9 @@ module bingo_hw_manager_remote_link #(
     parameter logic [NumCoreTypes-1:0][ChipIdWidth:0] RemoteTargetChip = '0,
     // Credits per peer, and the RX FIFO depths (see the sizing rule above)
     parameter int unsigned DispatchCredits   = 2,
+    // Resends of a packet whose write failed, and the cycles between them
+    parameter int unsigned RetryLimit        = 8,
+    parameter int unsigned RetryBackoff      = 16,
     parameter int unsigned DispatchFifoDepth = (NumPeers * DispatchCredits < 2) ? 2 : NumPeers * DispatchCredits,
     parameter int unsigned DoneFifoDepth     = (NumPeers * DispatchCredits < 2) ? 2 : NumPeers * DispatchCredits,
     // Position of task_type / task_id in bingo_hw_manager_task_desc_full_t
@@ -221,8 +230,16 @@ module bingo_hw_manager_remote_link #(
     // ------------------------------------------------------------------
     // TX
     // ------------------------------------------------------------------
-    typedef enum logic [1:0] { TxIdle, TxSend, TxWaitB } tx_state_e;
+    typedef enum logic [1:0] { TxIdle, TxSend, TxWaitB, TxBackoff } tx_state_e;
     tx_state_e tx_state_q, tx_state_d;
+    localparam int unsigned RetryWidth   = $clog2(RetryLimit + 1) > 0 ? $clog2(RetryLimit + 1) : 1;
+    localparam int unsigned BackoffWidth = $clog2(RetryBackoff + 1) > 0 ? $clog2(RetryBackoff + 1) : 1;
+    logic [RetryWidth-1:0]   tx_retry_q, tx_retry_d;
+    logic [BackoffWidth-1:0] tx_wait_q, tx_wait_d;
+    // A dispatch dropped after its last retry gives its credit back
+    logic      tx_drop_credit;
+    logic      tx_dest_peer_ok;
+    peer_idx_t tx_dest_peer;
     pkt_t      tx_pkt_q, tx_pkt_d;
     chip_id_t  tx_dest_q, tx_dest_d;
     logic      tx_aw_done_q, tx_aw_done_d, tx_w_done_q, tx_w_done_d;
@@ -245,6 +262,9 @@ module bingo_hw_manager_remote_link #(
         tx_w_done_d      = tx_w_done_q;
         tx_seq_disp_d    = tx_seq_disp_q;
         tx_seq_done_d    = tx_seq_done_q;
+        tx_retry_d       = tx_retry_q;
+        tx_wait_d        = tx_wait_q;
+        tx_drop_credit   = 1'b0;
         done_out_ready_o = 1'b0;
         export_ready_o   = 1'b0;
         mst_req_o        = '0;
@@ -277,6 +297,7 @@ module bingo_hw_manager_remote_link #(
                 end
                 tx_aw_done_d = 1'b0;
                 tx_w_done_d  = 1'b0;
+                tx_retry_d   = '0;
             end
             TxSend: begin
                 mst_req_o.aw_valid = !tx_aw_done_q;
@@ -292,7 +313,26 @@ module bingo_hw_manager_remote_link #(
             end
             TxWaitB: begin
                 mst_req_o.b_ready = 1'b1;
-                if (mst_resp_i.b_valid) tx_state_d = TxIdle;
+                if (mst_resp_i.b_valid) begin
+                    if ((mst_resp_i.b.resp == axi_pkg::RESP_OKAY) || (tx_retry_q == RetryWidth'(RetryLimit))) begin
+                        tx_state_d     = TxIdle;
+                        tx_drop_credit = (mst_resp_i.b.resp != axi_pkg::RESP_OKAY) && (tx_pkt_q.kind == KindDispatch);
+                    end else begin
+                        tx_retry_d = tx_retry_q + RetryWidth'(1);
+                        tx_wait_d  = BackoffWidth'(RetryBackoff);
+                        tx_state_d = TxBackoff;
+                    end
+                end
+            end
+            TxBackoff: begin
+                // Same packet (and sequence number) again after the backoff
+                if (tx_wait_q == '0) begin
+                    tx_aw_done_d = 1'b0;
+                    tx_w_done_d  = 1'b0;
+                    tx_state_d   = TxSend;
+                end else begin
+                    tx_wait_d = tx_wait_q - BackoffWidth'(1);
+                end
             end
             default: tx_state_d = TxIdle;
         endcase
@@ -305,6 +345,19 @@ module bingo_hw_manager_remote_link #(
     `FF(tx_w_done_q,   tx_w_done_d,   1'b0,   clk_i, rst_ni)
     `FF(tx_seq_disp_q, tx_seq_disp_d, '0,     clk_i, rst_ni)
     `FF(tx_seq_done_q, tx_seq_done_d, '0,     clk_i, rst_ni)
+    `FF(tx_retry_q,    tx_retry_d,    '0,     clk_i, rst_ni)
+    `FF(tx_wait_q,     tx_wait_d,     '0,     clk_i, rst_ni)
+
+    always_comb begin
+        tx_dest_peer_ok = 1'b0;
+        tx_dest_peer    = '0;
+        for (int unsigned p = 0; p < NumPeers; p++) begin
+            if (PeerChipId[p] == tx_dest_q) begin
+                tx_dest_peer_ok = 1'b1;
+                tx_dest_peer    = peer_idx_t'(p);
+            end
+        end
+    end
 
     // Credits: taken on an export, returned when the done is delivered to bingo
     assign credit_return      = rx_done_deliver && rx_done_peer_ok;
@@ -314,6 +367,9 @@ module bingo_hw_manager_remote_link #(
         if (export_fire) credit_d[tx_exp_peer] = credit_d[tx_exp_peer] - CreditWidth'(1);
         if (credit_return && (credit_d[credit_return_peer] != CreditWidth'(DispatchCredits))) begin
             credit_d[credit_return_peer] = credit_d[credit_return_peer] + CreditWidth'(1);
+        end
+        if (tx_drop_credit && tx_dest_peer_ok && (credit_d[tx_dest_peer] != CreditWidth'(DispatchCredits))) begin
+            credit_d[tx_dest_peer] = credit_d[tx_dest_peer] + CreditWidth'(1);
         end
     end
     logic [NumPeers-1:0][CreditWidth-1:0] credit_rst;
