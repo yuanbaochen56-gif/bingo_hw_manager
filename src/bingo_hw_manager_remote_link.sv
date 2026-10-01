@@ -151,6 +151,9 @@ module bingo_hw_manager_remote_link #(
     if ((ChipIdWidth > 8) || (RemoteSlotIdWidth > 8) || (CoreTypeIdWidth > 4) || (TaskIdWidth > 30)) begin : gen_err_fields
         $fatal(1, "remote_link: a field does not fit the 64-bit packet");
     end
+    if (NumPeers < 1) begin : gen_err_peers
+        $fatal(1, "remote_link: NumPeers must be >= 1 (list one unused peer when nothing is exported)");
+    end
     if (DispatchCredits < 1) begin : gen_err_credits
         $fatal(1, "remote_link: DispatchCredits must be >= 1");
     end
