@@ -28,7 +28,8 @@
 //   [31:30] task type (DISPATCH only)
 //   [29: 0] task id   (TaskIdWidth bits, zero extended)
 //
-// Flow control: an export to peer p takes one of DispatchCredits credits of p;
+// Flow control: an export to peer p takes one of DispatchCredits credits of p
+// (peer_ready_o[p]: p has one left);
 // the credit comes back when the done (or reject) of that task leaves the done
 // FIFO here (delivered to bingo). A mailbox write to a full FIFO would be dropped with
 // SLVERR, so the FIFOs are sized to never be full when a write arrives:
@@ -93,7 +94,8 @@ module bingo_hw_manager_remote_link #(
     parameter type         slot_t            = logic [RemoteSlotIdWidth-1:0],
     parameter type         task_id_t         = logic [TaskIdWidth-1:0],
     parameter type         core_type_t       = logic [CoreTypeIdWidth-1:0],
-    parameter int unsigned CreditWidth       = $clog2(DispatchCredits + 1)
+    parameter int unsigned CreditWidth       = $clog2(DispatchCredits + 1),
+    parameter int unsigned PeerIdxWidth      = (NumPeers > 1) ? $clog2(NumPeers) : 1
 ) (
     input  logic                                   clk_i,
     input  logic                                   rst_ni,
@@ -136,6 +138,11 @@ module bingo_hw_manager_remote_link #(
     // Core types with a valid RemoteTargetChip entry (to bingo_hw_manager_top
     // remote_export_type_en_i: the other types are never exported)
     output logic [NumCoreTypes-1:0]                target_valid_o,
+    // Per-peer export queues in bingo_hw_manager_top: the peer each core type
+    // is exported to (remote_export_type_peer_i), and the peers with a free
+    // credit (remote_export_peer_ready_i: an export to them is taken at once)
+    output logic [NumCoreTypes-1:0][PeerIdxWidth-1:0] target_peer_o,
+    output logic [NumPeers-1:0]                    peer_ready_o,
     // Status
     output logic [5:0]                             error_o,
     output logic [NumPeers-1:0][CreditWidth-1:0]   credits_o
@@ -144,7 +151,6 @@ module bingo_hw_manager_remote_link #(
     localparam logic [3:0] KindDone     = 4'hA;
     localparam logic [3:0] KindReject   = 4'hC;
     localparam int unsigned PageOffset  = 32'h1000;
-    localparam int unsigned PeerIdxWidth = (NumPeers > 1) ? $clog2(NumPeers) : 1;
     typedef logic [PeerIdxWidth-1:0] peer_idx_t;
     typedef logic [7:0]              seq_t;
     typedef logic [AxiDataWidth/8-1:0] strb_t;
@@ -203,7 +209,9 @@ module bingo_hw_manager_remote_link #(
     end
 
     for (genvar t = 0; t < NumCoreTypes; t++) begin : gen_target_valid
+        localparam int unsigned TargetPeer = peer_of(chip_id_t'(RemoteTargetChip[t][ChipIdWidth-1:0]));
         assign target_valid_o[t] = RemoteTargetChip[t][ChipIdWidth];
+        assign target_peer_o[t]  = (TargetPeer < NumPeers) ? PeerIdxWidth'(TargetPeer) : '0;
     end
 
     // Runtime peer lookup
@@ -389,6 +397,9 @@ module bingo_hw_manager_remote_link #(
         else         credit_q <= credit_d;
     end
     assign credits_o = credit_q;
+    for (genvar p = 0; p < NumPeers; p++) begin : gen_peer_ready
+        assign peer_ready_o[p] = (credit_q[p] != '0);
+    end
 
     // ------------------------------------------------------------------
     // RX: two write mailboxes behind a demux on address bit 12

@@ -87,6 +87,11 @@ module bingo_hw_manager_top #(
     parameter int unsigned DoneQueueDepth = 32,
     parameter int unsigned CheckoutQueueDepth = 8,
     parameter int unsigned ReadyQueueDepth = 8,
+    // Level 3 export queues: one per peer of the transport (e.g.
+    // bingo_hw_manager_remote_link NumPeers), each deep enough for a whole
+    // checkout queue, so a peer without credits only holds its own exports
+    parameter int unsigned RemoteNumPeers = 1,
+    parameter int unsigned RemoteExportFifoDepth = CheckoutQueueDepth + 1,
     // Address Offsets
     parameter int unsigned ReadyQueueAddrOffset = 4096,
     // Dependent parameters, DO NOT OVERRIDE!
@@ -96,7 +101,8 @@ module bingo_hw_manager_top #(
     parameter type device_axi_lite_addr_t = logic [DeviceAxiLiteAddrWidth-1:0],
     parameter type device_axi_lite_data_t = logic [DeviceAxiLiteDataWidth-1:0],
     // Flat slot id (core + cluster * NUM_CORES_PER_CLUSTER) of the remote interface
-    parameter int unsigned RemoteSlotIdWidth = cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET)
+    parameter int unsigned RemoteSlotIdWidth = cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET),
+    parameter int unsigned RemotePeerIdWidth = (RemoteNumPeers > 1) ? $clog2(RemoteNumPeers) : 1
 ) (
     /// Clock
     input logic clk_i,
@@ -232,8 +238,14 @@ module bingo_hw_manager_top #(
     // Core types the transport can export (it has a target chiplet for them),
     // e.g. bingo_hw_manager_remote_link target_valid_o. A fenced core of another
     // type without a local substitute is stuck, as without level 3, instead of
-    // waiting forever in the export FIFO. Default: every type.
+    // waiting forever in an export queue. Default: every type.
     input  logic [2**CoreTypeIdWidth-1:0]       remote_export_type_en_i = '1,
+    // Peer (export queue) of each core type, and the peers whose next export
+    // the transport takes at once (a free credit), e.g. remote_link
+    // target_peer_o / peer_ready_o. Exports only leave a queue whose peer is
+    // ready, round robin, so a peer without credits does not hold the others.
+    input  logic [2**CoreTypeIdWidth-1:0][RemotePeerIdWidth-1:0] remote_export_type_peer_i = '0,
+    input  logic [RemoteNumPeers-1:0]           remote_export_peer_ready_i = '1,
     // Sticky: the done at the head of a proxy slot's done queue does not
     // belong to its exported head task (the slot then stops retiring), or a
     // remote done / reject arrived for a slot that is no proxy (not fenced, or
@@ -628,8 +640,8 @@ module bingo_hw_manager_top #(
     remote_export_t                        export_in;
     remote_export_t                        export_out;
     logic                                  export_push;
-    logic                                  export_full;
-    logic                                  export_empty;
+    // Per core type: its export queue has room
+    logic [2**CoreTypeIdWidth-1:0]         export_type_ready;
     // Level 3 import (executor side)
     logic                                  import_home_found;
     bingo_hw_manager_assigned_core_id_t    import_home_core;
@@ -1941,7 +1953,7 @@ module bingo_hw_manager_top #(
         .checkout_no_exec_i         ( replay_head_no_exec         ),
         .checkout_exported_i        ( replay_head_exported        ),
         .checkout_imported_i        ( checkout_head_imported      ),
-        .export_ready_i             ( !export_full                ),
+        .export_type_ready_i        ( export_type_ready           ),
         .remote_type_en_i           ( remote_export_type_en_i     ),
         .bounce_ready_i             ( !reject_valid_q             ),
         .smt_found_i                ( smt_found                   ),
@@ -2160,16 +2172,18 @@ module bingo_hw_manager_top #(
     // instead of setting local dependencies. Imports wait while a local replay
     // is pending, and never collide with a routed or replayed push.
 
-    // Export FIFO: replay rotations and routed exports never coincide (the
+    // Export queues: replay rotations and routed exports never coincide (the
     // new tasks of fenced logical cores are held while a replay is pending);
-    // routed exports of different slots are granted one per cycle.
+    // routed exports of different slots are granted one per cycle, among the
+    // slots whose export queue has room.
     always_comb begin : compose_route_remote_grant
         automatic logic taken;
-        taken = replay_export || export_full;
+        taken = replay_export;
         route_remote_grant = '0;
         for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
             for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
-                if (route_remote[c][cl] && !checkout_queue_full[c][cl] && !taken) begin
+                if (route_remote[c][cl] && !checkout_queue_full[c][cl] &&
+                    export_type_ready[CoreTypeId[c][cl]] && !taken) begin
                     route_remote_grant[c][cl] = 1'b1;
                     taken = 1'b1;
                 end
@@ -2199,24 +2213,58 @@ module bingo_hw_manager_top #(
     end
 
     if (RemoteEn) begin : gen_remote_dispatch
-        fifo_v3 #(
-            .FALL_THROUGH ( 1'b0            ),
-            .DEPTH        ( 4               ),
-            .dtype        ( remote_export_t )
-        ) i_export_fifo (
-            .clk_i       ( clk_i                                            ),
-            .rst_ni      ( rst_ni                                           ),
-            .testmode_i  ( 1'b0                                             ),
-            .flush_i     ( 1'b0                                             ),
-            .full_o      ( export_full                                      ),
-            .empty_o     ( export_empty                                     ),
-            .usage_o     ( /*not used*/                                     ),
-            .data_i      ( export_in                                        ),
-            .push_i      ( export_push                                      ),
-            .data_o      ( export_out                                       ),
-            .pop_i       ( remote_dispatch_ready_i && !export_empty         )
+        // One export queue per peer. A proxy only exports tasks of its own
+        // type, so all of them go through one queue, in order.
+        logic [RemoteNumPeers-1:0] export_peer_full, export_peer_empty;
+        logic [RemoteNumPeers-1:0] export_peer_req, export_peer_gnt;
+        remote_export_t [RemoteNumPeers-1:0] export_peer_out;
+        logic [RemotePeerIdWidth-1:0] export_in_peer;
+        assign export_in_peer = remote_export_type_peer_i[export_in.core_type];
+        for (genvar t = 0; t < 2**CoreTypeIdWidth; t++) begin : gen_export_type_ready
+            assign export_type_ready[t] = (remote_export_type_peer_i[t] < RemoteNumPeers) &&
+                                          !export_peer_full[remote_export_type_peer_i[t]];
+        end
+        for (genvar p = 0; p < RemoteNumPeers; p++) begin : gen_export_fifo
+            fifo_v3 #(
+                .FALL_THROUGH ( 1'b0                  ),
+                .DEPTH        ( RemoteExportFifoDepth ),
+                .dtype        ( remote_export_t       )
+            ) i_export_fifo (
+                .clk_i       ( clk_i                                                  ),
+                .rst_ni      ( rst_ni                                                 ),
+                .testmode_i  ( 1'b0                                                   ),
+                .flush_i     ( 1'b0                                                   ),
+                .full_o      ( export_peer_full[p]                                    ),
+                .empty_o     ( export_peer_empty[p]                                   ),
+                .usage_o     ( /*not used*/                                           ),
+                .data_i      ( export_in                                              ),
+                .push_i      ( export_push && (export_in_peer == RemotePeerIdWidth'(p)) ),
+                .data_o      ( export_peer_out[p]                                     ),
+                .pop_i       ( export_peer_gnt[p]                                     )
+            );
+            // Only a peer that takes the export at once competes: the transport
+            // takes a credit only when it sends, so the chosen peer stays ready
+            assign export_peer_req[p] = !export_peer_empty[p] && remote_export_peer_ready_i[p];
+        end
+        rr_arb_tree #(
+            .NumIn     ( RemoteNumPeers  ),
+            .DataType  ( remote_export_t ),
+            .ExtPrio   ( 1'b0            ),
+            .AxiVldRdy ( 1'b1            ),
+            .LockIn    ( 1'b1            )
+        ) i_export_arb (
+            .clk_i   ( clk_i                   ),
+            .rst_ni  ( rst_ni                  ),
+            .flush_i ( 1'b0                    ),
+            .rr_i    ( '0                      ),
+            .req_i   ( export_peer_req         ),
+            .gnt_o   ( export_peer_gnt         ),
+            .data_i  ( export_peer_out         ),
+            .req_o   ( remote_dispatch_valid_o ),
+            .gnt_i   ( remote_dispatch_ready_i ),
+            .data_o  ( export_out              ),
+            .idx_o   ( /*not used*/            )
         );
-        assign remote_dispatch_valid_o       = !export_empty;
         assign remote_dispatch_desc_o        = host_axi_lite_data_t'(export_out.desc);
         assign remote_dispatch_core_type_o   = export_out.core_type;
         assign remote_dispatch_origin_chip_o = chip_id_i;
@@ -2344,8 +2392,7 @@ module bingo_hw_manager_top #(
         assign remote_done_task_id_o    = remote_done_out.task_id;
         assign remote_done_reject_o     = remote_done_out.reject;
     end else begin : gen_no_remote_dispatch
-        assign export_full                   = 1'b1;
-        assign export_empty                  = 1'b1;
+        assign export_type_ready             = '0;
         assign export_out                    = '0;
         assign remote_dispatch_valid_o       = 1'b0;
         assign remote_dispatch_desc_o        = '0;

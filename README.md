@@ -398,6 +398,12 @@ type is left on this one:
   exported) and copied to the export stream; new tasks of the retired core are exported the
   same way. Only types the transport can deliver are exported (`remote_export_type_en_i`, e.g.
   `bingo_hw_manager_remote_link` `target_valid_o`); any other type is stuck as without level 3.
+  There is one export queue per peer of the transport (`RemoteNumPeers`, each
+  `RemoteExportFifoDepth` deep, a whole checkout queue by default); a task goes to the queue
+  of its type's peer (`remote_export_type_peer_i`), and only queues whose peer can take an
+  export at once (`remote_export_peer_ready_i`, a free credit) compete, round robin. A peer
+  that is out of credits therefore only holds its own exports. A proxy exports one type only,
+  so its tasks stay in order.
 - **Import.** The receiving chiplet runs the task on a live core of the same type (home slot =
   lowest slot of the type, substitute by `ImportSubstituteLevelMask`), with its dependency
   fields cleared, and returns a remote done when it retires. Imported tasks are never exported

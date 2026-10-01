@@ -85,8 +85,8 @@ module bingo_hw_manager_replay_ctrl #(
     // another chiplet
     input  logic [NumCores-1:0][NumClusters-1:0] checkout_exported_i,
     input  logic [NumCores-1:0][NumClusters-1:0] checkout_imported_i,
-    // Level 3: the export FIFO accepts an entry
-    input  logic                                 export_ready_i,
+    // Level 3: the export queue of each core type (index: CoreTypeId) has room
+    input  logic [2**CoreTypeIdWidth-1:0]        export_type_ready_i,
     // Level 3: core types with an export target (index: CoreTypeId)
     input  logic [2**CoreTypeIdWidth-1:0]        remote_type_en_i,
     // Level 3: the reject register accepts a bounced entry
@@ -265,7 +265,7 @@ module bingo_hw_manager_replay_ctrl #(
                     // Level 3: keep it on D as a remote proxy entry. Pop and push
                     // in one cycle leave the usage unchanged, so D's fullness
                     // does not matter.
-                    if (head_no_exec || export_ready_i) begin
+                    if (head_no_exec || export_type_ready_i[CoreTypeId[head_logical_core][head_logical_cluster]]) begin
                         move_fire_o = 1'b1;
                         rotate_o    = 1'b1;
                         export_o    = !head_no_exec;
