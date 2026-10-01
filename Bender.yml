@@ -87,6 +87,7 @@ sources:
       - test/tb_bingo_hw_manager_remote_full_queue.sv      # level 3: export from a full checkout queue, in order
       - test/tb_bingo_hw_manager_remote_no_executor.sv     # level 3: no live core of the type anywhere
       - test/tb_bingo_hw_manager_remote_done_mismatch.sv   # level 3: wrong remote done task id stops the proxy
+      - test/tb_bingo_hw_manager_remote_done_stray.sv      # level 3: a done / reject for no proxy slot is dropped
       - test/tb_bingo_hw_manager_remote_link.sv            # level 3 transport adapter unit test
       - test/tb_bingo_hw_manager_rlink_dispatch.sv         # level 3 over remote_link + xbar: remote_dispatch
       - test/tb_bingo_hw_manager_rlink_full_queue.sv       # level 3 over remote_link + xbar: remote_full_queue

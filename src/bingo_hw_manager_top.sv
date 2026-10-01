@@ -230,7 +230,9 @@ module bingo_hw_manager_top #(
     // waiting forever in the export FIFO. Default: every type.
     input  logic [2**CoreTypeIdWidth-1:0]       remote_export_type_en_i = '1,
     // Sticky: the done at the head of a proxy slot's done queue does not
-    // belong to its exported head task (the slot then stops retiring)
+    // belong to its exported head task (the slot then stops retiring), or a
+    // remote done / reject arrived for a slot that is no proxy (not fenced, or
+    // out of range; dropped)
     output logic                                remote_done_mismatch_o
 );
     // --------Type definitions and signal declarations--------------------//
@@ -608,6 +610,8 @@ module bingo_hw_manager_top #(
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_head_imported;
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remote_head_mismatch;
     logic                                                                                    remote_done_mismatch_q;
+    // Remote done / reject for a slot that cannot be a proxy: accepted and dropped
+    logic                                                                                    remote_done_stray;
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_retire_valid;
     // Level 3 export (origin side)
     logic [NUM_CORES_PER_CLUSTER-1:0]                                       remap_remote;
@@ -1708,11 +1712,22 @@ module bingo_hw_manager_top #(
         // Level 3: the done of an exported task enters the done FIFO of its
         // proxy slot (fenced, so it gets no CSR done); a CSR done to the same
         // FIFO in the same cycle wins.
+        // Only a fenced slot can be a proxy (exports only leave fenced slots). A
+        // remote done or reject for any other slot (a live one, or an id out of
+        // range: a stray or corrupted packet) is accepted and dropped, so it
+        // cannot retire a live core's task, stop a live slot or block the link.
         logic csr_done_to_remote_slot;
+        logic remote_done_slot_ok;
+        always_comb begin
+            remote_done_slot_ok = (int'(remote_done_proxy_slot_i) < N_CORES_TOTAL) &&
+                core_fenced[int'(remote_done_proxy_slot_i) % NUM_CORES_PER_CLUSTER]
+                           [int'(remote_done_proxy_slot_i) / NUM_CORES_PER_CLUSTER];
+        end
+        assign remote_done_stray = RemoteEn && remote_done_valid_i && !remote_done_slot_ok;
         always_comb begin
             remote_done_push        = '0;
             remote_reject_in        = '0;
-            remote_done_ready_o     = 1'b0;
+            remote_done_ready_o     = remote_done_stray;
             csr_done_to_remote_slot = write_done_queue_valid &&
                 (write_done_info.assigned_core_id ==
                  bingo_hw_manager_assigned_core_id_t'(remote_done_proxy_slot_i % NUM_CORES_PER_CLUSTER)) &&
@@ -1725,7 +1740,7 @@ module bingo_hw_manager_top #(
                         (write_done_info.assigned_core_id == bingo_hw_manager_assigned_core_id_t'(c)) &&
                         (write_done_info.assigned_cluster_id == bingo_hw_manager_assigned_cluster_id_t'(cl)) &&
                         !done_q_full[c][cl];
-                    if (RemoteEn && remote_done_valid_i && remote_done_reject_i &&
+                    if (RemoteEn && remote_done_valid_i && remote_done_slot_ok && remote_done_reject_i &&
                         (int'(remote_done_proxy_slot_i) == c + cl * NUM_CORES_PER_CLUSTER)) begin
                         // A reject marks the slot once the dones received before
                         // it have retired their entries
@@ -1733,7 +1748,7 @@ module bingo_hw_manager_top #(
                             remote_reject_in[c][cl] = 1'b1;
                             remote_done_ready_o     = 1'b1;
                         end
-                    end else if (RemoteEn && remote_done_valid_i && !csr_done_to_remote_slot &&
+                    end else if (RemoteEn && remote_done_valid_i && remote_done_slot_ok && !csr_done_to_remote_slot &&
                         (int'(remote_done_proxy_slot_i) == c + cl * NUM_CORES_PER_CLUSTER) &&
                         !done_q_full[c][cl]) begin
                         remote_done_push[c][cl]             = 1'b1;
@@ -1757,6 +1772,7 @@ module bingo_hw_manager_top #(
         assign remote_done_push    = '0;
         assign remote_reject_in    = '0;
         assign remote_done_ready_o = 1'b0;
+        assign remote_done_stray   = 1'b0;
         // Tie the csr signals to zero
         assign csr_req_ready_o = '0;
         assign csr_rsp_o = '0;
@@ -1940,7 +1956,7 @@ module bingo_hw_manager_top #(
     assign replay_stuck_o = replay_stuck;
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) remote_done_mismatch_q <= 1'b0;
-        else         remote_done_mismatch_q <= remote_done_mismatch_q | (|remote_head_mismatch);
+        else         remote_done_mismatch_q <= remote_done_mismatch_q | (|remote_head_mismatch) | remote_done_stray;
     end
     assign remote_done_mismatch_o = remote_done_mismatch_q;
     assign replay_data    = checkout_queue_data_out[replay_src_core][replay_src_cluster];
@@ -2430,6 +2446,10 @@ module bingo_hw_manager_top #(
                          $time, chip_id_i, replay_data.task_id,
                          checkout_remote_tag_out[replay_src_core][replay_src_cluster].origin_chip,
                          checkout_remote_tag_out[replay_src_core][replay_src_cluster].proxy_slot);
+            end
+            if (remote_done_stray) begin
+                $display("[BINGO_REMOTE_DONE_DROP] %0t chip=%0d task=%0d proxy_slot=%0d reject=%0b: no proxy slot, dropped",
+                         $time, chip_id_i, remote_done_task_id_i, remote_done_proxy_slot_i, remote_done_reject_i);
             end
             if (|remote_reject_in) begin
                 $display("[BINGO_REMOTE_REJECT_IN] %0t chip=%0d task=%0d proxy_slot=%0d: the proxy is stuck",
