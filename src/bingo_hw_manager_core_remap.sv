@@ -10,8 +10,9 @@
 //   compiler relies on per-core in-order execution (same-core HOL), and a
 //   dummy-set task only waits for its source because both sit in the same
 //   core's checkout FIFO.
-// - A slot in HOLD (park_hold_i, not yet parked) admits no new task at all, so
-//   its checkout can drain. Dummy-set and CERF-skipped tasks wait with the rest.
+// - A slot in HOLD (park_hold_i: not yet parked, or moving back from PARKED
+//   while its tasks on the substitute finish) admits no new task at all.
+//   Dummy-set and CERF-skipped tasks wait with the rest.
 // - A fenced (confirmed dead) logical core that is not retired yet still has
 //   outstanding tasks waiting to be replayed: its new tasks are held
 //   (select_valid_o = 0) so they cannot overtake the replayed ones.
@@ -71,8 +72,9 @@ module bingo_hw_manager_core_remap #(
     input  logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    smt_core_i,
     input  logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] smt_cluster_i,
     input  logic                                                     smt_update_i,
-    // Parking (bingo_hw_manager_ctrl). HOLD blocks every new task; PARKED
-    // sends executing tasks through the table. Both stay 0 when park_req is 0.
+    // Parking (bingo_hw_manager_ctrl). HOLD (or UNPARK) blocks every new task;
+    // PARKED sends executing tasks through the table. Both stay 0 when park_req
+    // is 0.
     input  logic [NumCores-1:0][NumClusters-1:0] park_hold_i = '0,
     input  logic [NumCores-1:0][NumClusters-1:0] park_parked_i = '0,
     // Selected physical core/cluster

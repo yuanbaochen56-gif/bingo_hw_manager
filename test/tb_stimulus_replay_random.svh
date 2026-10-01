@@ -73,7 +73,43 @@ initial begin : chip0_push
     end
 end
 
+// TB_RANDOM_PARK: the host sets and clears the park request of a random core
+// (never the faulty one, so the fault still hits its own task) every 30..400
+// cycles; parking, moving back, fences and replays then interleave freely
+`ifndef TB_RANDOM_PARK
+  `define TB_RANDOM_PARK 0
+`endif
+int unsigned rnd_parks = 0, rnd_unparks = 0, rnd_park_toggles = 0;
+if (`TB_RANDOM_PARK != 0) begin : gen_random_park
+    initial begin
+        wait (rst_ni);
+        repeat (20) @(posedge clk_i);
+        while (completed_task_count < EXPECTED_TASK_COUNT) begin
+            automatic int unsigned c;
+            repeat ($urandom_range(30, 400)) @(posedge clk_i);
+            c = $urandom_range(0, NUM_CORES_PER_CLUSTER - 1);
+            if (c != fault_core) begin
+                @(negedge clk_i);
+                park_req[0][c] = ~park_req[0][c];
+                rnd_park_toggles++;
+            end
+        end
+    end
+    logic [NUM_CORES_PER_CLUSTER-1:0] rnd_parked_q = '0, rnd_unpark_q = '0;
+    always @(posedge clk_i) begin
+        for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+            if (gen_dut[0].i_dut.park_parked[c][0] && !rnd_parked_q[c]) rnd_parks++;
+            if (rnd_unpark_q[c] && !gen_dut[0].i_dut.park_parked[c][0] && !gen_dut[0].i_dut.core_fenced[c][0]) rnd_unparks++;
+            rnd_parked_q[c] = gen_dut[0].i_dut.park_parked[c][0];
+            rnd_unpark_q[c] = gen_dut[0].i_dut.park_unpark[c][0];
+        end
+    end
+end
+
 final begin
+    if (`TB_RANDOM_PARK != 0) begin
+        $display("[RANDOM] exported park: %0d toggles, %0d parks, %0d moves back", rnd_park_toggles, rnd_parks, rnd_unparks);
+    end
     if (fault_mode == FAULT_SLOW) begin
         if (fenced_export[0] !== '0) $error("[RANDOM] slow core must not be fenced");
         if (replay_move_count[0] != 0) $error("[RANDOM] slow core: no replay expected, got %0d", replay_move_count[0]);

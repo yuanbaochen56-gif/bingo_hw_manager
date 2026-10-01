@@ -54,8 +54,15 @@
 // slot that becomes such a target while in HOLD gives up the same way, so its
 // own tasks are not held behind the other slot's. A fence of the
 // slot itself drops HOLD or PARKED and writes the table only through the fence
-// update above, never as a park write in that same cycle. Parking is not undone
-// by clearing park_req_i. If the substitute of a parked slot is fenced, the
+// update above, never as a park write in that same cycle. Clearing park_req_i
+// of a PARKED slot moves it back (UNPARK): its new tasks are held, on neither
+// core, until none of its tasks is left on another core (moved_i, the per
+// logical core count of entries in other cores' checkout queues), so a task on
+// the slot itself cannot overtake an older one on the substitute; then the
+// entry goes back to the plain choice and the slot is no longer parked. The
+// substitute keeps running its own tasks meanwhile: its queue is in order, so
+// they never delay the parked slot's. Setting the request again during UNPARK
+// returns to PARKED. If the substitute of a parked slot is fenced, the
 // entry is recomputed with the slot still masked out; if nothing is left, the
 // slot leaves PARKED, park_fail_o is raised, and the table points back at the
 // slot so a replay of entries already on the dead substitute has a live core.
@@ -134,6 +141,8 @@ module bingo_hw_manager_ctrl #(
     input  logic [NumCores-1:0][NumClusters-1:0]     checkout_empty_i = '1,
     input  logic [NumCores-1:0][NumClusters-1:0]     ready_empty_i = '1,
     input  logic [NumCores-1:0][NumClusters-1:0]     slot_push_i = '0,
+    // Logical slots with tasks in another core's checkout queue (UNPARK waits)
+    input  logic [NumCores-1:0][NumClusters-1:0]     moved_i = '0,
 
     // Power manager: slots that do not keep their domain at the normal level
     output logic [NumCores-1:0][NumClusters-1:0] pm_idle_o,
@@ -153,6 +162,8 @@ module bingo_hw_manager_ctrl #(
     // Parking (see above). fail stays set until that slot's request drops.
     output logic [NumCores-1:0][NumClusters-1:0]     park_hold_o,
     output logic [NumCores-1:0][NumClusters-1:0]     park_parked_o,
+    // PARKED slots moving back (new tasks held until moved_i drops)
+    output logic [NumCores-1:0][NumClusters-1:0]     park_unpark_o,
     output logic [NumCores-1:0][NumClusters-1:0]     park_fail_o
 );
 
@@ -194,6 +205,8 @@ module bingo_hw_manager_ctrl #(
     logic [NumCores-1:0][NumClusters-1:0]                     park_hold_q;
     logic [NumCores-1:0][NumClusters-1:0]                     park_parked_q;
     logic [NumCores-1:0][NumClusters-1:0]                     park_fail_q;
+    logic [NumCores-1:0][NumClusters-1:0]                     park_unpark_q;
+    logic [NumCores-1:0][NumClusters-1:0]                     unpark_commit;
     logic [NumCores-1:0][NumClusters-1:0]                     park_choice_found;
     logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    park_choice_core;
     logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] park_choice_cluster;
@@ -273,6 +286,9 @@ module bingo_hw_manager_ctrl #(
                 park_commit[c][cl] = park_hold_q[c][cl] && !park_parked_q[c][cl] &&
                                      !fenced_i[c][cl] && !fence_new[c][cl] && !park_target[c][cl] &&
                                      park_drained[c][cl] && park_choice_ok[c][cl];
+                unpark_commit[c][cl] = park_parked_q[c][cl] && park_unpark_q[c][cl] &&
+                                       !fenced_i[c][cl] && !fence_new[c][cl] && !recompute[c][cl] &&
+                                       !moved_i[c][cl];
                 park_give_up[c][cl] = park_hold_q[c][cl] && !park_parked_q[c][cl] &&
                                       !fenced_i[c][cl] && !fence_new[c][cl] &&
                                       park_drained[c][cl] && !park_choice_ok[c][cl];
@@ -290,6 +306,7 @@ module bingo_hw_manager_ctrl #(
             park_hold_q   <= '0;
             park_parked_q <= '0;
             park_fail_q   <= '0;
+            park_unpark_q <= '0;
         end else begin
             init_q        <= 1'b0;
             fenced_seen_q <= fenced_i;
@@ -316,12 +333,18 @@ module bingo_hw_manager_ctrl #(
                         smt_found_q[c][cl]   <= 1'b1;
                         smt_core_q[c][cl]    <= park_choice_core[c][cl];
                         smt_cluster_q[c][cl] <= park_choice_cluster[c][cl];
+                    end else if (unpark_commit[c][cl]) begin
+                        // Back to the entry of a live slot (the plain choice)
+                        smt_found_q[c][cl]   <= choice_found[c][cl];
+                        smt_core_q[c][cl]    <= choice_core[c][cl];
+                        smt_cluster_q[c][cl] <= choice_cluster[c][cl];
                     end
 
                     if (fenced_i[c][cl]) begin
                         park_hold_q[c][cl]   <= 1'b0;
                         park_parked_q[c][cl] <= 1'b0;
                         park_fail_q[c][cl]   <= 1'b0;
+                        park_unpark_q[c][cl] <= 1'b0;
                     end else if (park_commit[c][cl]) begin
                         park_hold_q[c][cl]   <= 1'b0;
                         park_parked_q[c][cl] <= 1'b1;
@@ -341,7 +364,16 @@ module bingo_hw_manager_ctrl #(
                     end else if (park_parked_q[c][cl] && recompute[c][cl] &&
                                  !fence_new[c][cl] && !init_q && !park_choice_ok[c][cl]) begin
                         park_parked_q[c][cl] <= 1'b0;
+                        park_unpark_q[c][cl] <= 1'b0;
                         park_fail_q[c][cl]   <= 1'b1;
+                    end else if (unpark_commit[c][cl]) begin
+                        park_parked_q[c][cl] <= 1'b0;
+                        park_unpark_q[c][cl] <= 1'b0;
+                    end else if (park_parked_q[c][cl] && !park_unpark_q[c][cl] && !park_req_i[c][cl]) begin
+                        park_unpark_q[c][cl] <= 1'b1;
+                    end else if (park_unpark_q[c][cl] && park_req_i[c][cl]) begin
+                        // Asked again before the move back finished: stay parked
+                        park_unpark_q[c][cl] <= 1'b0;
                     end
                 end
             end
@@ -351,9 +383,10 @@ module bingo_hw_manager_ctrl #(
     assign smt_found_o   = smt_found_q;
     assign smt_core_o    = smt_core_q;
     assign smt_cluster_o = smt_cluster_q;
-    assign smt_update_o  = init_q || (|fence_new) || (|park_commit);
+    assign smt_update_o  = init_q || (|fence_new) || (|park_commit) || (|unpark_commit);
     assign park_hold_o   = park_hold_q;
     assign park_parked_o = park_parked_q;
+    assign park_unpark_o = park_unpark_q;
     assign park_fail_o   = park_fail_q;
 
     // ------------------------------------------------------------------
@@ -464,6 +497,12 @@ module bingo_hw_manager_ctrl #(
                             $error("[BINGO_ASSERT] parked SMT entry core %0d cluster %0d: found %0b core %0d cluster %0d",
                                    c, cl, smt_found_q[c][cl], smt_core_q[c][cl], smt_cluster_q[c][cl]);
                         end
+                    end else if (!fenced_i[c][cl] && smt_found_q[c][cl] &&
+                                 (smt_core_q[c][cl] == CoreIdWidth'(c)) && (smt_cluster_q[c][cl] == ClusterIdWidth'(cl))) begin
+                        // A park that fell back to the slot itself (its substitute died
+                        // and none was left): the replay of its old tasks went there.
+                        // A live slot's entry is not read until it is fenced or parked,
+                        // and both write it again.
                     end else if ((smt_found_q[c][cl] != choice_found[c][cl]) ||
                         (choice_found[c][cl] && ((smt_core_q[c][cl] != choice_core[c][cl]) ||
                                                  (smt_cluster_q[c][cl] != choice_cluster[c][cl])))) begin
@@ -491,6 +530,7 @@ module bingo_hw_manager_ctrl #(
                     // Cleared on the edge that sees the fence, so a slot fenced since
                     // the previous edge must no longer be in HOLD or PARKED.
                     if ((park_hold_q[c][cl] && park_parked_q[c][cl]) ||
+                        (park_unpark_q[c][cl] && !park_parked_q[c][cl]) ||
                         ((park_hold_q[c][cl] || park_parked_q[c][cl]) && fenced_seen_q[c][cl])) begin
                         $error("[BINGO_ASSERT] core %0d cluster %0d park hold %0b parked %0b while fenced %0b",
                                c, cl, park_hold_q[c][cl], park_parked_q[c][cl], fenced_i[c][cl]);

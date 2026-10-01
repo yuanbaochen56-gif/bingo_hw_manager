@@ -178,8 +178,10 @@ module bingo_hw_manager_top #(
     // Core parking (bingo_hw_manager_ctrl). Bit (core + cluster*NUM_CORES) asks
     // that logical slot to drain, then send later executing tasks to a live
     // core of its type. 0 leaves placement unchanged. park_fail_o is sticky for
-    // a slot until its request bit drops (no substitute, or the substitute died
-    // and none was left). Clearing the request does not move tasks back.
+    // a slot until its request bit drops (no substitute, or the slot runs
+    // another slot's tasks, or the substitute died and none was left). Clearing
+    // the request of a parked slot moves it back: its new tasks wait until none
+    // of its tasks is left on another core, then run on the slot again.
     input  device_axi_lite_data_t               bingo_hw_manager_park_req_i = '0,
     output device_axi_lite_data_t               bingo_hw_manager_park_fail_o,
     input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
@@ -1907,6 +1909,19 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_req;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_hold;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_parked;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_unpark;
+    // Logical slots with tasks in another core's checkout queue
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_moved;
+    // HOLD or UNPARK: no new task of the slot may be placed
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_block;
+    always_comb begin
+        for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                park_moved[c][cl] = (remap_outstanding_q[c][cl] != '0);
+            end
+        end
+    end
+    assign park_block = park_hold | park_unpark;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_fail;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_slot_push;
     always_comb begin
@@ -1964,6 +1979,7 @@ module bingo_hw_manager_top #(
         .checkout_empty_i ( checkout_queue_empty ),
         .ready_empty_i  ( ready_queue_empty ),
         .slot_push_i    ( park_slot_push   ),
+        .moved_i        ( park_moved       ),
         .wd_tick_o      ( ctrl_wd_tick     ),
         .pm_boost_o     ( ctrl_pm_boost    ),
         .pm_idle_o      ( ctrl_pm_idle     ),
@@ -1974,6 +1990,7 @@ module bingo_hw_manager_top #(
         .smt_update_o   ( smt_update   ),
         .park_hold_o    ( park_hold    ),
         .park_parked_o  ( park_parked  ),
+        .park_unpark_o  ( park_unpark  ),
         .park_fail_o    ( park_fail    )
     );
 
@@ -2100,7 +2117,7 @@ module bingo_hw_manager_top #(
             .smt_core_i(smt_core),
             .smt_cluster_i(smt_cluster),
             .smt_update_i(smt_update),
-            .park_hold_i(park_hold),
+            .park_hold_i(park_block),
             .park_parked_i(park_parked),
             .select_valid_o(remap_select_valid_raw[core]),
             .physical_core_o(remap_physical_core[core]),
@@ -2527,6 +2544,7 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_hold_log_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_parked_log_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_fail_log_q;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_unpark_log_q;
     always @(posedge clk_i or negedge rst_ni) begin : watchdog_remap_event_log
         if (!rst_ni) begin
             core_dead_suspect_log_q <= '0;
@@ -2536,11 +2554,13 @@ module bingo_hw_manager_top #(
             park_hold_log_q         <= '0;
             park_parked_log_q       <= '0;
             park_fail_log_q         <= '0;
+            park_unpark_log_q       <= '0;
         end else begin
             core_dead_suspect_log_q <= core_dead_suspect;
             park_hold_log_q         <= park_hold;
             park_parked_log_q       <= park_parked;
             park_fail_log_q         <= park_fail;
+            park_unpark_log_q       <= park_unpark;
             core_fenced_log_q       <= core_fenced;
             core_retired_log_q      <= core_retired;
             replay_stuck_log_q      <= replay_stuck_slot;
@@ -2561,6 +2581,15 @@ module bingo_hw_manager_top #(
                     end
                     if (park_fail[c][cl] && !park_fail_log_q[c][cl]) begin
                         $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d FAIL",
+                                 $time, chip_id_i, c, cl);
+                    end
+                    if (park_unpark[c][cl] && !park_unpark_log_q[c][cl]) begin
+                        $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d UNPARK (%0d tasks left elsewhere)",
+                                 $time, chip_id_i, c, cl, remap_outstanding_q[c][cl]);
+                    end
+                    if (park_parked_log_q[c][cl] && !park_parked[c][cl] && park_unpark_log_q[c][cl] &&
+                        !core_fenced[c][cl] && !park_fail[c][cl]) begin
+                        $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d UNPARKED",
                                  $time, chip_id_i, c, cl);
                     end
                     if ((park_hold_log_q[c][cl] || park_parked_log_q[c][cl]) &&
@@ -2657,7 +2686,7 @@ module bingo_hw_manager_top #(
                         automatic int unsigned psrc = remap_route_src_core[c][cl];
                         automatic int unsigned pscl =
                             waiting_dep_check_task_desc[psrc].assigned_cluster_id;
-                        if (park_hold[psrc][pscl]) begin
+                        if (park_block[psrc][pscl]) begin
                             $error("[BINGO_ASSERT] route of task %0d while logical core %0d cluster %0d is in HOLD",
                                    waiting_dep_check_task_desc[psrc].task_id, psrc, pscl);
                         end
