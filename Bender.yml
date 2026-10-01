@@ -112,6 +112,10 @@ sources:
       - test/tb_bingo_hw_manager_park.sv                # core parking: in-flight stays, later tasks move
       - test/tb_bingo_hw_manager_park_no_substitute.sv  # core parking: no live substitute, request fails
       - test/tb_bingo_hw_manager_park_fence.sv          # core parking: a fence during the drain drops it
+      - test/tb_bingo_hw_manager_park_sub_fence.sv        # parking: the parked core's substitute dies, a third core takes over
+      - test/tb_bingo_hw_manager_park_sub_fence_last.sv   # parking: the substitute dies and none is left, the park fails
+      - test/tb_bingo_hw_manager_park_target.sv           # parking: a core that runs another core's tasks cannot be parked
+      - test/tb_bingo_hw_manager_park_mutual.sv           # parking: two cores asked at once never park onto each other
       - test/tb_bingo_hw_manager_rlink_random.sv           # level 3 over remote_link: random (scripts/run_replay_random.sh)
       - test/tb_bingo_hw_manager_rlink_random_reject.sv    # level 3 over remote_link: random, a hang on each chiplet (rejects)
       - test/tb_bingo_hw_manager_replay_random.sv          # random graph + random fault (scripts/run_replay_random.sh)

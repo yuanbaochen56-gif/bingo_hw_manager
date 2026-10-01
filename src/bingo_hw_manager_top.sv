@@ -1915,11 +1915,15 @@ module bingo_hw_manager_top #(
             for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
                 int unsigned idx;
                 idx = c + cl * NUM_CORES_PER_CLUSTER;
-                park_req[c][cl] = (idx < $bits(bingo_hw_manager_park_req_i)) &&
+                // Parking needs the CSR ready queues (their empty flag ends the
+                // drain); with AXI-Lite mailboxes a request fails at once
+                park_req[c][cl] = (READY_AND_DONE_QUEUE_INTERFACE_TYPE == 1) &&
+                                  (idx < $bits(bingo_hw_manager_park_req_i)) &&
                                   bingo_hw_manager_park_req_i[idx];
                 park_slot_push[c][cl] = checkout_queue_push[c][cl] || ready_queue_push[c][cl];
                 if (idx < $bits(bingo_hw_manager_park_fail_o)) begin
-                    bingo_hw_manager_park_fail_o[idx] = park_fail[c][cl];
+                    bingo_hw_manager_park_fail_o[idx] = park_fail[c][cl] ||
+                        ((READY_AND_DONE_QUEUE_INTERFACE_TYPE != 1) && bingo_hw_manager_park_req_i[idx]);
                 end
             end
         end
@@ -2112,7 +2116,10 @@ module bingo_hw_manager_top #(
         //
         // A fenced logical core is also held while any slot still waits to be
         // replayed: its older tasks may sit in that slot (in any cluster, after a
-        // cross-cluster remap) and must reach their new core first.
+        // cross-cluster remap) and must reach their new core first. The same
+        // holds for a live logical core whose tasks sit on another core (parked,
+        // or back from a parked state after its substitute died): they may be
+        // on the slot being replayed.
         assign task_cluster = waiting_dep_check_task_desc[core].assigned_cluster_id;
         always_comb begin
             outstanding_clear = 1'b1;
@@ -2122,7 +2129,7 @@ module bingo_hw_manager_top #(
                     if (remap_outstanding_q[core][cl] != '0) begin
                         outstanding_clear = 1'b0;
                     end
-                    if (core_fenced[core][cl] && replay_pending) begin
+                    if ((core_fenced[core][cl] || (remap_outstanding_q[core][cl] != '0)) && replay_pending) begin
                         replay_hold = 1'b1;
                     end
                 end
