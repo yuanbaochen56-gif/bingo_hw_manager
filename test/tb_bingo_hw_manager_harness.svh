@@ -123,6 +123,10 @@ localparam int unsigned PM_NORMAL_LEVEL = 6;
   `define TB_PM_BOOST_LEVEL 0
 `endif
 localparam int unsigned PM_BOOST_LEVEL  = `TB_PM_BOOST_LEVEL;
+// Idle entry delay in cycles (0: at once)
+`ifndef TB_PM_IDLE_DELAY
+  `define TB_PM_IDLE_DELAY 0
+`endif
 // Link errors (remote_link error_o) are test failures unless allowed
 `ifndef TB_ALLOW_LINK_ERROR
   `define TB_ALLOW_LINK_ERROR 0
@@ -941,6 +945,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .bingo_hw_manager_idle_power_level_i  ( device_axi_lite_data_t'(PM_IDLE_LEVEL)                        ),
         .bingo_hw_manager_normal_power_level_i( device_axi_lite_data_t'(PM_NORMAL_LEVEL)                      ),
         .bingo_hw_manager_boost_power_level_i ( device_axi_lite_data_t'(PM_BOOST_LEVEL)                       ),
+        .bingo_hw_manager_idle_entry_delay_i  ( device_axi_lite_data_t'(`TB_PM_IDLE_DELAY)                    ),
         .bingo_hw_manager_pm_base_addr_i      ( '0                                                          ),
         .bingo_hw_manager_core_power_domain_i ( {(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET){device_axi_lite_data_t'(1)}} ),
         .bingo_hw_manager_pm_mode_i           ( '0                                                          ),

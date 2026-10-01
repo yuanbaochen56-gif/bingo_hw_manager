@@ -37,6 +37,11 @@
 // no longer keeps its power domain at the normal level (pm_idle_o: polling for a
 // task, or fenced) and no longer counts as load (load_clear_o). A slot that is
 // only dead_suspect may still be working and keeps both.
+// Idle entry delay (idle_delay_i, host-configured): a slot only counts as idle
+// for the PM once it has been idle for idle_delay_i cycles, so a domain only
+// drops to the idle level after all its slots were idle that long. Short gaps
+// between tasks then keep the normal level and avoid the wake-up cost; 0 =
+// at once (the PM's own behaviour).
 //
 // Frequency-aware watchdog: the power levels are clock dividers. While a slot's
 // domain runs at level L above the normal level N (slower), its core makes
@@ -83,6 +88,8 @@ module bingo_hw_manager_ctrl #(
     input  logic [7:0]                               dvfs_level_i,
     input  logic [31:0][7:0]                         domain_level_i,
     input  logic [NumCores-1:0][NumClusters-1:0][5:0] slot_domain_i,  // >= 32: no domain
+    // Cycles a slot must be idle before the PM may count it as idle (0: at once)
+    input  logic [31:0]                              idle_delay_i,
 
     // Power manager: slots that do not keep their domain at the normal level
     output logic [NumCores-1:0][NumClusters-1:0] pm_idle_o,
@@ -184,7 +191,28 @@ module bingo_hw_manager_ctrl #(
     // ------------------------------------------------------------------
     // Fault-aware power and load view
     // ------------------------------------------------------------------
-    assign pm_idle_o    = waiting_i | fenced_i;
+    logic [NumCores-1:0][NumClusters-1:0]       slot_idle;
+    logic [NumCores-1:0][NumClusters-1:0][31:0] idle_cnt_q;
+    assign slot_idle = waiting_i | fenced_i;
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            idle_cnt_q <= '0;
+        end else begin
+            for (int unsigned c = 0; c < NumCores; c++) begin
+                for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                    if (!slot_idle[c][cl])                    idle_cnt_q[c][cl] <= '0;
+                    else if (idle_cnt_q[c][cl] != '1)         idle_cnt_q[c][cl] <= idle_cnt_q[c][cl] + 32'd1;
+                end
+            end
+        end
+    end
+    always_comb begin
+        for (int unsigned c = 0; c < NumCores; c++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                pm_idle_o[c][cl] = slot_idle[c][cl] && (idle_cnt_q[c][cl] >= idle_delay_i);
+            end
+        end
+    end
     assign load_clear_o = fenced_i;
 
     // ------------------------------------------------------------------
