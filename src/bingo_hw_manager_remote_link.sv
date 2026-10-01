@@ -56,7 +56,7 @@
 //   [0] SLVERR / DECERR on a write (resent)  [1] wrong kind on a page (dropped)
 //   [2] seq gap from a peer                  [3] unknown peer chip
 //   [4] done from a peer without an outstanding export (credit overflow)
-//   [5] a packet dropped after its last resend (lost)
+//   [5] a packet dropped after its last resend (lost; [0] is then set too)
 `include "common_cells/registers.svh"
 `include "axi/typedef.svh"
 module bingo_hw_manager_remote_link #(
