@@ -932,6 +932,9 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////////////////
     // Chiplet from remote Done Queue
     //////////////////////////////////////////////////////////////////////
+    // Other chiplets write this port: only the mailbox write register is
+    // writable, so a remote write cannot flush the FIFO (CTRL) or change its
+    // thresholds and lose dependency signals (SLVERR, no effect)
     bingo_hw_manager_write_mailbox #(
         .MailboxDepth(ChipletDoneQueueDepth                    ),
         .IrqEdgeTrig (1'b0                                     ),
@@ -939,6 +942,7 @@ module bingo_hw_manager_top #(
         .AxiAddrWidth(HostAxiLiteAddrWidth                     ),
         .AxiDataWidth(HostAxiLiteDataWidth                     ),
         .ChipIdWidth (ChipIdWidth                              ),
+        .RegWriteEn  (1'b0                                     ),
         .req_lite_t  (host_axi_lite_req_t                      ),
         .resp_lite_t (host_axi_lite_resp_t                     )
     ) i_bingo_hw_manager_chiplet_done_queue (
