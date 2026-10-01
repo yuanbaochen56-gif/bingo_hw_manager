@@ -3,14 +3,21 @@
 // Picks the physical core that receives a task assigned to logical core
 // `logical_core_i` in cluster `logical_cluster_i`.
 //
-// Semantics (remap only after a dead core's outstanding tasks were replayed):
-// - A logical core that is not fenced always keeps its own tasks. Being busy,
-//   slow or dead_suspect is NOT a reason to move work: the compiler relies on
-//   per-core in-order execution (same-core HOL), and a dummy-set task only
-//   waits for its source because both sit in the same core's checkout FIFO.
+// Semantics (remap only after a dead core's outstanding tasks were replayed,
+// or after a live core was parked — see bingo_hw_manager_ctrl):
+// - A logical core that is not fenced and not parked always keeps its own
+//   tasks. Being busy, slow or dead_suspect is NOT a reason to move work: the
+//   compiler relies on per-core in-order execution (same-core HOL), and a
+//   dummy-set task only waits for its source because both sit in the same
+//   core's checkout FIFO.
+// - A slot in HOLD (park_hold_i, not yet parked) admits no new task at all, so
+//   its checkout can drain. Dummy-set and CERF-skipped tasks wait with the rest.
 // - A fenced (confirmed dead) logical core that is not retired yet still has
 //   outstanding tasks waiting to be replayed: its new tasks are held
 //   (select_valid_o = 0) so they cannot overtake the replayed ones.
+// - Once PARKED, an executing task follows the same table as a retired core.
+//   Dummy-set and CERF-skipped tasks stay on the logical core. A parked slot
+//   is not a remote proxy: level 3 does not export it.
 // - Once retired, an executing task (remappable_i) goes to the substitute of
 //   the logical core in the slot mapping table of bingo_hw_manager_ctrl
 //   (smt_*_i): a live core with the same non-zero CoreTypeId as the logical
@@ -64,6 +71,10 @@ module bingo_hw_manager_core_remap #(
     input  logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    smt_core_i,
     input  logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] smt_cluster_i,
     input  logic                                                     smt_update_i,
+    // Parking (bingo_hw_manager_ctrl). HOLD blocks every new task; PARKED
+    // sends executing tasks through the table. Both stay 0 when park_req is 0.
+    input  logic [NumCores-1:0][NumClusters-1:0] park_hold_i = '0,
+    input  logic [NumCores-1:0][NumClusters-1:0] park_parked_i = '0,
     // Selected physical core/cluster
     output logic select_valid_o,
     output logic [CoreIdWidth-1:0] physical_core_o,
@@ -74,6 +85,8 @@ module bingo_hw_manager_core_remap #(
     logic logical_in_range;
     logic logical_fenced;
     logic logical_retired;
+    logic logical_hold;
+    logic logical_parked;
     logic                      sub_found;
     logic [CoreIdWidth-1:0]    sub_core;
     logic [ClusterIdWidth-1:0] sub_cluster;
@@ -84,12 +97,14 @@ module bingo_hw_manager_core_remap #(
                               (int'(logical_cluster_i) < NumClusters);
     assign logical_fenced   = logical_in_range && core_fenced_i[logical_core_i][logical_cluster_i];
     assign logical_retired  = logical_in_range && core_retired_i[logical_core_i][logical_cluster_i];
+    assign logical_hold     = logical_in_range && park_hold_i[logical_core_i][logical_cluster_i];
+    assign logical_parked   = logical_in_range && park_parked_i[logical_core_i][logical_cluster_i];
     assign logical_typed    = logical_in_range && (CoreTypeId[logical_core_i][logical_cluster_i] != '0);
     assign logical_exportable = logical_typed && remote_type_en_i[CoreTypeId[logical_core_i][logical_cluster_i]] &&
                                 !remote_rejected_i[logical_core_i][logical_cluster_i];
 
-    // The logical core is fenced whenever its substitute is used, so the table
-    // never returns the logical core itself here.
+    // A fenced logical core is not a candidate for its own substitute. A parked
+    // one is masked out the same way, so the table does not point back at it.
     assign sub_found   = logical_in_range && smt_found_i[logical_core_i][logical_cluster_i];
     assign sub_core    = smt_core_i[logical_core_i][logical_cluster_i];
     assign sub_cluster = smt_cluster_i[logical_core_i][logical_cluster_i];
@@ -115,6 +130,22 @@ module bingo_hw_manager_core_remap #(
                 end else if (SubstituteLevelMask[2] && logical_exportable) begin
                     select_valid_o = 1'b1;
                     remote_o       = 1'b1;
+                end
+            end
+        end else if (req_valid_i && logical_in_range && logical_hold && !logical_fenced) begin
+            // Drain: nothing new enters this slot's checkout.
+            select_valid_o = 1'b0;
+        end else if (req_valid_i && logical_in_range && logical_parked && !logical_fenced) begin
+            if (remappable_i && smt_update_i) begin
+                select_valid_o = 1'b0;
+            end else if (remappable_i) begin
+                // Live core: no level-3 export. A missing substitute waits; the
+                // control plane drops PARKED instead of leaving it that way.
+                select_valid_o = sub_found &&
+                    !((sub_core == logical_core_i) && (sub_cluster == logical_cluster_i));
+                if (select_valid_o) begin
+                    physical_core_o    = sub_core;
+                    physical_cluster_o = sub_cluster;
                 end
             end
         end

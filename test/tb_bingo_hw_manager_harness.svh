@@ -946,6 +946,11 @@ logic       pm_bus_stall = 1'b0;
 // External accesses into each chiplet's clusters (driven by a stimulus)
 logic [NUM_CLUSTERS_PER_CHIPLET-1:0] cluster_access [NUM_CHIPLET];
 initial for (int i = 0; i < NUM_CHIPLET; i++) cluster_access[i] = '0;
+// Core parking request (bit = core + cluster*NUM_CORES) and its sticky failure.
+// Default 0: placement matches a run with parking left unused.
+device_axi_lite_data_t park_req  [NUM_CHIPLET];
+device_axi_lite_data_t park_fail [NUM_CHIPLET];
+initial for (int i = 0; i < NUM_CHIPLET; i++) park_req[i] = '0;
 // Power domain of every slot
 device_axi_lite_data_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] pm_core_domain;
 for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_pm_domain_core
@@ -1028,6 +1033,8 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .bingo_hw_manager_idle_entry_delay_i  ( device_axi_lite_data_t'(`TB_PM_IDLE_DELAY)                    ),
         .bingo_hw_manager_cluster_access_i    ( cluster_access[chiplet_idx]                                 ),
         .bingo_hw_manager_access_wake_hold_i  ( device_axi_lite_data_t'(`TB_PM_ACCESS_HOLD)                   ),
+        .bingo_hw_manager_park_req_i          ( park_req[chiplet_idx]                                       ),
+        .bingo_hw_manager_park_fail_o         ( park_fail[chiplet_idx]                                      ),
         .bingo_hw_manager_pm_base_addr_i      ( '0                                                          ),
         .bingo_hw_manager_core_power_domain_i ( pm_core_domain                                              ),
         .bingo_hw_manager_pm_mode_i           ( '0                                                          ),
@@ -1084,7 +1091,9 @@ end
 // Remap placement monitor (white-box, always on)
 // ---------------------------------------------------------------------------
 // A task may only leave its logical core once that core is retired (fenced and
-// its outstanding tasks replayed), and tasks that never execute on a core
+// its outstanding tasks replayed) or PARKED (a host park of a live core).
+// With park_req held at 0, park_parked stays 0 and the retired check is the
+// one this monitor has always applied. Tasks that never execute on a core
 // (dummy-set, CERF-skipped) must never be remapped: they rely on their logical
 // core's checkout FIFO order.
 for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_remap_monitor
@@ -1096,7 +1105,8 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_remap_monitor
                         automatic int src    = gen_dut[gi].i_dut.remap_route_src_core[p][cl];
                         automatic int src_cl = gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].assigned_cluster_id;
                         if ((src != p) || (src_cl != cl)) begin
-                            if (gen_dut[gi].i_dut.core_retired[src][src_cl] !== 1'b1) begin
+                            if ((gen_dut[gi].i_dut.core_retired[src][src_cl] !== 1'b1) &&
+                                (gen_dut[gi].i_dut.park_parked[src][src_cl] !== 1'b1)) begin
                                 $error("[REMAP_CHECK] chip %0d: task %0d of non-retired logical core %0d (cluster %0d) placed on physical core %0d cluster %0d",
                                        gi, gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].task_id, src, src_cl, p, cl);
                             end

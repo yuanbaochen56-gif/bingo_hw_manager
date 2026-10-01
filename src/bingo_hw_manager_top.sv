@@ -175,6 +175,13 @@ module bingo_hw_manager_top #(
     // cycles the cluster's domain stays awake after the last one; 0 = off
     input logic [NUM_CLUSTERS_PER_CHIPLET-1:0]  bingo_hw_manager_cluster_access_i = '0,
     input device_axi_lite_data_t                bingo_hw_manager_access_wake_hold_i = '0,
+    // Core parking (bingo_hw_manager_ctrl). Bit (core + cluster*NUM_CORES) asks
+    // that logical slot to drain, then send later executing tasks to a live
+    // core of its type. 0 leaves placement unchanged. park_fail_o is sticky for
+    // a slot until its request bit drops (no substitute, or the substitute died
+    // and none was left). Clearing the request does not move tasks back.
+    input  device_axi_lite_data_t               bingo_hw_manager_park_req_i = '0,
+    output device_axi_lite_data_t               bingo_hw_manager_park_fail_o,
     input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
     input device_axi_lite_data_t                bingo_hw_manager_normal_power_level_i,
     input device_axi_lite_addr_t                bingo_hw_manager_pm_base_addr_i,
@@ -1896,6 +1903,27 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0]    smt_core;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0] smt_cluster;
     logic                                                           smt_update;
+    // Parking. The request mask is bit (core + cluster * NUM_CORES).
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_req;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_hold;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_parked;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_fail;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_slot_push;
+    always_comb begin
+        bingo_hw_manager_park_fail_o = '0;
+        for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                int unsigned idx;
+                idx = c + cl * NUM_CORES_PER_CLUSTER;
+                park_req[c][cl] = (idx < $bits(bingo_hw_manager_park_req_i)) &&
+                                  bingo_hw_manager_park_req_i[idx];
+                park_slot_push[c][cl] = checkout_queue_push[c][cl] || ready_queue_push[c][cl];
+                if (idx < $bits(bingo_hw_manager_park_fail_o)) begin
+                    bingo_hw_manager_park_fail_o[idx] = park_fail[c][cl];
+                end
+            end
+        end
+    end
     // Load of a slot: its checkout queue occupancy (full = highest)
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][CheckoutUsageWidth:0] ctrl_load;
     for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_ctrl_load_core
@@ -1928,6 +1956,10 @@ module bingo_hw_manager_top #(
         .idle_delay_i   ( 32'(bingo_hw_manager_idle_entry_delay_i) ),
         .cluster_access_i ( bingo_hw_manager_cluster_access_i ),
         .access_hold_i  ( 32'(bingo_hw_manager_access_wake_hold_i) ),
+        .park_req_i     ( park_req         ),
+        .checkout_empty_i ( checkout_queue_empty ),
+        .ready_empty_i  ( ready_queue_empty ),
+        .slot_push_i    ( park_slot_push   ),
         .wd_tick_o      ( ctrl_wd_tick     ),
         .pm_boost_o     ( ctrl_pm_boost    ),
         .pm_idle_o      ( ctrl_pm_idle     ),
@@ -1935,7 +1967,10 @@ module bingo_hw_manager_top #(
         .smt_found_o    ( smt_found    ),
         .smt_core_o     ( smt_core     ),
         .smt_cluster_o  ( smt_cluster  ),
-        .smt_update_o   ( smt_update   )
+        .smt_update_o   ( smt_update   ),
+        .park_hold_o    ( park_hold    ),
+        .park_parked_o  ( park_parked  ),
+        .park_fail_o    ( park_fail    )
     );
 
     bingo_hw_manager_replay_ctrl #(
@@ -2025,7 +2060,8 @@ module bingo_hw_manager_top #(
     // Core Remapping
     //////////////////////////////////////////////////////////////////////
     // A task only leaves its logical core once that core is retired (fenced and
-    // its outstanding tasks replayed, see bingo_hw_manager_core_remap).
+    // its outstanding tasks replayed) or PARKED (live, drained, see
+    // bingo_hw_manager_core_remap).
     // Dummy-set and CERF-skipped tasks never execute on a core and must drain
     // through their own core's checkout FIFO, which is what orders them after the
     // core's earlier tasks, so they are never remapped.
@@ -2060,6 +2096,8 @@ module bingo_hw_manager_top #(
             .smt_core_i(smt_core),
             .smt_cluster_i(smt_cluster),
             .smt_update_i(smt_update),
+            .park_hold_i(park_hold),
+            .park_parked_i(park_parked),
             .select_valid_o(remap_select_valid_raw[core]),
             .physical_core_o(remap_physical_core[core]),
             .physical_cluster_o(remap_physical_cluster[core]),
@@ -2479,14 +2517,23 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_fenced_log_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_retired_log_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_stuck_log_q;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_hold_log_q;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_parked_log_q;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_fail_log_q;
     always @(posedge clk_i or negedge rst_ni) begin : watchdog_remap_event_log
         if (!rst_ni) begin
             core_dead_suspect_log_q <= '0;
             core_fenced_log_q       <= '0;
             core_retired_log_q      <= '0;
             replay_stuck_log_q      <= '0;
+            park_hold_log_q         <= '0;
+            park_parked_log_q       <= '0;
+            park_fail_log_q         <= '0;
         end else begin
             core_dead_suspect_log_q <= core_dead_suspect;
+            park_hold_log_q         <= park_hold;
+            park_parked_log_q       <= park_parked;
+            park_fail_log_q         <= park_fail;
             core_fenced_log_q       <= core_fenced;
             core_retired_log_q      <= core_retired;
             replay_stuck_log_q      <= replay_stuck_slot;
@@ -2496,6 +2543,23 @@ module bingo_hw_manager_top #(
                         (core_fenced[c][cl] != core_fenced_log_q[c][cl])) begin
                         $display("[BINGO_WD] %0t chip=%0d core=%0d cluster=%0d dead_suspect=%0b fenced=%0b",
                                  $time, chip_id_i, c, cl, core_dead_suspect[c][cl], core_fenced[c][cl]);
+                    end
+                    if (park_hold[c][cl] && !park_hold_log_q[c][cl]) begin
+                        $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d HOLD",
+                                 $time, chip_id_i, c, cl);
+                    end
+                    if (park_parked[c][cl] && !park_parked_log_q[c][cl]) begin
+                        $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d PARKED -> core=%0d cluster=%0d",
+                                 $time, chip_id_i, c, cl, smt_core[c][cl], smt_cluster[c][cl]);
+                    end
+                    if (park_fail[c][cl] && !park_fail_log_q[c][cl]) begin
+                        $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d FAIL",
+                                 $time, chip_id_i, c, cl);
+                    end
+                    if ((park_hold_log_q[c][cl] || park_parked_log_q[c][cl]) &&
+                        !park_hold[c][cl] && !park_parked[c][cl] && core_fenced[c][cl]) begin
+                        $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d dropped, fenced",
+                                 $time, chip_id_i, c, cl);
                     end
                     if (core_retired[c][cl] && !core_retired_log_q[c][cl]) begin
                         $display("[BINGO_RETIRED] %0t chip=%0d core=%0d cluster=%0d",
@@ -2580,6 +2644,17 @@ module bingo_hw_manager_top #(
         if (rst_ni) begin
             for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
                 for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                    // A parked slot's own new task must not be routed while it is still
+                    // in HOLD (the checkout is draining).
+                    if (remap_route_fire[c][cl]) begin
+                        automatic int unsigned psrc = remap_route_src_core[c][cl];
+                        automatic int unsigned pscl =
+                            waiting_dep_check_task_desc[psrc].assigned_cluster_id;
+                        if (park_hold[psrc][pscl]) begin
+                            $error("[BINGO_ASSERT] route of task %0d while logical core %0d cluster %0d is in HOLD",
+                                   waiting_dep_check_task_desc[psrc].task_id, psrc, pscl);
+                        end
+                    end
                     // A1: a fenced core neither takes a task nor retires one
                     if (core_fenced[c][cl] && (ready_queue_pop[c][cl] ||
                                                (done_q_push[c][cl] && !remote_done_push[c][cl]))) begin
