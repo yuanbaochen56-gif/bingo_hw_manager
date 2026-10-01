@@ -116,6 +116,10 @@ import axi_test::*;
 `ifndef TB_REMOTE_PRED_TYPES
   `define TB_REMOTE_PRED_TYPES 16'h0000
 `endif
+// Origin side: cycles a proxy waits for a remote done before it gives up (0: never)
+`ifndef TB_REMOTE_PROXY_TIMEOUT
+  `define TB_REMOTE_PROXY_TIMEOUT 0
+`endif
 // Idle power management (DFS): every slot in domain 1 (TB_PM_CLUSTER_DOMAINS:
 // cluster c in domain 1 + c), idle level 25, normal
 // level 6 (HeMAiA's values); the PM's clk/rst controller writes always complete
@@ -715,6 +719,7 @@ logic [15:0][0:0]         remote_type_peer  [NUM_CHIPLET];
 logic [RL_NUM_PEERS-1:0]  remote_peer_ready [NUM_CHIPLET];
 // A stimulus may hold the imports of chiplet i (both sides of the handshake)
 logic [NUM_CHIPLET-1:0]   rl_import_hold = '0;
+logic                     remote_timeout    [NUM_CHIPLET];  // remote_timeout_o
 int unsigned              remote_export_count [NUM_CHIPLET];
 int unsigned              remote_import_count [NUM_CHIPLET];
 int unsigned              remote_done_in_count [NUM_CHIPLET];
@@ -1064,6 +1069,8 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .remote_export_type_en_i              ( remote_type_en[chiplet_idx]                                 ),
         .remote_export_type_peer_i            ( remote_type_peer[chiplet_idx]                               ),
         .remote_export_peer_ready_i           ( remote_peer_ready[chiplet_idx]                              ),
+        .remote_proxy_timeout_i               ( device_axi_lite_data_t'(`TB_REMOTE_PROXY_TIMEOUT)          ),
+        .remote_timeout_o                     ( remote_timeout[chiplet_idx]                                 ),
         .remote_done_mismatch_o               ( /* probed below */                                          )
     );
     always @(posedge clk_i) begin

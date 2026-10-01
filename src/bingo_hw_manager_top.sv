@@ -246,6 +246,12 @@ module bingo_hw_manager_top #(
     // ready, round robin, so a peer without credits does not hold the others.
     input  logic [2**CoreTypeIdWidth-1:0][RemotePeerIdWidth-1:0] remote_export_type_peer_i = '0,
     input  logic [RemoteNumPeers-1:0]           remote_export_peer_ready_i = '1,
+    // Origin side: cycles a proxy slot may wait for the remote done of its
+    // exported head before it gives up as on a reject (stops, replay_stuck_o)
+    // and sets remote_timeout_o; 0 = wait forever
+    input  device_axi_lite_data_t               remote_proxy_timeout_i = '0,
+    // Sticky: a proxy slot gave up waiting for a remote done (see above)
+    output logic                                remote_timeout_o,
     // Sticky: the done at the head of a proxy slot's done queue does not
     // belong to its exported head task (the slot then stops retiring), or a
     // remote done / reject arrived for a slot that is no proxy (not fenced, or
@@ -2421,11 +2427,49 @@ module bingo_hw_manager_top #(
         assign remote_done_reject_o          = 1'b0;
     end
 
-    // Origin side: a proxy slot whose export was rejected stops retiring and
-    // exporting (sticky, part of replay_stuck_o)
+    // Origin side: proxy wait timeout. A proxy slot waits while its checkout
+    // head is an exported executing task whose remote done has not arrived
+    // (the dones come back in export order, so this is the time the remote
+    // chiplet takes for that one task). After remote_proxy_timeout_i waiting
+    // cycles in a row (0: never) the done is taken as lost: the slot gives up
+    // as on a reject. Resending is not safe (the task may only be slow and
+    // would run twice).
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]        proxy_waiting;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]        proxy_timeout;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0]  proxy_wait_q;
+    logic                                                                   remote_timeout_q;
+    always_comb begin
+        for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                proxy_waiting[c][cl] = RemoteEn && checkout_remote_tag_out[c][cl].exported &&
+                                       !checkout_queue_empty[c][cl] && checkout_head_exec[c][cl] &&
+                                       done_q_empty[c][cl] && !remote_rejected_q[c][cl];
+                proxy_timeout[c][cl] = proxy_waiting[c][cl] && (remote_proxy_timeout_i != '0) &&
+                                       (proxy_wait_q[c][cl] >= 32'(remote_proxy_timeout_i));
+            end
+        end
+    end
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            proxy_wait_q     <= '0;
+            remote_timeout_q <= 1'b0;
+        end else begin
+            for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+                for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                    if (!proxy_waiting[c][cl])          proxy_wait_q[c][cl] <= '0;
+                    else if (proxy_wait_q[c][cl] != '1) proxy_wait_q[c][cl] <= proxy_wait_q[c][cl] + 32'd1;
+                end
+            end
+            if (|proxy_timeout) remote_timeout_q <= 1'b1;
+        end
+    end
+    assign remote_timeout_o = remote_timeout_q;
+
+    // Origin side: a proxy slot whose export was rejected (or timed out) stops
+    // retiring and exporting (sticky, part of replay_stuck_o)
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) remote_rejected_q <= '0;
-        else         remote_rejected_q <= remote_rejected_q | remote_reject_in;
+        else         remote_rejected_q <= remote_rejected_q | remote_reject_in | proxy_timeout;
     end
 
 `ifndef SYNTHESIS
@@ -2512,6 +2556,15 @@ module bingo_hw_manager_top #(
             if (|remote_reject_in) begin
                 $display("[BINGO_REMOTE_REJECT_IN] %0t chip=%0d task=%0d proxy_slot=%0d: the proxy is stuck",
                          $time, chip_id_i, remote_done_task_id_i, remote_done_proxy_slot_i);
+            end
+            for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+                for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                    if (proxy_timeout[c][cl]) begin
+                        $display("[BINGO_REMOTE_TIMEOUT] %0t chip=%0d task=%0d proxy_slot=%0d: no remote done for %0d cycles, the proxy is stuck",
+                                 $time, chip_id_i, checkout_queue_data_out[c][cl].task_id,
+                                 c + cl * NUM_CORES_PER_CLUSTER, proxy_wait_q[c][cl]);
+                    end
+                end
             end
             if (replay_move_fire && !replay_bounce) begin
                 $display("[BINGO_REPLAY] %0t chip=%0d task=%0d type=%0d logical_core=%0d from=%0d to=%0d cluster=%0d to_cluster=%0d logical_cluster=%0d",

@@ -96,6 +96,8 @@ sources:
       - test/tb_bingo_hw_manager_rlink_done_order.sv       # level 3 over remote_link: two proxy slots, done order
       - test/tb_bingo_hw_manager_rlink_credit_exhaust.sv   # level 3 over remote_link: one credit
       - test/tb_bingo_hw_manager_rlink_hol.sv               # level 3, two peers: a peer without credits does not block the other
+      - test/tb_bingo_hw_manager_rlink_proxy_timeout.sv     # level 3: a lost remote done stops the proxy after the timeout
+      - test/tb_bingo_hw_manager_rlink_proxy_timeout_slow.sv # level 3: slow remote dones within the timeout do not trip it
       - test/tb_bingo_hw_manager_rlink_loopback.sv         # level 3 over remote_link: single-chiplet loopback (force remote)
       - test/tb_bingo_hw_manager_rlink_no_target.sv        # level 3 over remote_link: a type without a target is stuck, others export
       - test/tb_bingo_hw_manager_rlink_reject.sv           # level 3 over remote_link: reject on import, the link keeps working

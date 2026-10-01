@@ -415,6 +415,10 @@ type is left on this one:
   core running its imports died and none is left), it returns a reject instead of holding the
   link. The proxy slot then stops retiring and exporting, and `replay_stuck_o` is raised, as
   when no local core may run a task.
+- **Timeout.** A proxy slot whose exported head waits `remote_proxy_timeout_i` cycles for its
+  remote done (0 = forever) takes the done as lost (a dropped packet, a dead chiplet or link)
+  and stops as on a reject; `remote_timeout_o` tells the two apart. The task is not resent: it
+  may only be slow, and would then run twice.
 
 `bingo_hw_manager_remote_link` carries these streams between chiplets as one 64-bit AXI-Lite
 write per message (dispatch page and done page of an 8 KiB mailbox region): a static
