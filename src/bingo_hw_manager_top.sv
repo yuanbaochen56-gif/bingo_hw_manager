@@ -184,6 +184,17 @@ module bingo_hw_manager_top #(
     // of its tasks is left on another core, then run on the slot again.
     input  device_axi_lite_data_t               bingo_hw_manager_park_req_i = '0,
     output device_axi_lite_data_t               bingo_hw_manager_park_fail_o,
+    // Fault precursors (bingo_hw_manager_ctrl). A heartbeat or done of a busy
+    // core whose watchdog timer reached risk_late is late (0 = off). policy:
+    // [3:0] late beats that make a slot at risk (0 = off), [4] park it,
+    // [5] derate its domain, [15:8] derate level. epoch: the counts are
+    // halved every that many cycles (0 = never). clear and risk_o use the
+    // park_req bit order: a set clear bit keeps that slot's count at 0.
+    input  device_axi_lite_data_t               bingo_hw_manager_risk_late_i = '0,
+    input  device_axi_lite_data_t               bingo_hw_manager_risk_policy_i = '0,
+    input  device_axi_lite_data_t               bingo_hw_manager_risk_epoch_i = '0,
+    input  device_axi_lite_data_t               bingo_hw_manager_risk_clear_i = '0,
+    output device_axi_lite_data_t               bingo_hw_manager_risk_o,
     input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
     input device_axi_lite_data_t                bingo_hw_manager_normal_power_level_i,
     input device_axi_lite_addr_t                bingo_hw_manager_pm_base_addr_i,
@@ -753,6 +764,9 @@ module bingo_hw_manager_top #(
     // Control plane (bingo_hw_manager_ctrl): power / load view of the slots
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_wd_tick;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_boost;
+    // At-risk slots whose domain runs at most at the derate level, and late beats
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_derate;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_late;
     logic [31:0][7:0]                                               pm_domain_level;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][5:0] ctrl_slot_domain;
     // Power domain of each slot (>= 32: none), as bingo_hw_manager_pm reads it
@@ -826,6 +840,7 @@ module bingo_hw_manager_top #(
         (WatchdogConfirmTimeoutCycles > WatchdogHeartbeatTimeoutCycles) ?
         WatchdogConfirmTimeoutCycles : WatchdogHeartbeatTimeoutCycles;
     localparam int unsigned WatchdogCounterWidth = $clog2(WatchdogMaxTimeoutCycles + 1) + 1;
+    logic [WatchdogCounterWidth-1:0] wd_late_cycles;  // late-beat threshold of the watchdog
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//
@@ -1873,6 +1888,8 @@ module bingo_hw_manager_top #(
         .normal_power_level_i  ( bingo_hw_manager_normal_power_level_i  ),
         .boost_power_level_i   ( bingo_hw_manager_boost_power_level_i   ),
         .core_boost_i          ( ctrl_pm_boost                          ),
+        .derate_power_level_i  ( device_axi_lite_data_t'(bingo_hw_manager_risk_policy_i[15:8]) ),
+        .core_derate_i         ( ctrl_pm_derate                         ),
         .pm_base_addr_i        ( bingo_hw_manager_pm_base_addr_i        ),
         .core_power_domain_i   ( bingo_hw_manager_core_power_domain_i   ),
         // Internal Core status: polling or fenced (bingo_hw_manager_ctrl), so a
@@ -1908,12 +1925,17 @@ module bingo_hw_manager_top #(
         .heartbeat_i           ( heartbeat_valid                 ), // clears the timer (ignored once fenced)
         .waiting_task_i        ( core_status_waiting_task        ), // only feeds core_available
         .tick_i                ( ctrl_wd_tick                    ), // slowed down in a slow power domain
+        .late_cycles_i         ( wd_late_cycles                  ), // fault precursor threshold
+        .late_o                ( wd_late                         ),
         .core_busy_o           ( core_busy                       ),
         .core_available_o      ( core_available                  ),
         .core_dead_suspect_o   ( core_dead_suspect               ),
         .core_fenced_o         ( core_fenced                     )
     );
     assign core_fenced_o = core_fenced;
+    // A threshold beyond the timer saturates it (the timer stops at all ones)
+    assign wd_late_cycles = (bingo_hw_manager_risk_late_i > device_axi_lite_data_t'({WatchdogCounterWidth{1'b1}})) ?
+                            {WatchdogCounterWidth{1'b1}} : bingo_hw_manager_risk_late_i[WatchdogCounterWidth-1:0];
     assign core_dead_suspect_o = core_dead_suspect;
 
     //////////////////////////////////////////////////////////////////////
@@ -1943,6 +1965,7 @@ module bingo_hw_manager_top #(
     logic                                                           smt_update;
     // Parking. The request mask is bit (core + cluster * NUM_CORES).
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_req;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] risk_clear, risk;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_hold;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_parked;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_unpark;
@@ -1968,6 +1991,7 @@ module bingo_hw_manager_top #(
     logic                        cerf_fb_done;
     always_comb begin
         bingo_hw_manager_park_fail_o = '0;
+        bingo_hw_manager_risk_o = '0;
         for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
             for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
                 int unsigned idx;
@@ -1978,6 +2002,9 @@ module bingo_hw_manager_top #(
                                   (idx < $bits(bingo_hw_manager_park_req_i)) &&
                                   bingo_hw_manager_park_req_i[idx];
                 park_slot_push[c][cl] = checkout_queue_push[c][cl] || ready_queue_push[c][cl];
+                risk_clear[c][cl] = (idx < $bits(bingo_hw_manager_risk_clear_i)) &&
+                                    bingo_hw_manager_risk_clear_i[idx];
+                if (idx < $bits(bingo_hw_manager_risk_o)) bingo_hw_manager_risk_o[idx] = risk[c][cl];
                 if (idx < $bits(bingo_hw_manager_park_fail_o)) begin
                     bingo_hw_manager_park_fail_o[idx] = park_fail[c][cl] ||
                         ((READY_AND_DONE_QUEUE_INTERFACE_TYPE != 1) && bingo_hw_manager_park_req_i[idx]);
@@ -2001,7 +2028,8 @@ module bingo_hw_manager_top #(
         .CoreTypeId(CoreTypeId),
         .SubstituteLevelMask(SubstituteLevelMask),
         .SubstitutePolicy(SubstitutePolicy),
-        .LoadWidth(CheckoutUsageWidth + 1)
+        .LoadWidth(CheckoutUsageWidth + 1),
+        .ParkSupported(READY_AND_DONE_QUEUE_INTERFACE_TYPE == 1)
     ) i_ctrl (
         .clk_i          ( clk_i        ),
         .rst_ni         ( rst_ni       ),
@@ -2028,6 +2056,11 @@ module bingo_hw_manager_top #(
         .cerf_fb_clear_i( cerf_fb_clear_i  ),
         .cerf_fb_set_i  ( cerf_fb_set_i    ),
         .cerf_fb_done_i ( cerf_fb_done     ),
+        .late_i         ( wd_late          ),
+        .risk_thresh_i  ( bingo_hw_manager_risk_policy_i[3:0] ),
+        .risk_action_i  ( bingo_hw_manager_risk_policy_i[5:4] ),
+        .risk_epoch_i   ( 32'(bingo_hw_manager_risk_epoch_i) ),
+        .risk_clear_i   ( risk_clear       ),
         .wd_tick_o      ( ctrl_wd_tick     ),
         .pm_boost_o     ( ctrl_pm_boost    ),
         .pm_idle_o      ( ctrl_pm_idle     ),
@@ -2044,7 +2077,9 @@ module bingo_hw_manager_top #(
         .cerf_fb_type_o ( cerf_fb_type ),
         .cerf_fb_clear_o( cerf_fb_clear ),
         .cerf_fb_set_o  ( cerf_fb_set  ),
-        .cerf_fb_evt_o  ( cerf_fb_evt_o )
+        .cerf_fb_evt_o  ( cerf_fb_evt_o ),
+        .risk_o         ( risk         ),
+        .pm_derate_o    ( ctrl_pm_derate )
     );
 
     bingo_hw_manager_replay_ctrl #(

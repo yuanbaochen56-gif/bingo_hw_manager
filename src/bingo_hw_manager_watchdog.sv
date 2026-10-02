@@ -22,11 +22,16 @@ module bingo_hw_manager_watchdog #(
     // slows the ticks down while the core's power domain runs below the normal
     // level, so the timeouts count cycles of the normal clock.
     input  logic [NumCores-1:0][NumClusters-1:0] tick_i = '1,
+    // Late beat (fault precursor): a heartbeat or done of a busy core whose
+    // timer has reached late_cycles_i. 0 = off. The timer counts ticks, so
+    // like the timeouts this counts cycles of the normal clock.
+    input  logic [CounterWidth-1:0]               late_cycles_i = '0,
 
     output logic [NumCores-1:0][NumClusters-1:0] core_busy_o,      // Indicates when a core is currently executing a task
     output logic [NumCores-1:0][NumClusters-1:0] core_available_o,  // Indicates when a core is available for new tasks
     output logic [NumCores-1:0][NumClusters-1:0] core_dead_suspect_o,   // Indicates when a core is suspected to be dead (no heartbeat for too long)
-    output logic [NumCores-1:0][NumClusters-1:0] core_fenced_o      // Confirmed dead (sticky): the core is isolated from the manager
+    output logic [NumCores-1:0][NumClusters-1:0] core_fenced_o,     // Confirmed dead (sticky): the core is isolated from the manager
+    output logic [NumCores-1:0][NumClusters-1:0] late_o             // One-cycle pulse per late beat
 );
 
     localparam int unsigned MaxTimeoutCycles =
@@ -67,6 +72,10 @@ module bingo_hw_manager_watchdog #(
                                              (CoreMask[c][cl] && busy_q[c][cl] &&
                                               (timer_q[c][cl] >= HeartbeatTimeoutCycles[CounterWidth-1:0]));
                 core_available_o[c][cl] = waiting_task_i[c][cl] && !busy_q[c][cl] && !core_dead_suspect_o[c][cl];
+                // Same priority as the timer update below: a fenced core is ignored
+                late_o[c][cl] = (late_cycles_i != '0) && CoreMask[c][cl] && !fenced_q[c][cl] &&
+                                busy_q[c][cl] && (task_done_i[c][cl] || heartbeat_i[c][cl]) &&
+                                (timer_q[c][cl] >= late_cycles_i);
             end
         end
     end

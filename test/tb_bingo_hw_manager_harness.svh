@@ -962,6 +962,16 @@ initial for (int i = 0; i < NUM_CHIPLET; i++) cluster_access[i] = '0;
 device_axi_lite_data_t park_req  [NUM_CHIPLET];
 device_axi_lite_data_t park_fail [NUM_CHIPLET];
 initial for (int i = 0; i < NUM_CHIPLET; i++) park_req[i] = '0;
+// Fault precursors (late threshold, policy, halving epoch, clear bitmap) and
+// the at-risk bitmap. Default 0: off, as in a run without these ports.
+device_axi_lite_data_t risk_late   [NUM_CHIPLET];
+device_axi_lite_data_t risk_policy [NUM_CHIPLET];
+device_axi_lite_data_t risk_epoch  [NUM_CHIPLET];
+device_axi_lite_data_t risk_clear  [NUM_CHIPLET];
+device_axi_lite_data_t risk        [NUM_CHIPLET];
+initial for (int i = 0; i < NUM_CHIPLET; i++) begin
+    risk_late[i] = '0; risk_policy[i] = '0; risk_epoch[i] = '0; risk_clear[i] = '0;
+end
 // Power domain of every slot
 device_axi_lite_data_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] pm_core_domain;
 for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_pm_domain_core
@@ -1046,6 +1056,11 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .bingo_hw_manager_access_wake_hold_i  ( device_axi_lite_data_t'(`TB_PM_ACCESS_HOLD)                   ),
         .bingo_hw_manager_park_req_i          ( park_req[chiplet_idx]                                       ),
         .bingo_hw_manager_park_fail_o         ( park_fail[chiplet_idx]                                      ),
+        .bingo_hw_manager_risk_late_i         ( risk_late[chiplet_idx]                                      ),
+        .bingo_hw_manager_risk_policy_i       ( risk_policy[chiplet_idx]                                    ),
+        .bingo_hw_manager_risk_epoch_i        ( risk_epoch[chiplet_idx]                                     ),
+        .bingo_hw_manager_risk_clear_i        ( risk_clear[chiplet_idx]                                     ),
+        .bingo_hw_manager_risk_o              ( risk[chiplet_idx]                                           ),
         .bingo_hw_manager_pm_base_addr_i      ( '0                                                          ),
         .bingo_hw_manager_core_power_domain_i ( pm_core_domain                                              ),
         .bingo_hw_manager_pm_mode_i           ( '0                                                          ),

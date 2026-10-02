@@ -45,6 +45,11 @@ module bingo_hw_manager_pm #(
     // tasks (core_boost_i); 0 disables the boost
     input  cfg_t        boost_power_level_i,
     input  logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_boost_i,
+    // Derate: a domain with an at-risk core (core_derate_i) runs no faster than
+    // derate_power_level_i (it takes the slower of the two levels, so no boost
+    // either); 0 disables the derate
+    input  cfg_t        derate_power_level_i = '0,
+    input  logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_derate_i = '0,
     // The power management base address
     input  addr_t       pm_base_addr_i,  
     // The power domain information of each core
@@ -86,6 +91,7 @@ module bingo_hw_manager_pm #(
     // -------------------------------------------------------------------------
     logic [MAX_DOMAINS-1:0] domain_all_idle;    // 1 if ALL cores in domain are idle
     logic [MAX_DOMAINS-1:0] domain_boost;       // 1 if a core of the domain is boosted
+    logic [MAX_DOMAINS-1:0] domain_derate;      // 1 if a core of the domain is derated
     logic [MAX_DOMAINS-1:0] domain_active_mask; // 1 if at least one core is mapped to this domain
     domain_id_t  [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] domain_id;
 
@@ -115,6 +121,7 @@ module bingo_hw_manager_pm #(
     always_comb begin
         domain_all_idle = '1; // Default to true, clear if any core busy
         domain_boost = '0;
+        domain_derate = '0;
         domain_active_mask = '0;
         domain_id = '0;
         for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
@@ -129,6 +136,9 @@ module bingo_hw_manager_pm #(
                     end
                     if (core_boost_i[core][cluster]) begin
                         domain_boost[domain_id[core][cluster]] = 1'b1;
+                    end
+                    if (core_derate_i[core][cluster]) begin
+                        domain_derate[domain_id[core][cluster]] = 1'b1;
                     end
                 end
             end
@@ -154,6 +164,10 @@ module bingo_hw_manager_pm #(
                 target_power_level[d] = boost_power_level_i[7:0];
             end else begin
                 target_power_level[d] = normal_power_level_i[7:0];
+            end
+            // Levels are clock dividers: the larger one is the slower clock
+            if (domain_derate[d] && (derate_power_level_i[7:0] > target_power_level[d])) begin
+                target_power_level[d] = derate_power_level_i[7:0];
             end
 
             // We update if the domain exists AND the target differs from current

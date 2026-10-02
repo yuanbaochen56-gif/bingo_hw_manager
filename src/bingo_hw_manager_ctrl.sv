@@ -107,6 +107,20 @@
 // cerf_fb_evt_o marks types that have fired and drops when that enable drops,
 // which arms the type again if it is still faulted. One fire per enable, so a
 // later host write of the mask is left alone.
+//
+// Fault precursors (risk): every late beat of a slot (late_i, from the
+// watchdog: a heartbeat or done of a busy core whose timer had reached the
+// late threshold) adds one to a 4-bit saturating count. Every risk_epoch_i
+// cycles all counts are halved (0 = never), so only a high rate of late beats
+// adds up. A count at or above risk_thresh_i (0 = off) makes the slot at risk;
+// that is sticky until the host clears it (risk_clear_i) or the slot is fenced.
+// risk_action_i[0]: an at-risk slot is parked as if the host had asked for it
+// (same path, same park_fail_o); clearing the risk moves it back.
+// risk_action_i[1]: an at-risk slot that is not parked asks the PM to run its
+// domain no faster than the derate level (pm_derate_o); with both bits, only
+// once parking has failed. Without parking support (ParkSupported = 0) an
+// at-risk slot is never parked. An at-risk slot may still be picked as the
+// substitute of a fenced one: the fence path is unchanged.
 module bingo_hw_manager_ctrl #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
@@ -120,7 +134,9 @@ module bingo_hw_manager_ctrl #(
     parameter logic [2:0] SubstituteLevelMask = 3'b001,
     // Substitute choice (see above) and width of load_i
     parameter int unsigned SubstitutePolicy = 0,
-    parameter int unsigned LoadWidth = 4
+    parameter int unsigned LoadWidth = 4,
+    // Parking works (the CSR ready queues); otherwise an at-risk slot is not parked
+    parameter bit          ParkSupported = 1'b1
 ) (
     input  logic clk_i,
     input  logic rst_ni,
@@ -161,6 +177,13 @@ module bingo_hw_manager_ctrl #(
     input  logic [2**CoreTypeIdWidth-1:0][4:0]       cerf_fb_set_i = '0,
     // The CERF update committed this cycle (host did not write the mask)
     input  logic                                     cerf_fb_done_i = 1'b0,
+    // Fault precursors (see above): late beats, count threshold (0 = off),
+    // actions (bit 0 park, bit 1 derate), halving period (0 = never), host clear
+    input  logic [NumCores-1:0][NumClusters-1:0]     late_i = '0,
+    input  logic [3:0]                               risk_thresh_i = '0,
+    input  logic [1:0]                               risk_action_i = '0,
+    input  logic [31:0]                              risk_epoch_i = '0,
+    input  logic [NumCores-1:0][NumClusters-1:0]     risk_clear_i = '0,
 
     // Power manager: slots that do not keep their domain at the normal level
     output logic [NumCores-1:0][NumClusters-1:0] pm_idle_o,
@@ -190,7 +213,10 @@ module bingo_hw_manager_ctrl #(
     output logic [4:0]                               cerf_fb_clear_o,
     output logic [4:0]                               cerf_fb_set_o,
     // Types whose degradation has fired; sticky until that enable drops
-    output logic [2**CoreTypeIdWidth-1:0]            cerf_fb_evt_o
+    output logic [2**CoreTypeIdWidth-1:0]            cerf_fb_evt_o,
+    // At-risk slots, and the ones whose domain runs at most at the derate level
+    output logic [NumCores-1:0][NumClusters-1:0]     risk_o,
+    output logic [NumCores-1:0][NumClusters-1:0]     pm_derate_o
 );
 
     // ------------------------------------------------------------------
@@ -223,6 +249,44 @@ module bingo_hw_manager_ctrl #(
             );
         end
     end
+
+    // ------------------------------------------------------------------
+    // Fault precursors: late-beat count per slot, halved every epoch
+    // ------------------------------------------------------------------
+    logic [NumCores-1:0][NumClusters-1:0][3:0] risk_cnt_q;
+    logic [NumCores-1:0][NumClusters-1:0]      risk_q;
+    logic [31:0]                               risk_epoch_cnt_q;
+    logic                                      risk_epoch_end;
+    logic [NumCores-1:0][NumClusters-1:0]      park_req;
+
+    assign risk_epoch_end = (risk_epoch_i != '0) && (risk_epoch_cnt_q >= risk_epoch_i - 1);
+    // Host request, or an at-risk slot with the park action
+    assign park_req = park_req_i | (risk_q & {(NumCores * NumClusters){risk_action_i[0] && ParkSupported}});
+
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            risk_epoch_cnt_q <= '0;
+            risk_cnt_q       <= '0;
+            risk_q           <= '0;
+        end else begin
+            risk_epoch_cnt_q <= ((risk_epoch_i == '0) || risk_epoch_end) ? '0 : risk_epoch_cnt_q + 1;
+            for (int unsigned c = 0; c < NumCores; c++) begin
+                for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                    automatic logic [3:0] cnt = risk_cnt_q[c][cl];
+                    if (fenced_i[c][cl] || risk_clear_i[c][cl]) begin
+                        risk_cnt_q[c][cl] <= '0;
+                        risk_q[c][cl]     <= 1'b0;
+                    end else begin
+                        if (risk_epoch_end) cnt = cnt >> 1;
+                        if (late_i[c][cl] && (cnt != 4'hf)) cnt = cnt + 1;
+                        risk_cnt_q[c][cl] <= cnt;
+                        if ((risk_thresh_i != '0) && (cnt >= risk_thresh_i)) risk_q[c][cl] <= 1'b1;
+                    end
+                end
+            end
+        end
+    end
+    assign risk_o = risk_q;
 
     // ------------------------------------------------------------------
     // Parking substitute: the same selector, with this slot and the slots in
@@ -378,14 +442,14 @@ module bingo_hw_manager_ctrl #(
                     end else if (park_give_up[c][cl] || (park_hold_q[c][cl] && park_target[c][cl])) begin
                         park_hold_q[c][cl] <= 1'b0;
                         park_fail_q[c][cl] <= 1'b1;
-                    end else if (park_hold_q[c][cl] && !park_req_i[c][cl]) begin
+                    end else if (park_hold_q[c][cl] && !park_req[c][cl]) begin
                         park_hold_q[c][cl] <= 1'b0;
                     end else if (!park_hold_q[c][cl] && !park_parked_q[c][cl] &&
-                                 !park_fail_q[c][cl] && park_req_i[c][cl]) begin
+                                 !park_fail_q[c][cl] && park_req[c][cl]) begin
                         // A slot that runs another slot's tasks cannot drain: fail at once
                         if (park_target[c][cl]) park_fail_q[c][cl] <= 1'b1;
                         else                    park_hold_q[c][cl] <= 1'b1;
-                    end else if (park_fail_q[c][cl] && !park_req_i[c][cl]) begin
+                    end else if (park_fail_q[c][cl] && !park_req[c][cl]) begin
                         park_fail_q[c][cl] <= 1'b0;
                     end else if (park_parked_q[c][cl] && recompute[c][cl] &&
                                  !fence_new[c][cl] && !init_q && !park_choice_ok[c][cl]) begin
@@ -395,9 +459,9 @@ module bingo_hw_manager_ctrl #(
                     end else if (unpark_commit[c][cl]) begin
                         park_parked_q[c][cl] <= 1'b0;
                         park_unpark_q[c][cl] <= 1'b0;
-                    end else if (park_parked_q[c][cl] && !park_unpark_q[c][cl] && !park_req_i[c][cl]) begin
+                    end else if (park_parked_q[c][cl] && !park_unpark_q[c][cl] && !park_req[c][cl]) begin
                         park_unpark_q[c][cl] <= 1'b1;
-                    end else if (park_unpark_q[c][cl] && park_req_i[c][cl]) begin
+                    end else if (park_unpark_q[c][cl] && park_req[c][cl]) begin
                         // Asked again before the move back finished: stay parked
                         park_unpark_q[c][cl] <= 1'b0;
                     end
@@ -504,6 +568,38 @@ module bingo_hw_manager_ctrl #(
         end
         pm_boost_o = pm_boost_o & ~waiting_i & ~fenced_i;
     end
+
+    // ------------------------------------------------------------------
+    // Derate: at-risk slots that are not parked (with parking on: once it failed)
+    // ------------------------------------------------------------------
+    always_comb begin
+        for (int unsigned c = 0; c < NumCores; c++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                pm_derate_o[c][cl] = risk_q[c][cl] && risk_action_i[1] && !fenced_i[c][cl] &&
+                                     !park_parked_q[c][cl] &&
+                                     !(risk_action_i[0] && ParkSupported && !park_fail_q[c][cl]);
+            end
+        end
+    end
+
+`ifndef SYNTHESIS
+    logic [NumCores-1:0][NumClusters-1:0] risk_seen_q;
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            risk_seen_q <= '0;
+        end else begin
+            risk_seen_q <= risk_q;
+            for (int unsigned c = 0; c < NumCores; c++) begin
+                for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                    if (late_i[c][cl])
+                        $display("[BINGO_LATE] %0t core=%0d cluster=%0d", $time, c, cl);
+                    if (risk_q[c][cl] && !risk_seen_q[c][cl])
+                        $display("[BINGO_RISK] %0t core=%0d cluster=%0d at risk", $time, c, cl);
+                end
+            end
+        end
+    end
+`endif
 
     // ------------------------------------------------------------------
     // CERF degradation: one type per cycle, lowest index first
