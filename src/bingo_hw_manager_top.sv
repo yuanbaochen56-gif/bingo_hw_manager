@@ -64,6 +64,10 @@ module bingo_hw_manager_top #(
     // live core of the type, 1 = least loaded (checkout queue occupancy), both
     // in the logical cluster first. Fixed until that substitute dies.
     parameter int unsigned SubstitutePolicy = 0,
+    // A stuck or rejected slot may also drain heads of another logical core
+    // that died before it (see stuck_drain): one counter per (slot, logical
+    // core) pair. 0 = only its own logical core (no counters).
+    parameter bit          ForeignStuckDrain = 1'b1,
     // CSR number of the heartbeat write (see bingo_hw_manager_csr_to_fifo).
     parameter logic [11:0] CsrHeartbeatAddr = 12'h5fd,
     // AXI interface types
@@ -839,6 +843,10 @@ module bingo_hw_manager_top #(
         $clog2(NUM_CORES_PER_CLUSTER * CheckoutQueueDepth + 1);
     logic [RemapOutstandingWidth-1:0] remap_outstanding_d [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
     logic [RemapOutstandingWidth-1:0] remap_outstanding_q [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
+    // Of those, the ones in the checkout queue of physical slot [p][pcl]:
+    // moved_in_q[p][pcl][core][cluster] (ForeignStuckDrain only)
+    logic [RemapOutstandingWidth-1:0] moved_in_d [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET][NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
+    logic [RemapOutstandingWidth-1:0] moved_in_q [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET][NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
 
     // Watchdog counter wide enough for the configured timeouts (saturating timer).
     localparam int unsigned WatchdogMaxTimeoutCycles =
@@ -1479,17 +1487,38 @@ module bingo_hw_manager_top #(
             // A stuck or rejected slot runs nothing more. Its head may still retire
             // the way a skipped task does (dep_set, no done) when it never runs on
             // a core anyway (dummy-set, or skipped at dispatch) or when the CERF
-            // now skips it (degradation, see bingo_hw_manager_ctrl). Only for the
+            // now skips it (degradation, see bingo_hw_manager_ctrl). For the
             // slot's own logical core with no task in another slot: then every
-            // older task of that core has left this FIFO. Anything else waits.
-            assign stuck_drain[core][cluster] =
-                (replay_stuck_slot[core][cluster] || remote_rejected_q[core][cluster]) &&
-                !checkout_queue_empty[core][cluster] && !checkout_head_imported[core][cluster] &&
+            // older task of that core has left this FIFO. With ForeignStuckDrain,
+            // also for a logical core X that died before this slot: X is retired
+            // (its own queue holds none of its tasks) and every task of X in
+            // another slot is in this one, so this FIFO keeps X's order (a type
+            // with a substitute whose two cores both died). Anything else waits.
+            logic stuck_head_own, stuck_head_foreign;
+            assign stuck_head_own =
                 (checkout_queue_data_out[core][cluster].assigned_core_id ==
                  bingo_hw_manager_assigned_core_id_t'(core)) &&
                 (checkout_queue_data_out[core][cluster].assigned_cluster_id ==
                  bingo_hw_manager_assigned_cluster_id_t'(cluster)) &&
                 (remap_outstanding_q[core][cluster] == '0);
+            if (ForeignStuckDrain) begin : gen_foreign_drain
+                bingo_hw_manager_assigned_core_id_t    x_core;
+                bingo_hw_manager_assigned_cluster_id_t x_cluster;
+                assign x_core    = checkout_queue_data_out[core][cluster].assigned_core_id;
+                assign x_cluster = checkout_queue_data_out[core][cluster].assigned_cluster_id;
+                assign stuck_head_foreign =
+                    ((x_core != bingo_hw_manager_assigned_core_id_t'(core)) ||
+                     (x_cluster != bingo_hw_manager_assigned_cluster_id_t'(cluster))) &&
+                    (int'(x_core) < NUM_CORES_PER_CLUSTER) && (int'(x_cluster) < NUM_CLUSTERS_PER_CHIPLET) &&
+                    core_retired[x_core][x_cluster] &&
+                    (moved_in_q[core][cluster][x_core][x_cluster] == remap_outstanding_q[x_core][x_cluster]);
+            end else begin : gen_no_foreign_drain
+                assign stuck_head_foreign = 1'b0;
+            end
+            assign stuck_drain[core][cluster] =
+                (replay_stuck_slot[core][cluster] || remote_rejected_q[core][cluster]) &&
+                !checkout_queue_empty[core][cluster] && !checkout_head_imported[core][cluster] &&
+                (stuck_head_own || stuck_head_foreign);
             assign stuck_head_skip[core][cluster] = stuck_drain[core][cluster] &&
                 checkout_queue_data_out[core][cluster].cond_exec_en &&
                 (checkout_queue_data_out[core][cluster].cond_exec_invert ?
@@ -2281,6 +2310,54 @@ module bingo_hw_manager_top #(
         end
     end
 
+    // Per (physical slot, logical core) split of the same counts
+    if (ForeignStuckDrain) begin : gen_moved_in
+        always_comb begin : update_moved_in
+            moved_in_d = moved_in_q;
+            for (int unsigned p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
+                for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                    if (checkout_queue_push[p][cl] &&
+                        ((checkout_queue_data_in[p][cl].assigned_core_id != bingo_hw_manager_assigned_core_id_t'(p)) ||
+                         (checkout_queue_data_in[p][cl].assigned_cluster_id != bingo_hw_manager_assigned_cluster_id_t'(cl))) &&
+                        (int'(checkout_queue_data_in[p][cl].assigned_core_id) < NUM_CORES_PER_CLUSTER) &&
+                        (int'(checkout_queue_data_in[p][cl].assigned_cluster_id) < NUM_CLUSTERS_PER_CHIPLET)) begin
+                        moved_in_d[p][cl][checkout_queue_data_in[p][cl].assigned_core_id][checkout_queue_data_in[p][cl].assigned_cluster_id] =
+                            moved_in_d[p][cl][checkout_queue_data_in[p][cl].assigned_core_id][checkout_queue_data_in[p][cl].assigned_cluster_id] + 1'b1;
+                    end
+                    if (checkout_queue_pop[p][cl] &&
+                        ((checkout_queue_data_out[p][cl].assigned_core_id != bingo_hw_manager_assigned_core_id_t'(p)) ||
+                         (checkout_queue_data_out[p][cl].assigned_cluster_id != bingo_hw_manager_assigned_cluster_id_t'(cl))) &&
+                        (int'(checkout_queue_data_out[p][cl].assigned_core_id) < NUM_CORES_PER_CLUSTER) &&
+                        (int'(checkout_queue_data_out[p][cl].assigned_cluster_id) < NUM_CLUSTERS_PER_CHIPLET)) begin
+                        moved_in_d[p][cl][checkout_queue_data_out[p][cl].assigned_core_id][checkout_queue_data_out[p][cl].assigned_cluster_id] =
+                            moved_in_d[p][cl][checkout_queue_data_out[p][cl].assigned_core_id][checkout_queue_data_out[p][cl].assigned_cluster_id] - 1'b1;
+                    end
+                end
+            end
+        end
+        always_ff @(posedge clk_i or negedge rst_ni) begin : moved_in_regs
+            if (!rst_ni) begin
+                for (int unsigned p = 0; p < NUM_CORES_PER_CLUSTER; p++)
+                    for (int unsigned pcl = 0; pcl < NUM_CLUSTERS_PER_CHIPLET; pcl++)
+                        for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++)
+                            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
+                                moved_in_q[p][pcl][c][cl] <= '0;
+            end else begin
+                moved_in_q <= moved_in_d;
+            end
+        end
+    end else begin : gen_no_moved_in
+        always_comb begin
+            for (int unsigned p = 0; p < NUM_CORES_PER_CLUSTER; p++)
+                for (int unsigned pcl = 0; pcl < NUM_CLUSTERS_PER_CHIPLET; pcl++)
+                    for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++)
+                        for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                            moved_in_d[p][pcl][c][cl] = '0;
+                            moved_in_q[p][pcl][c][cl] = '0;
+                        end
+        end
+    end
+
     always_ff @(posedge clk_i or negedge rst_ni) begin : remap_outstanding_regs
         if (!rst_ni) begin
             for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
@@ -2812,6 +2889,17 @@ module bingo_hw_manager_top #(
                     if (remap_outstanding_q[c][cl] > NUM_CORES_PER_CLUSTER * CheckoutQueueDepth) begin
                         $error("[BINGO_ASSERT] remap_outstanding[%0d][%0d] out of range: %0d",
                                c, cl, remap_outstanding_q[c][cl]);
+                    end
+                    // A3b: the per-slot split adds up to the logical core's count
+                    if (ForeignStuckDrain) begin
+                        automatic int unsigned moved_sum = 0;
+                        for (int unsigned p = 0; p < NUM_CORES_PER_CLUSTER; p++)
+                            for (int unsigned pcl = 0; pcl < NUM_CLUSTERS_PER_CHIPLET; pcl++)
+                                moved_sum += moved_in_q[p][pcl][c][cl];
+                        if (moved_sum != remap_outstanding_q[c][cl]) begin
+                            $error("[BINGO_ASSERT] moved_in of logical core %0d cluster %0d adds up to %0d, remap_outstanding is %0d",
+                                   c, cl, moved_sum, remap_outstanding_q[c][cl]);
+                        end
                     end
                     // A4: a slot being moved is not retired through its done queue
                     if (replay_move[c][cl] && done_q_pop[c][cl]) begin

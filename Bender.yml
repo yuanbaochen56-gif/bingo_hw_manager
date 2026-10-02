@@ -55,6 +55,9 @@ sources:
       - test/tb_bingo_hw_manager_cerf_fallback_order.sv  # a lost task the CERF keeps still blocks the later skips of its core
       - test/tb_bingo_hw_manager_cerf_fallback_multi.sv  # two stuck types degrade lowest first; clear == set
       - test/tb_bingo_hw_manager_cerf_fallback_reject.sv  # a level-3 reject degrades the group; the proxy's skipped tasks retire
+      - test/tb_bingo_hw_manager_cerf_fallback_double.sv      # CERF degradation: both cores of a type die, the stuck substitute drains the first one's heads
+      - test/tb_bingo_hw_manager_cerf_fallback_double_off.sv  # same without ForeignStuckDrain: stays stuck (the P5b boundary)
+      - test/tb_bingo_hw_manager_cerf_fallback_double_order.sv  # same with a still-needed dead-core head: it stays, nothing passes it
       - test/tb_bingo_hw_manager_tagged.sv      # identity-aware deps end-to-end
       - test/tb_bingo_hw_manager_tagged_mc.sv   # identity-aware deps, MULTI-CLUSTER cross-cluster aliasing
       - test/tb_bingo_hw_manager_watchdog.sv

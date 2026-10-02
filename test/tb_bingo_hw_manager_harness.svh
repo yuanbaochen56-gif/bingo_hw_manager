@@ -88,6 +88,10 @@ import axi_test::*;
 `ifndef TB_SUBSTITUTE_POLICY
   `define TB_SUBSTITUTE_POLICY 0
 `endif
+// ForeignStuckDrain of the DUT (a stuck slot also drains a dead logical core's heads)
+`ifndef TB_FOREIGN_STUCK_DRAIN
+  `define TB_FOREIGN_STUCK_DRAIN 1
+`endif
 `ifndef TB_IMPORT_SUBSTITUTE_LEVEL_MASK
   `define TB_IMPORT_SUBSTITUTE_LEVEL_MASK (`TB_SUBSTITUTE_LEVEL_MASK & 3'b011)
 `endif
@@ -1003,6 +1007,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .CoreTypeId                          ( `TB_CORE_TYPE_ID                    ),
         .SubstituteLevelMask                 ( `TB_SUBSTITUTE_LEVEL_MASK           ),
         .SubstitutePolicy                    ( `TB_SUBSTITUTE_POLICY               ),
+        .ForeignStuckDrain                   ( `TB_FOREIGN_STUCK_DRAIN             ),
         .RemoteNumPeers                      ( RL_NUM_PEERS                        ),
         .ImportSubstituteLevelMask           ( `TB_IMPORT_SUBSTITUTE_LEVEL_MASK    ),
         .CsrHeartbeatAddr                    ( `TB_CSR_HEARTBEAT_ADDR              ),
@@ -1290,15 +1295,56 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_sva
                                   !gen_dut[gi].i_dut.replay_bounce) |->
         !fenced[gen_dut[gi].i_dut.replay_dst_core][gen_dut[gi].i_dut.replay_dst_cluster]);
     // A held (moved / partly moved) slot retires nothing. A stuck or rejected
-    // slot only retires a head of its own logical core that runs on no core:
-    // a dummy-set, a task skipped at dispatch, or one the CERF skips now.
+    // slot only retires a head that runs on no core (a dummy-set, a task
+    // skipped at dispatch, or one the CERF skips now), of its own logical core,
+    // or (ForeignStuckDrain) of a retired logical core whose every moved entry
+    // is in this slot. The harness counts those entries itself (sva_in), from
+    // the checkout pushes and pops, independently of the manager's counters.
+    int unsigned sva_in [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET][NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            for (int p = 0; p < NUM_CORES_PER_CLUSTER; p++)
+                for (int pcl = 0; pcl < NUM_CLUSTERS_PER_CHIPLET; pcl++)
+                    for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
+                        for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
+                            sva_in[p][pcl][c][cl] <= 0;
+        end else begin
+            for (int p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
+                for (int pcl = 0; pcl < NUM_CLUSTERS_PER_CHIPLET; pcl++) begin
+                    automatic int ic = gen_dut[gi].i_dut.checkout_queue_data_in[p][pcl].assigned_core_id;
+                    automatic int icl = gen_dut[gi].i_dut.checkout_queue_data_in[p][pcl].assigned_cluster_id;
+                    automatic int oc = gen_dut[gi].i_dut.checkout_queue_data_out[p][pcl].assigned_core_id;
+                    automatic int ocl = gen_dut[gi].i_dut.checkout_queue_data_out[p][pcl].assigned_cluster_id;
+                    automatic bit in_moved = gen_dut[gi].i_dut.checkout_queue_push[p][pcl] && (ic != p || icl != pcl) &&
+                                             ic < NUM_CORES_PER_CLUSTER && icl < NUM_CLUSTERS_PER_CHIPLET;
+                    automatic bit out_moved = gen_dut[gi].i_dut.checkout_queue_pop[p][pcl] && (oc != p || ocl != pcl) &&
+                                              oc < NUM_CORES_PER_CLUSTER && ocl < NUM_CLUSTERS_PER_CHIPLET;
+                    if (in_moved && out_moved && ic == oc && icl == ocl) begin
+                        // push and pop of the same logical core: no change
+                    end else begin
+                        if (in_moved)  sva_in[p][pcl][ic][icl] <= sva_in[p][pcl][ic][icl] + 1;
+                        if (out_moved) sva_in[p][pcl][oc][ocl] <= sva_in[p][pcl][oc][ocl] - 1;
+                    end
+                end
+            end
+        end
+    end
+    function automatic bit sva_all_in(int p, int pcl, int x, int xcl);
+        for (int q = 0; q < NUM_CORES_PER_CLUSTER; q++)
+            for (int qcl = 0; qcl < NUM_CLUSTERS_PER_CHIPLET; qcl++)
+                if ((q != p || qcl != pcl) && sva_in[q][qcl][x][xcl] != 0) return 1'b0;
+        return 1'b1;
+    endfunction
     slot_mask_t stuck_skip_ok;
     always_comb begin
         for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
             for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                automatic int x = gen_dut[gi].i_dut.checkout_queue_data_out[c][cl].assigned_core_id;
+                automatic int xcl = gen_dut[gi].i_dut.checkout_queue_data_out[c][cl].assigned_cluster_id;
                 stuck_skip_ok[c][cl] =
-                    (gen_dut[gi].i_dut.checkout_queue_data_out[c][cl].assigned_core_id == c) &&
-                    (gen_dut[gi].i_dut.checkout_queue_data_out[c][cl].assigned_cluster_id == cl) &&
+                    (((x == c) && (xcl == cl)) ||
+                     (gen_dut[gi].i_dut.ForeignStuckDrain && (x < NUM_CORES_PER_CLUSTER) &&
+                      (xcl < NUM_CLUSTERS_PER_CHIPLET) && retired[x][xcl] && sva_all_in(c, cl, x, xcl))) &&
                     ((gen_dut[gi].i_dut.checkout_queue_data_out[c][cl].task_type == 2'b01) ||
                      (gen_dut[gi].i_dut.checkout_queue_data_out[c][cl].cond_exec_en &&
                       (gen_dut[gi].i_dut.cerf_state[gen_dut[gi].i_dut.checkout_queue_data_out[c][cl].cond_exec_group_id] ==
