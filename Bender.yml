@@ -114,6 +114,7 @@ sources:
       - test/tb_bingo_hw_manager_substitute_least_loaded.sv # control plane: a dead core's tasks go to the least loaded core
       - test/tb_bingo_hw_manager_pm_slow_watchdog.sv       # control plane: the watchdog counts normal-clock cycles in a slow domain
       - test/tb_bingo_hw_manager_pm_recovery_boost.sv      # control plane: a dead core's substitute runs at the boost level
+      - test/tb_bingo_hw_manager_exit_idle.sv              # exited cores idle and stop boosting; a ready read clears exit
       - test/tb_bingo_hw_manager_pm_idle_delay.sv          # control plane: idle level only after an idle entry delay
       - test/tb_bingo_hw_manager_pm_access_wake.sv         # control plane: an external access keeps the cluster awake
       - test/tb_bingo_hw_manager_pm_access_wake_delay.sv   # same, with an idle entry delay

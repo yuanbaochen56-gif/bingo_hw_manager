@@ -770,6 +770,7 @@ module bingo_hw_manager_top #(
     ///////////////////////////////////////
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] heartbeat_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_status_waiting_task;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] exited_q;
     // Control plane (bingo_hw_manager_ctrl): power / load view of the slots
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_wd_tick;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_boost;
@@ -1732,7 +1733,7 @@ module bingo_hw_manager_top #(
             .fifo_data_ready_i (write_done_queue_ready_1d),
             // heartbeat signal
             .heartbeat_valid_o  ( heartbeat_valid_1d     ),
-            .heartbeat_data_o   ( heartbeat_data_1d      ), // heartbeat_data_1d is reserved for future progress counters.
+            .heartbeat_data_o   ( heartbeat_data_1d      ),
             .csr_req_unknown_o  ( csr_req_unknown_1d     )
             );
 
@@ -1788,6 +1789,32 @@ module bingo_hw_manager_top #(
                     core_status_waiting_task[core][cluster] = (csr_req_i[core][cluster].write == 1'b0) &&
                                                               csr_req_valid_i[core][cluster] &&
                                                               !csr_req_ready_o[core][cluster];
+                end
+            end
+        end
+
+        // A real exit reports bit 31 after its done write. It no longer polls,
+        // but is idle for PM and boost. A new ready read starts the next offload,
+        // including when a task is already available and the read never stalls.
+        always_ff @(posedge clk_i or negedge rst_ni) begin
+            if (!rst_ni) begin
+                exited_q <= '0;
+            end else begin
+                for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
+                    for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
+                        if (csr_req_valid_i[core][cluster] && !csr_req_i[core][cluster].write &&
+                            csr_req_i[core][cluster].addr[11:0] == 12'h5fe) begin
+                            exited_q[core][cluster] <= 1'b0;
+                        end else if (heartbeat_valid[core][cluster] &&
+                                     heartbeat_data_1d[core + cluster * NUM_CORES_PER_CLUSTER][31]) begin
+                            exited_q[core][cluster] <= 1'b1;
+`ifndef SYNTHESIS
+                            if (!exited_q[core][cluster])
+                                $display("[BINGO_EXIT] %0t chip=%0d core=%0d cluster=%0d",
+                                         $time, chip_id_i, core, cluster);
+`endif
+                        end
+                    end
                 end
             end
         end
@@ -1899,6 +1926,7 @@ module bingo_hw_manager_top #(
         assign csr_rsp_o = '0;
         assign csr_rsp_valid_o = '0;
         assign heartbeat_valid = '0;
+        assign exited_q = '0;
     end
 
     //////////////////////////////////////////////////////////////////////
@@ -2068,7 +2096,7 @@ module bingo_hw_manager_top #(
         .clk_i          ( clk_i        ),
         .rst_ni         ( rst_ni       ),
         .fenced_i       ( core_fenced  ),
-        .waiting_i      ( core_status_waiting_task ),
+        .waiting_i      ( core_status_waiting_task | exited_q ),
         .load_i         ( ctrl_load        ),
         .pm_enable_i    ( bingo_hw_manager_enable_idle_pm_i[0] ),
         .pm_dvfs_i      ( bingo_hw_manager_pm_mode_i[0]        ),
