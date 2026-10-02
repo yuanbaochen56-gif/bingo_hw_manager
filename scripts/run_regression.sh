@@ -15,6 +15,26 @@ tests=$(sed -n 's/^ *- test\/tb_\(bingo_hw_manager_[a-z0-9_]*\)\.sv.*/\1/p' Bend
         grep -v '^bingo_hw_manager_replay_random$\|^bingo_hw_manager_rlink_random$\|^bingo_hw_manager_rlink_random_reject$\|^bingo_hw_manager_park_random$')
 scripts/sim.sh $tests > "build/regress_$TAG.log" 2>&1
 sim_rc=$?
+# A4 symmetric controls use the same compiled fixture and seed.
+command -v vsim >/dev/null || source ~micasusr/design/scripts/questasim_2025.2.rc
+for case in normal_zero replay_zero queued_blocked cerf_disabled; do
+    case "$case" in
+        normal_zero) tb=no_replay_normal; flag=+NR_TASK_TYPE=0 ;;
+        replay_zero) tb=replay_no_replay; flag=+NR_TASK_TYPE=0 ;;
+        queued_blocked) tb=replay_no_replay_queued; flag=+NR_FIRST_MARKED=1 ;;
+        cerf_disabled) tb=replay_no_replay_cerf; flag=+NR_CERF=0 ;;
+    esac
+    log="build/no_replay_${case}_${TAG}.log"
+    (cd build && vsim -c -sv_seed 0 "tb_bingo_hw_manager_$tb" "$flag" -t 1ns \
+        -voptargs=+acc -do "run -all; quit -f") > "$log" 2>&1
+    if grep -q "No replay case .* passed" "$log" &&
+       grep -q "Errors: 0," "$log" && ! grep -q "Error:\|Fatal:" "$log"; then
+        echo "    PASS  A4 $case" >> "build/regress_$TAG.log"
+    else
+        echo "    FAIL  A4 $case (see $log)" >> "build/regress_$TAG.log"
+        sim_rc=1
+    fi
+done
 npass=$(grep -c '^    PASS' "build/regress_$TAG.log")
 nfail=$(grep -c '^    FAIL' "build/regress_$TAG.log")
 echo "directed: $npass PASS, $nfail FAIL (build/regress_$TAG.log)"

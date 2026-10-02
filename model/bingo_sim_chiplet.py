@@ -18,11 +18,15 @@ from .bingo_sim_dep_matrix import DepMatrix
 from .bingo_sim_queues import FifoQueue
 from .bingo_sim_trace import SimEvent
 
+# Mirrors RTL checkout_head_exec: normal, gating, and no-replay normal.
+# Dummy (1) and out-of-range Python integers are not executing entries.
+EXEC_TASK_TYPES = (0, 2, 3)
+
 
 @dataclass
 class TaskDescriptor:
     """Unpacked task descriptor matching the RTL struct."""
-    task_type: int          # 0=normal, 1=dummy, 2=gating
+    task_type: int          # 0=normal, 1=dummy, 2=gating, 3=normal, replay forbidden
     task_id: int
     assigned_chiplet_id: int
     assigned_cluster_id: int
@@ -440,8 +444,8 @@ class ChipletModel:
             cq.pop()
             return []
 
-        if task.task_type in (0, 2) and not task.dep_set_en:
-            # Normal/gating task with no dep_set: needs done_queue match to pop
+        if task.task_type in EXEC_TASK_TYPES and not task.dep_set_en:
+            # Executing task with no dep_set: needs done_queue match to pop
             dq, done_info = self._find_done_match(core, cluster)
             if done_info:
                 cq.pop()
@@ -449,8 +453,8 @@ class ChipletModel:
                 return []
             return None  # No done match → blocked
 
-        if task.task_type in (0, 2) and task.dep_set_en:
-            # Normal/gating task with dep_set: needs done_queue match
+        if task.task_type in EXEC_TASK_TYPES and task.dep_set_en:
+            # Executing task with dep_set: needs done_queue match
             dq, done_info = self._find_done_match(core, cluster)
             if not done_info:
                 return None  # No done match → blocked

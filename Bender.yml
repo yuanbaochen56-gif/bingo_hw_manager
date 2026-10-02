@@ -75,6 +75,13 @@ sources:
       - test/tb_bingo_hw_manager_remap_mask_off.sv        # CoreRemapAllowMask='0: detection only (HeMAiA)
       - test/tb_bingo_hw_manager_csr_heartbeat_addr.sv    # heartbeat on CSR 0x5fe + masked slot (HeMAiA)
       - test/tb_bingo_hw_manager_replay_lost_task.sv       # running task of a dead core replayed
+      - test/tb_bingo_hw_manager_no_replay_normal.sv
+      - test/tb_bingo_hw_manager_replay_no_replay.sv
+      - test/tb_bingo_hw_manager_replay_no_replay_queued.sv
+      - test/tb_bingo_hw_manager_replay_no_replay_cerf.sv
+      - test/tb_bingo_hw_manager_replay_no_replay_l3.sv
+      - test/tb_bingo_hw_manager_replay_no_replay_foreign.sv
+      - test/tb_bingo_hw_manager_replay_no_replay_foreign_off.sv
       - test/tb_bingo_hw_manager_replay_queued_tasks.sv    # queued normal/dummy/skipped entries moved in order
       - test/tb_bingo_hw_manager_replay_sequencing_edge.sv # same-core edge behind the lost task
       - test/tb_bingo_hw_manager_replay_slow_not_dead.sv   # silent between the timeouts: no fence

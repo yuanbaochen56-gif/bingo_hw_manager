@@ -15,7 +15,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Optional, Literal
 
-from .bingo_sim_chiplet import ChipletModel, TaskDescriptor, DoneInfo
+from .bingo_sim_chiplet import ChipletModel, TaskDescriptor, DoneInfo, EXEC_TASK_TYPES
 from .bingo_sim_trace import EventTrace, SimEvent
 
 
@@ -107,10 +107,10 @@ class BingoSimulator:
             self._push_idx[chip_id] = 0
             self._push_timer[chip_id] = 0
             for t in tasks:
-                # Normal (0) and gating (2) tasks need to complete.
+                # Normal (0/3) and gating (2) tasks need to complete.
                 # Dummy (1) tasks don't go through dispatch/done.
                 # Conditional tasks (cond_exec_en=1) may be skipped at runtime.
-                if t.task_type in (0, 2):
+                if t.task_type in EXEC_TASK_TYPES:
                     self._all_task_ids.add(t.task_id)
 
     def run(self, max_cycles: int = 200000) -> SimResult:

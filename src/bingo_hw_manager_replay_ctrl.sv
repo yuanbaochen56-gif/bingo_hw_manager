@@ -58,6 +58,13 @@
 // An entry imported from another chiplet that no live core here may run is
 // bounced instead of stuck: MOVE pops it without a push (bounce_o) and the top
 // sends a reject back to its origin, which marks the proxy slot stuck there.
+//
+// task_type 11 is executable but cannot be replayed after possibly starting.
+// The runtime takes one ready task at a time and sends done before taking the
+// next one. Thus only the first executable checkout entry encountered after a
+// fence may have started; marked entries behind it can move locally for their
+// first execution. Marked entries never rotate/export or bounce: recovery of an
+// imported marked task is not defined yet. Blocking is sticky and implies stuck.
 module bingo_hw_manager_replay_ctrl #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
@@ -82,6 +89,7 @@ module bingo_hw_manager_replay_ctrl #(
     input  logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0] checkout_logical_core_i,
     input  logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] checkout_logical_cluster_i,
     input  logic [NumCores-1:0][NumClusters-1:0] checkout_no_exec_i, // task_type 01: checkout only
+    input  logic [NumCores-1:0][NumClusters-1:0] checkout_no_replay_i = '0, // task_type 11
     // Level 3: the head was exported by this slot (rotated) / imported from
     // another chiplet
     input  logic [NumCores-1:0][NumClusters-1:0] checkout_exported_i,
@@ -117,6 +125,7 @@ module bingo_hw_manager_replay_ctrl #(
     // Fenced slot whose next entry no live core may run (sticky); its checkout
     // output must stay held
     output logic [NumCores-1:0][NumClusters-1:0] stuck_o,
+    output logic [NumCores-1:0][NumClusters-1:0] blocked_o,
     // Level 3: this MOVE step rotates the head of the source (dst = src) and,
     // with export_o, copies it to the export FIFO
     output logic                      rotate_o,
@@ -140,6 +149,8 @@ module bingo_hw_manager_replay_ctrl #(
     logic [ClusterIdWidth-1:0] src_cluster_q, src_cluster_d;
     logic [NumCores-1:0][NumClusters-1:0] retired_q, retired_d;
     logic [NumCores-1:0][NumClusters-1:0] stuck_q, stuck_d;
+    logic [NumCores-1:0][NumClusters-1:0] blocked_q, blocked_d;
+    logic [NumCores-1:0][NumClusters-1:0] exec_moved_q, exec_moved_d;
     // used_q[s]: slots that received entries of slot s during its (possibly
     // aborted) migration; cleared when s is retired
     logic [NumCores-1:0][NumClusters-1:0][NumCores-1:0][NumClusters-1:0] used_q, used_d;
@@ -217,6 +228,8 @@ module bingo_hw_manager_replay_ctrl #(
         src_cluster_d = src_cluster_q;
         retired_d     = retired_q;
         stuck_d       = stuck_q;
+        blocked_d     = blocked_q;
+        exec_moved_d  = exec_moved_q;
         used_d        = used_q;
         rotated_d     = rotated_q;
         rotate_o      = 1'b0;
@@ -262,6 +275,13 @@ module bingo_hw_manager_replay_ctrl #(
                     state_d = IDLE;
                 end else if (smt_update_i) begin
                     // A slot was just fenced: the substitutes are being recomputed
+                end else if (!head_no_exec &&
+                             checkout_no_replay_i[src_core_q][src_cluster_q] &&
+                             (!exec_moved_q[src_core_q][src_cluster_q] || !dst_found)) begin
+                    // Possibly started, or would need unsupported level-3 recovery.
+                    stuck_d[src_core_q][src_cluster_q] = 1'b1;
+                    blocked_d[src_core_q][src_cluster_q] = 1'b1;
+                    state_d = IDLE;
                 end else if (!dst_found && can_rotate) begin
                     // Level 3: keep it on D as a remote proxy entry. Pop and push
                     // in one cycle leave the usage unchanged, so D's fullness
@@ -295,10 +315,14 @@ module bingo_hw_manager_replay_ctrl #(
             end
             default: state_d = IDLE;
         endcase
+        if (move_fire_o && !head_no_exec) begin
+            exec_moved_d[src_core_q][src_cluster_q] = 1'b1;
+        end
     end
 
     assign retired_o     = retired_q;
     assign stuck_o       = stuck_q;
+    assign blocked_o     = blocked_q;
     always_comb begin
         for (int unsigned c = 0; c < NumCores; c++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
@@ -319,6 +343,8 @@ module bingo_hw_manager_replay_ctrl #(
             src_cluster_q <= '0;
             retired_q     <= '0;
             stuck_q       <= '0;
+            blocked_q     <= '0;
+            exec_moved_q  <= '0;
             used_q        <= '0;
             rotated_q     <= '0;
         end else begin
@@ -327,6 +353,8 @@ module bingo_hw_manager_replay_ctrl #(
             src_cluster_q <= src_cluster_d;
             retired_q     <= retired_d;
             stuck_q       <= stuck_d;
+            blocked_q     <= blocked_d;
+            exec_moved_q  <= exec_moved_d;
             used_q        <= used_d;
             rotated_q     <= rotated_d;
         end

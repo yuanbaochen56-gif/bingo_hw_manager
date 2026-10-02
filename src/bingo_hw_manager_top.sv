@@ -234,6 +234,8 @@ module bingo_hw_manager_top #(
     // Replay: a fenced core holds a task that no live core may run (level 3:
     // on this chiplet, or on the remote chiplet that rejected its export)
     output logic                                replay_stuck_o,
+    // Sticky no-replay blocks, indexed like core_fenced_o; a subset of stuck.
+    output logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_blocked_o,
     // Watchdog: busy cores without heartbeat for WatchdogHeartbeatTimeoutCycles
     // (not sticky, cleared by a heartbeat or a done)
     output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    core_dead_suspect_o,
@@ -816,6 +818,7 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0] replay_head_logical;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0] replay_head_logical_cluster;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_head_no_exec;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_head_no_replay;
     logic                                  replay_move_fire;
     logic                                  replay_push_ready_q;
     bingo_hw_manager_assigned_core_id_t    replay_src_core;
@@ -1528,7 +1531,8 @@ module bingo_hw_manager_top #(
             // An executing task (normal / gating) only leaves the checkout queue with its
             // own done, for the local and the chiplet dep_set path alike.
             assign checkout_head_exec[core][cluster] = ((checkout_queue_data_out[core][cluster].task_type == 2'b00) ||
-                                                        (checkout_queue_data_out[core][cluster].task_type == 2'b10)) &&
+                                                        (checkout_queue_data_out[core][cluster].task_type == 2'b10) ||
+                                                        (checkout_queue_data_out[core][cluster].task_type == 2'b11)) &&
                                                        !stuck_head_skip[core][cluster];
             // Level 3: an exported head only retires on the remote done of the
             // same task (the dones of a proxy slot come back in export order)
@@ -2014,6 +2018,7 @@ module bingo_hw_manager_top #(
                 replay_head_logical[c][cl]         = checkout_queue_data_out[c][cl].assigned_core_id;
                 replay_head_logical_cluster[c][cl] = checkout_queue_data_out[c][cl].assigned_cluster_id;
                 replay_head_no_exec[c][cl] = (checkout_queue_data_out[c][cl].task_type == 2'b01);
+                replay_head_no_replay[c][cl] = (checkout_queue_data_out[c][cl].task_type == 2'b11);
             end
         end
     end
@@ -2166,6 +2171,7 @@ module bingo_hw_manager_top #(
         .checkout_logical_core_i    ( replay_head_logical         ),
         .checkout_logical_cluster_i ( replay_head_logical_cluster ),
         .checkout_no_exec_i         ( replay_head_no_exec         ),
+        .checkout_no_replay_i       ( replay_head_no_replay       ),
         .checkout_exported_i        ( replay_head_exported        ),
         .checkout_imported_i        ( checkout_head_imported      ),
         .export_type_ready_i        ( export_type_ready           ),
@@ -2186,6 +2192,7 @@ module bingo_hw_manager_top #(
         .dst_core_o              ( replay_dst_core        ),
         .dst_cluster_o           ( replay_dst_cluster     ),
         .stuck_o                 ( replay_stuck_slot      ),
+        .blocked_o               ( replay_blocked_o       ),
         .rotate_o                ( replay_rotate          ),
         .export_o                ( replay_export          ),
         .bounce_o                ( replay_bounce          )
@@ -2262,6 +2269,7 @@ module bingo_hw_manager_top #(
             .logical_core_i(bingo_hw_manager_assigned_core_id_t'(core)),
             .logical_cluster_i(waiting_dep_check_task_desc[core].assigned_cluster_id),
             .remappable_i(remap_remappable[core]),
+            .no_replay_i(waiting_dep_check_task_desc[core].task_type == 2'b11),
             .core_fenced_i(core_fenced),
             .core_retired_i(core_retired),
             .core_stuck_i(replay_stuck_slot),
@@ -2743,6 +2751,7 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_fenced_log_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_retired_log_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_stuck_log_q;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_blocked_log_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_hold_log_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_parked_log_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_fail_log_q;
@@ -2753,6 +2762,7 @@ module bingo_hw_manager_top #(
             core_fenced_log_q       <= '0;
             core_retired_log_q      <= '0;
             replay_stuck_log_q      <= '0;
+            replay_blocked_log_q    <= '0;
             park_hold_log_q         <= '0;
             park_parked_log_q       <= '0;
             park_fail_log_q         <= '0;
@@ -2766,6 +2776,7 @@ module bingo_hw_manager_top #(
             core_fenced_log_q       <= core_fenced;
             core_retired_log_q      <= core_retired;
             replay_stuck_log_q      <= replay_stuck_slot;
+            replay_blocked_log_q    <= replay_blocked_o;
             for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
                 for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
                     if ((core_dead_suspect[c][cl] != core_dead_suspect_log_q[c][cl]) ||
@@ -2808,6 +2819,10 @@ module bingo_hw_manager_top #(
                                  $time, chip_id_i, c, cl,
                                  checkout_queue_data_out[c][cl].task_id,
                                  checkout_queue_data_out[c][cl].assigned_core_id);
+                    end
+                    if (replay_blocked_o[c][cl] && !replay_blocked_log_q[c][cl]) begin
+                        $display("[BINGO_REPLAY_BLOCKED] %0t chip=%0d core=%0d cluster=%0d task=%0d",
+                                 $time, chip_id_i, c, cl, checkout_queue_data_out[c][cl].task_id);
                     end
                     if (remap_route_fire[c][cl] &&
                         ((remap_route_src_core[c][cl] != bingo_hw_manager_assigned_core_id_t'(c)) ||
@@ -2880,6 +2895,17 @@ module bingo_hw_manager_top #(
     // Replay invariants
     always @(posedge clk_i) begin : replay_assertions
         if (rst_ni) begin
+            if (|(replay_blocked_o & ~replay_stuck_slot)) begin
+                $error("[BINGO_ASSERT] blocked slot is not stuck");
+            end
+            if (export_push && export_in.desc.task_type == 2'b11) begin
+                $error("[BINGO_ASSERT] exported no-replay task %0d", export_in.desc.task_id);
+            end
+            if (replay_push_ready_q && replay_data.task_type == 2'b11 &&
+                !i_replay_ctrl.exec_moved_q[replay_src_core][replay_src_cluster]) begin
+                $error("[BINGO_ASSERT] replayed possibly started no-replay task %0d",
+                       replay_data.task_id);
+            end
             for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
                 for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
                     // A parked slot's own new task must not be routed while it is still

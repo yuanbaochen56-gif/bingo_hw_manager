@@ -62,6 +62,8 @@ module bingo_hw_manager_core_remap #(
     // 1 if the task executes on a core (normal / gating task). Dummy-set and
     // CERF-skipped tasks never leave their logical core.
     input  logic remappable_i,
+    // task_type 11 may run locally, but recovery of imports is not defined.
+    input  logic no_replay_i = 1'b0,
     // Core status from the watchdog / replay controller
     input  logic [NumCores-1:0][NumClusters-1:0] core_fenced_i,
     input  logic [NumCores-1:0][NumClusters-1:0] core_retired_i,
@@ -135,7 +137,7 @@ module bingo_hw_manager_core_remap #(
                 if (sub_found) begin
                     physical_core_o    = sub_core;
                     physical_cluster_o = sub_cluster;
-                end else if (SubstituteLevelMask[2] && logical_exportable) begin
+                end else if (SubstituteLevelMask[2] && logical_exportable && !no_replay_i) begin
                     select_valid_o = 1'b1;
                     remote_o       = 1'b1;
                 end
