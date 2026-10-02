@@ -126,6 +126,8 @@ sources:
       - test/tb_bingo_hw_manager_risk_park.sv             # fault precursors: late beats -> at risk -> parked, clear moves back
       - test/tb_bingo_hw_manager_risk_derate.sv           # fault precursors: no substitute, park fails, domain derated
       - test/tb_bingo_hw_manager_risk_decay.sv            # fault precursors: sparse late beats decay, a burst trips
+      - test/tb_bingo_hw_manager_boost_capacity.sv        # capacity boost: survivors of a type, budget per lost core, minimum load
+      - test/tb_bingo_hw_manager_boost_capacity_edges.sv  # capacity boost: lost-slot accounting, shared/derated domains, at-risk parking
       - test/tb_bingo_hw_manager_park_random.sv           # random graph, fault and park / move back (seeds in run_regression.sh)
       - test/tb_bingo_hw_manager_rlink_random.sv           # level 3 over remote_link: random (scripts/run_replay_random.sh)
       - test/tb_bingo_hw_manager_rlink_random_reject.sv    # level 3 over remote_link: random, a hang on each chiplet (rejects)

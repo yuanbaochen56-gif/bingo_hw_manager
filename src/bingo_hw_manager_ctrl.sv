@@ -98,6 +98,14 @@
 // table does the work of two cores. While it is busy (not polling), pm_boost_o
 // asks the PM to run its domain at the boost level (bingo_hw_manager_pm
 // boost_power_level_i, a faster clock than the normal level; 0 = off).
+// Capacity boost (boost_policy_i = 1) replaces that choice: a core type has
+// lost capacity while one of its slots is fenced, stuck, rejected or parked at
+// risk. Every busy live slot of such a type with a load of at least
+// boost_load_min_i is a candidate (type 0 substitutes for nobody and is never
+// one; neither is a slot in a derated domain). At most boost_credit_i domains
+// per lost slot run boosted
+// (0 = no limit), the lowest domain index first: the dead or parked cores no
+// longer draw power, and the survivors of their type get that budget.
 //
 // CERF degradation: a host table, one entry per core type, default off. A type
 // is faulted while any of its slots is stuck or rejected. The lowest enabled
@@ -184,6 +192,11 @@ module bingo_hw_manager_ctrl #(
     input  logic [1:0]                               risk_action_i = '0,
     input  logic [31:0]                              risk_epoch_i = '0,
     input  logic [NumCores-1:0][NumClusters-1:0]     risk_clear_i = '0,
+    // Boost choice (see above): 0 = substitutes of fenced cores, 1 = capacity;
+    // boosted domains per lost slot (0 = no limit); minimum load of a candidate
+    input  logic                                     boost_policy_i = 1'b0,
+    input  logic [3:0]                               boost_credit_i = '0,
+    input  logic [7:0]                               boost_load_min_i = '0,
 
     // Power manager: slots that do not keep their domain at the normal level
     output logic [NumCores-1:0][NumClusters-1:0] pm_idle_o,
@@ -554,19 +567,70 @@ module bingo_hw_manager_ctrl #(
     end
 
     // ------------------------------------------------------------------
-    // Recovery boost: substitutes of fenced cores, while busy
+    // Recovery boost: substitutes of fenced cores, or capacity (see above)
     // ------------------------------------------------------------------
+    logic [NumCores-1:0][NumClusters-1:0] boost_sub, boost_cand, lost_slot;
+    logic [2**CoreTypeIdWidth-1:0]        type_lost;
+    logic [31:0]                          domain_cand, domain_pick, domain_derate;
+    logic [7:0]                           n_lost, picked;
+    logic [11:0]                          budget;
     always_comb begin
-        pm_boost_o = '0;
+        boost_sub = '0;
         for (int unsigned c = 0; c < NumCores; c++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
                 if (fenced_i[c][cl] && smt_found_q[c][cl] &&
                     ((smt_core_q[c][cl] != c) || (smt_cluster_q[c][cl] != cl))) begin
-                    pm_boost_o[smt_core_q[c][cl]][smt_cluster_q[c][cl]] = 1'b1;
+                    boost_sub[smt_core_q[c][cl]][smt_cluster_q[c][cl]] = 1'b1;
                 end
             end
         end
-        pm_boost_o = pm_boost_o & ~waiting_i & ~fenced_i;
+        boost_sub = boost_sub & ~waiting_i & ~fenced_i;
+
+        lost_slot = fenced_i | stuck_i | rejected_i | (risk_q & park_parked_q);
+        type_lost = '0;
+        n_lost    = '0;
+        domain_derate = '0;
+        for (int unsigned c = 0; c < NumCores; c++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                if (lost_slot[c][cl]) begin
+                    n_lost = n_lost + 1;
+                    if (CoreTypeId[c][cl] != '0) type_lost[CoreTypeId[c][cl]] = 1'b1;
+                end
+                if (pm_derate_o[c][cl] && (slot_domain_i[c][cl] < 6'd32))
+                    domain_derate[slot_domain_i[c][cl][4:0]] = 1'b1;
+            end
+        end
+        boost_cand  = '0;
+        domain_cand = '0;
+        for (int unsigned c = 0; c < NumCores; c++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                if (!waiting_i[c][cl] && !lost_slot[c][cl] && !park_parked_q[c][cl] &&
+                    (CoreTypeId[c][cl] != '0) && type_lost[CoreTypeId[c][cl]] &&
+                    (32'(load_i[c][cl]) >= 32'(boost_load_min_i)) && (slot_domain_i[c][cl] < 6'd32)) begin
+                    boost_cand[c][cl] = 1'b1;
+                    domain_cand[slot_domain_i[c][cl][4:0]] = 1'b1;
+                end
+            end
+        end
+        // Derate applies to the whole domain. Do not spend a boost credit on
+        // a healthy candidate sharing that domain with an at-risk slot.
+        domain_cand = domain_cand & ~domain_derate;
+        budget      = 12'(boost_credit_i) * 12'(n_lost);
+        picked      = '0;
+        domain_pick = '0;
+        for (int unsigned d = 0; d < 32; d++) begin
+            if (domain_cand[d] && ((boost_credit_i == '0) || (12'(picked) < budget))) begin
+                domain_pick[d] = 1'b1;
+                picked = picked + 1;
+            end
+        end
+
+        for (int unsigned c = 0; c < NumCores; c++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                pm_boost_o[c][cl] = boost_policy_i ?
+                    (boost_cand[c][cl] && domain_pick[slot_domain_i[c][cl][4:0]]) : boost_sub[c][cl];
+            end
+        end
     end
 
     // ------------------------------------------------------------------

@@ -167,6 +167,11 @@ module bingo_hw_manager_top #(
     // Recovery boost level (a faster clock divider than the normal level) of a
     // domain whose core runs a dead core's tasks; 0 disables the boost
     input device_axi_lite_data_t                bingo_hw_manager_boost_power_level_i = '0,
+    // Which cores get the boost level (bingo_hw_manager_ctrl): [0] 0 = the
+    // substitutes of fenced cores, 1 = capacity (busy cores of a type that lost
+    // a core); [11:8] boosted domains per lost core (0 = no limit); [23:16]
+    // minimum load (checkout occupancy) of a boosted core
+    input device_axi_lite_data_t                bingo_hw_manager_boost_policy_i = '0,
     // Cycles a core must be idle before it lets its domain drop to the idle
     // level (bingo_hw_manager_ctrl); 0 = at once
     input device_axi_lite_data_t                bingo_hw_manager_idle_entry_delay_i = '0,
@@ -2061,6 +2066,9 @@ module bingo_hw_manager_top #(
         .risk_action_i  ( bingo_hw_manager_risk_policy_i[5:4] ),
         .risk_epoch_i   ( 32'(bingo_hw_manager_risk_epoch_i) ),
         .risk_clear_i   ( risk_clear       ),
+        .boost_policy_i ( bingo_hw_manager_boost_policy_i[0]     ),
+        .boost_credit_i ( bingo_hw_manager_boost_policy_i[11:8]  ),
+        .boost_load_min_i ( bingo_hw_manager_boost_policy_i[23:16] ),
         .wd_tick_o      ( ctrl_wd_tick     ),
         .pm_boost_o     ( ctrl_pm_boost    ),
         .pm_idle_o      ( ctrl_pm_idle     ),

@@ -972,6 +972,9 @@ device_axi_lite_data_t risk        [NUM_CHIPLET];
 initial for (int i = 0; i < NUM_CHIPLET; i++) begin
     risk_late[i] = '0; risk_policy[i] = '0; risk_epoch[i] = '0; risk_clear[i] = '0;
 end
+// Boost choice ([0] policy, [11:8] credit, [23:16] minimum load); 0 = substitutes
+device_axi_lite_data_t boost_policy [NUM_CHIPLET];
+initial for (int i = 0; i < NUM_CHIPLET; i++) boost_policy[i] = '0;
 // Power domain of every slot
 device_axi_lite_data_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] pm_core_domain;
 for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_pm_domain_core
@@ -1051,6 +1054,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .bingo_hw_manager_idle_power_level_i  ( device_axi_lite_data_t'(PM_IDLE_LEVEL)                        ),
         .bingo_hw_manager_normal_power_level_i( device_axi_lite_data_t'(PM_NORMAL_LEVEL)                      ),
         .bingo_hw_manager_boost_power_level_i ( device_axi_lite_data_t'(PM_BOOST_LEVEL)                       ),
+        .bingo_hw_manager_boost_policy_i      ( boost_policy[chiplet_idx]                                   ),
         .bingo_hw_manager_idle_entry_delay_i  ( device_axi_lite_data_t'(`TB_PM_IDLE_DELAY)                    ),
         .bingo_hw_manager_cluster_access_i    ( cluster_access[chiplet_idx]                                 ),
         .bingo_hw_manager_access_wake_hold_i  ( device_axi_lite_data_t'(`TB_PM_ACCESS_HOLD)                   ),
