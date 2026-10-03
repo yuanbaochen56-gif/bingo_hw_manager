@@ -204,6 +204,10 @@ module bingo_hw_manager_top #(
     input  device_axi_lite_data_t               bingo_hw_manager_risk_epoch_i = '0,
     input  device_axi_lite_data_t               bingo_hw_manager_risk_clear_i = '0,
     input  logic [31:0]                        bingo_hw_manager_risk_confirm_i = '0,
+    // Runtime type thresholds may only shorten the parameter timeouts.
+    // Zero/invalid entries fall back to the parameters; validate before narrowing.
+    input  logic [2**CoreTypeIdWidth-1:0][31:0] wd_type_h_i = '0,
+    input  logic [2**CoreTypeIdWidth-1:0][31:0] wd_type_c_i = '0,
     output device_axi_lite_data_t               bingo_hw_manager_risk_o,
     input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
     input device_axi_lite_data_t                bingo_hw_manager_normal_power_level_i,
@@ -860,6 +864,9 @@ module bingo_hw_manager_top #(
     localparam int unsigned WatchdogCounterWidth = $clog2(WatchdogMaxTimeoutCycles + 1) + 1;
     logic [WatchdogCounterWidth-1:0] wd_late_cycles;  // late-beat threshold of the watchdog
     logic [WatchdogCounterWidth-1:0] wd_risk_confirm;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WatchdogCounterWidth-1:0] wd_suspect_thr;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WatchdogCounterWidth-1:0] wd_confirm_thr;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_risk_confirm_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] risk;
     // --------Finish Type definitions and signal declarations--------------------//
 
@@ -1985,7 +1992,9 @@ module bingo_hw_manager_top #(
         .CounterWidth(WatchdogCounterWidth),
         .HeartbeatTimeoutCycles(WatchdogHeartbeatTimeoutCycles),
         .ConfirmTimeoutCycles(WatchdogConfirmTimeoutCycles),
-        .CoreMask(WatchdogCoreMask)
+        .CoreMask(WatchdogCoreMask),
+        .CoreTypeIdWidth(CoreTypeIdWidth),
+        .CoreTypeId(CoreTypeId)
     ) i_watchdog (
         .clk_i                 ( clk_i                          ),
         .rst_ni                ( rst_ni                         ),
@@ -1996,7 +2005,10 @@ module bingo_hw_manager_top #(
         .tick_i                ( ctrl_wd_tick                    ), // slowed down in a slow power domain
         .late_cycles_i         ( wd_late_cycles                  ), // fault precursor threshold
         .risk_i                ( risk                            ), // registered ctrl risk bitmap
-        .risk_confirm_i        ( wd_risk_confirm                 ),
+        .risk_confirm_i        ( WatchdogCounterWidth'(bingo_hw_manager_risk_confirm_i) ),
+        .risk_confirm_valid_i  ( wd_risk_confirm_valid           ),
+        .suspect_thr_i         ( wd_suspect_thr                  ),
+        .confirm_thr_i         ( wd_confirm_thr                  ),
         .late_o                ( wd_late                         ),
         .core_busy_o           ( core_busy                       ),
         .core_available_o      ( core_available                  ),
@@ -2013,6 +2025,27 @@ module bingo_hw_manager_top #(
                              bingo_hw_manager_risk_confirm_i > WatchdogHeartbeatTimeoutCycles &&
                              bingo_hw_manager_risk_confirm_i < WatchdogConfirmTimeoutCycles) ?
                              WatchdogCounterWidth'(bingo_hw_manager_risk_confirm_i) : '0;
+    for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_wd_type_core
+        for (genvar cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin : gen_wd_type_cluster
+            localparam int Type = CoreTypeId[c][cl];
+            logic [31:0] h_eff, c_eff;
+            logic c_valid;
+            assign h_eff = (wd_type_h_i[Type] != 0 &&
+                            wd_type_h_i[Type] <= WatchdogHeartbeatTimeoutCycles) ?
+                            wd_type_h_i[Type] : WatchdogHeartbeatTimeoutCycles;
+            assign c_valid = (WatchdogConfirmTimeoutCycles != 0 &&
+                              wd_type_c_i[Type] != 0 &&
+                              wd_type_c_i[Type] <= WatchdogConfirmTimeoutCycles &&
+                              wd_type_c_i[Type] > h_eff);
+            assign c_eff = c_valid ? wd_type_c_i[Type] : WatchdogConfirmTimeoutCycles;
+            assign wd_suspect_thr[c][cl] = WatchdogCounterWidth'(h_eff);
+            // Zero retains the parameter path and distinguishes a valid C_t for logging.
+            assign wd_confirm_thr[c][cl] = c_valid ? WatchdogCounterWidth'(c_eff) : '0;
+            assign wd_risk_confirm_valid[c][cl] = (WatchdogConfirmTimeoutCycles != 0 &&
+                                                  bingo_hw_manager_risk_confirm_i > h_eff &&
+                                                  bingo_hw_manager_risk_confirm_i < c_eff);
+        end
+    end
 
     //////////////////////////////////////////////////////////////////////
     // Task Replay

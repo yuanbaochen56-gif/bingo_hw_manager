@@ -9,7 +9,9 @@ module bingo_hw_manager_watchdog #(
     parameter int unsigned ConfirmTimeoutCycles = 0,
     // Slots with CoreMask = 0 are never reported dead_suspect (e.g. a host slot
     // that does not send heartbeats, or a tied-off slot).
-    parameter logic [NumCores-1:0][NumClusters-1:0] CoreMask = '1
+    parameter logic [NumCores-1:0][NumClusters-1:0] CoreMask = '1,
+    parameter int unsigned CoreTypeIdWidth = 4,
+    parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId = '0
 ) (
     input  logic clk_i,
     input  logic rst_ni,
@@ -29,6 +31,9 @@ module bingo_hw_manager_watchdog #(
     input  logic [NumCores-1:0][NumClusters-1:0] risk_i = '0,
     // Same timer as H/C, not an interval restarted at suspicion. 0 = disabled.
     input  logic [CounterWidth-1:0]               risk_confirm_i = '0,
+    input  logic [NumCores-1:0][NumClusters-1:0] risk_confirm_valid_i = '1,
+    input  logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] suspect_thr_i = '0,
+    input  logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] confirm_thr_i = '0,
 
     output logic [NumCores-1:0][NumClusters-1:0] core_busy_o,      // Indicates when a core is currently executing a task
     output logic [NumCores-1:0][NumClusters-1:0] core_available_o,  // Indicates when a core is available for new tasks
@@ -73,7 +78,8 @@ module bingo_hw_manager_watchdog #(
                 // fake recovery.
                 core_dead_suspect_o[c][cl] = fenced_q[c][cl] ||
                                              (CoreMask[c][cl] && busy_q[c][cl] &&
-                                              (timer_q[c][cl] >= HeartbeatTimeoutCycles[CounterWidth-1:0]));
+                                              (timer_q[c][cl] >= ((suspect_thr_i[c][cl] != '0) ?
+                                               suspect_thr_i[c][cl] : HeartbeatTimeoutCycles[CounterWidth-1:0])));
                 core_available_o[c][cl] = waiting_task_i[c][cl] && !busy_q[c][cl] && !core_dead_suspect_o[c][cl];
                 // Same priority as the timer update below: a fenced core is ignored
                 late_o[c][cl] = (late_cycles_i != '0) && CoreMask[c][cl] && !fenced_q[c][cl] &&
@@ -110,16 +116,20 @@ module bingo_hw_manager_watchdog #(
                     end else if (heartbeat_i[c][cl]) begin
                         timer_q[c][cl] <= '0; // Reset timer on heartbeat
                     end else if ((ConfirmTimeoutCycles != 0) && CoreMask[c][cl] && busy_q[c][cl] &&
-                                 (timer_q[c][cl] >= ((risk_i[c][cl] && risk_confirm_i != '0) ?
-                                  risk_confirm_i : ConfirmTimeoutCycles[CounterWidth-1:0]))) begin
+                                 (timer_q[c][cl] >= ((risk_i[c][cl] && risk_confirm_valid_i[c][cl] && risk_confirm_i != '0) ?
+                                  risk_confirm_i : ((confirm_thr_i[c][cl] != '0) ?
+                                  confirm_thr_i[c][cl] : ConfirmTimeoutCycles[CounterWidth-1:0])))) begin
                         // A done, dispatch or heartbeat in this cycle wins (branches above).
                         fenced_q[c][cl] <= 1'b1;
                         busy_q[c][cl] <= 1'b0;
                         timer_q[c][cl] <= '0;
 `ifndef SYNTHESIS
-                        if (risk_i[c][cl] && risk_confirm_i != '0)
+                        if (risk_i[c][cl] && risk_confirm_valid_i[c][cl] && risk_confirm_i != '0)
                             $display("[BINGO_RISK_CONFIRM] %0t core=%0d cluster=%0d threshold=%0d",
                                      $time, c, cl, risk_confirm_i);
+                        else if (confirm_thr_i[c][cl] != '0)
+                            $display("[BINGO_TYPE_CONFIRM] %0t core=%0d cluster=%0d type=%0d threshold=%0d",
+                                     $time, c, cl, CoreTypeId[c][cl], confirm_thr_i[c][cl]);
 `endif
                     end else if (busy_q[c][cl] && tick_i[c][cl] && timer_q[c][cl] != {CounterWidth{1'b1}}) begin
                         timer_q[c][cl] <= timer_q[c][cl] + 1'b1; // Increment timer if core is busy and no heartbeat

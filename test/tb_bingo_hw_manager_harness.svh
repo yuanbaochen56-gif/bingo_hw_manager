@@ -973,10 +973,13 @@ device_axi_lite_data_t risk_policy [NUM_CHIPLET];
 device_axi_lite_data_t risk_epoch  [NUM_CHIPLET];
 device_axi_lite_data_t risk_clear  [NUM_CHIPLET];
 device_axi_lite_data_t risk_confirm [NUM_CHIPLET];
+logic [15:0][31:0] wd_type_h [NUM_CHIPLET];
+logic [15:0][31:0] wd_type_c [NUM_CHIPLET];
 device_axi_lite_data_t risk        [NUM_CHIPLET];
 initial for (int i = 0; i < NUM_CHIPLET; i++) begin
     risk_late[i] = '0; risk_policy[i] = '0; risk_epoch[i] = '0; risk_clear[i] = '0;
     risk_confirm[i] = '0;
+    wd_type_h[i] = '0; wd_type_c[i] = '0;
 end
 // Boost choice ([0] policy, [11:8] credit, [23:16] minimum load); 0 = substitutes
 device_axi_lite_data_t boost_policy [NUM_CHIPLET];
@@ -1072,6 +1075,8 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .bingo_hw_manager_risk_epoch_i        ( risk_epoch[chiplet_idx]                                     ),
         .bingo_hw_manager_risk_clear_i        ( risk_clear[chiplet_idx]                                     ),
         .bingo_hw_manager_risk_confirm_i      ( risk_confirm[chiplet_idx]                                   ),
+        .wd_type_h_i                         ( wd_type_h[chiplet_idx]                                      ),
+        .wd_type_c_i                         ( wd_type_c[chiplet_idx]                                      ),
         .bingo_hw_manager_risk_o              ( risk[chiplet_idx]                                           ),
         .bingo_hw_manager_pm_base_addr_i      ( '0                                                          ),
         .bingo_hw_manager_core_power_domain_i ( pm_core_domain                                              ),

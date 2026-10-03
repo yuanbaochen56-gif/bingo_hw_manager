@@ -63,6 +63,9 @@ sources:
       - test/tb_bingo_hw_manager_watchdog.sv
       - test/tb_bingo_hw_manager_watchdog_risk_confirm.sv
       - test/tb_bingo_hw_manager_watchdog_risk_confirm_detect.sv
+      - test/tb_bingo_hw_manager_watchdog_type_thr.sv
+      - test/tb_bingo_hw_manager_watchdog_type_thr_detect.sv
+      - test/tb_bingo_hw_manager_type_thr_replay.sv
       - test/tb_bingo_hw_manager_risk_confirm_replay.sv
       - test/tb_bingo_hw_manager_core_remap.sv
       - test/tb_bingo_hw_manager_remap_probe.sv
