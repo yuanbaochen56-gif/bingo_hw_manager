@@ -61,6 +61,9 @@ sources:
       - test/tb_bingo_hw_manager_tagged.sv      # identity-aware deps end-to-end
       - test/tb_bingo_hw_manager_tagged_mc.sv   # identity-aware deps, MULTI-CLUSTER cross-cluster aliasing
       - test/tb_bingo_hw_manager_watchdog.sv
+      - test/tb_bingo_hw_manager_watchdog_risk_confirm.sv
+      - test/tb_bingo_hw_manager_watchdog_risk_confirm_detect.sv
+      - test/tb_bingo_hw_manager_risk_confirm_replay.sv
       - test/tb_bingo_hw_manager_core_remap.sv
       - test/tb_bingo_hw_manager_remap_probe.sv
       - test/tb_bingo_hw_manager_remap_full_flow.sv

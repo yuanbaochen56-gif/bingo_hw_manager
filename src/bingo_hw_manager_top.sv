@@ -203,6 +203,7 @@ module bingo_hw_manager_top #(
     input  device_axi_lite_data_t               bingo_hw_manager_risk_policy_i = '0,
     input  device_axi_lite_data_t               bingo_hw_manager_risk_epoch_i = '0,
     input  device_axi_lite_data_t               bingo_hw_manager_risk_clear_i = '0,
+    input  logic [31:0]                        bingo_hw_manager_risk_confirm_i = '0,
     output device_axi_lite_data_t               bingo_hw_manager_risk_o,
     input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
     input device_axi_lite_data_t                bingo_hw_manager_normal_power_level_i,
@@ -858,6 +859,8 @@ module bingo_hw_manager_top #(
         WatchdogConfirmTimeoutCycles : WatchdogHeartbeatTimeoutCycles;
     localparam int unsigned WatchdogCounterWidth = $clog2(WatchdogMaxTimeoutCycles + 1) + 1;
     logic [WatchdogCounterWidth-1:0] wd_late_cycles;  // late-beat threshold of the watchdog
+    logic [WatchdogCounterWidth-1:0] wd_risk_confirm;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] risk;
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//
@@ -1992,6 +1995,8 @@ module bingo_hw_manager_top #(
         .waiting_task_i        ( core_status_waiting_task        ), // only feeds core_available
         .tick_i                ( ctrl_wd_tick                    ), // slowed down in a slow power domain
         .late_cycles_i         ( wd_late_cycles                  ), // fault precursor threshold
+        .risk_i                ( risk                            ), // registered ctrl risk bitmap
+        .risk_confirm_i        ( wd_risk_confirm                 ),
         .late_o                ( wd_late                         ),
         .core_busy_o           ( core_busy                       ),
         .core_available_o      ( core_available                  ),
@@ -2003,6 +2008,11 @@ module bingo_hw_manager_top #(
     assign wd_late_cycles = (bingo_hw_manager_risk_late_i > device_axi_lite_data_t'({WatchdogCounterWidth{1'b1}})) ?
                             {WatchdogCounterWidth{1'b1}} : bingo_hw_manager_risk_late_i[WatchdogCounterWidth-1:0];
     assign core_dead_suspect_o = core_dead_suspect;
+    // Validate the full CSR before narrowing it. A valid R is below C and fits.
+    assign wd_risk_confirm = (WatchdogConfirmTimeoutCycles != 0 &&
+                             bingo_hw_manager_risk_confirm_i > WatchdogHeartbeatTimeoutCycles &&
+                             bingo_hw_manager_risk_confirm_i < WatchdogConfirmTimeoutCycles) ?
+                             WatchdogCounterWidth'(bingo_hw_manager_risk_confirm_i) : '0;
 
     //////////////////////////////////////////////////////////////////////
     // Task Replay
@@ -2032,7 +2042,7 @@ module bingo_hw_manager_top #(
     logic                                                           smt_update;
     // Parking. The request mask is bit (core + cluster * NUM_CORES).
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_req;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] risk_clear, risk;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] risk_clear;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_hold;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_parked;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_unpark;

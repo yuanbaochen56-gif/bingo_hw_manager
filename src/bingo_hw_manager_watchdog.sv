@@ -26,6 +26,9 @@ module bingo_hw_manager_watchdog #(
     // timer has reached late_cycles_i. 0 = off. The timer counts ticks, so
     // like the timeouts this counts cycles of the normal clock.
     input  logic [CounterWidth-1:0]               late_cycles_i = '0,
+    input  logic [NumCores-1:0][NumClusters-1:0] risk_i = '0,
+    // Same timer as H/C, not an interval restarted at suspicion. 0 = disabled.
+    input  logic [CounterWidth-1:0]               risk_confirm_i = '0,
 
     output logic [NumCores-1:0][NumClusters-1:0] core_busy_o,      // Indicates when a core is currently executing a task
     output logic [NumCores-1:0][NumClusters-1:0] core_available_o,  // Indicates when a core is available for new tasks
@@ -107,11 +110,17 @@ module bingo_hw_manager_watchdog #(
                     end else if (heartbeat_i[c][cl]) begin
                         timer_q[c][cl] <= '0; // Reset timer on heartbeat
                     end else if ((ConfirmTimeoutCycles != 0) && CoreMask[c][cl] && busy_q[c][cl] &&
-                                 (timer_q[c][cl] >= ConfirmTimeoutCycles[CounterWidth-1:0])) begin
+                                 (timer_q[c][cl] >= ((risk_i[c][cl] && risk_confirm_i != '0) ?
+                                  risk_confirm_i : ConfirmTimeoutCycles[CounterWidth-1:0]))) begin
                         // A done, dispatch or heartbeat in this cycle wins (branches above).
                         fenced_q[c][cl] <= 1'b1;
                         busy_q[c][cl] <= 1'b0;
                         timer_q[c][cl] <= '0;
+`ifndef SYNTHESIS
+                        if (risk_i[c][cl] && risk_confirm_i != '0)
+                            $display("[BINGO_RISK_CONFIRM] %0t core=%0d cluster=%0d threshold=%0d",
+                                     $time, c, cl, risk_confirm_i);
+`endif
                     end else if (busy_q[c][cl] && tick_i[c][cl] && timer_q[c][cl] != {CounterWidth{1'b1}}) begin
                         timer_q[c][cl] <= timer_q[c][cl] + 1'b1; // Increment timer if core is busy and no heartbeat
                     end
