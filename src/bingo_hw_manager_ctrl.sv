@@ -168,6 +168,9 @@ module bingo_hw_manager_ctrl #(
     // slots stay awake after the last one (0: off)
     input  logic [NumClusters-1:0]                   cluster_access_i,
     input  logic [31:0]                              access_hold_i,
+    // Recovery hold in top-clock cycles, 32 bits (0: off, max 2^32-1).
+    input  logic [31:0]                              recovery_hold_i = '0,
+    input  logic [NumCores-1:0][NumClusters-1:0]     retired_i = '0,
     // Host park request, checkout / ready empty, and a push into the slot
     // this cycle (route, replay, or import). See the parking note above.
     input  logic [NumCores-1:0][NumClusters-1:0]     park_req_i = '0,
@@ -200,6 +203,10 @@ module bingo_hw_manager_ctrl #(
 
     // Power manager: slots that do not keep their domain at the normal level
     output logic [NumCores-1:0][NumClusters-1:0] pm_idle_o,
+    // Post-edge recovery activity for the event logger (not a PM input).
+    output logic [NumCores-1:0][NumClusters-1:0] rec_hold_o,
+    // Slots otherwise PM-idle, awake only because their cluster is accessed.
+    output logic [NumCores-1:0][NumClusters-1:0] access_only_o,
     // Load monitor: slots whose pending count is cleared
     output logic [NumCores-1:0][NumClusters-1:0] load_clear_o,
     // Watchdog: the slot's timer advances this cycle
@@ -492,6 +499,44 @@ module bingo_hw_manager_ctrl #(
     assign park_unpark_o = park_unpark_q;
     assign park_fail_o   = park_fail_q;
 
+    // A fence writes the SMT first. On the following edge, load its current
+    // live substitute, unless the logical slot has already retired. Include
+    // affected dead entries when their previous substitute is fenced again.
+    logic [NumCores-1:0][NumClusters-1:0] rec_pending_q, rec_load;
+    logic [NumCores-1:0][NumClusters-1:0][31:0] rec_hold_q, rec_hold_d;
+    always_comb begin
+        rec_load = '0;
+        for (int c = 0; c < NumCores; c++) begin
+            for (int cl = 0; cl < NumClusters; cl++) begin
+                if (rec_pending_q[c][cl] && !retired_i[c][cl] && smt_found_q[c][cl] &&
+                    !fenced_i[smt_core_q[c][cl]][smt_cluster_q[c][cl]])
+                    rec_load[smt_core_q[c][cl]][smt_cluster_q[c][cl]] = 1'b1;
+            end
+        end
+        for (int c = 0; c < NumCores; c++) begin
+            for (int cl = 0; cl < NumClusters; cl++) begin
+                rec_hold_d[c][cl] = rec_hold_q[c][cl];
+                if (fenced_i[c][cl]) rec_hold_d[c][cl] = '0;
+                else if (rec_load[c][cl] && recovery_hold_i != 0)
+                    rec_hold_d[c][cl] = recovery_hold_i;
+                else if (rec_hold_q[c][cl] != 0)
+                    rec_hold_d[c][cl] = rec_hold_q[c][cl] - 32'd1;
+                // The logger samples this on the very edge the count changes,
+                // so pending-event ages refer to load/zero, not one edge later.
+                rec_hold_o[c][cl] = rec_hold_d[c][cl] != 0;
+            end
+        end
+    end
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            rec_pending_q <= '0;
+            rec_hold_q <= '0;
+        end else begin
+            rec_pending_q <= recompute & fenced_i & ~retired_i;
+            rec_hold_q <= rec_hold_d;
+        end
+    end
+
     // ------------------------------------------------------------------
     // Fault-aware power and load view
     // ------------------------------------------------------------------
@@ -530,6 +575,9 @@ module bingo_hw_manager_ctrl #(
         for (int unsigned c = 0; c < NumCores; c++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
                 pm_idle_o[c][cl] = slot_idle[c][cl] && (idle_cnt_q[c][cl] >= idle_delay_i) && !cluster_awake[cl];
+                access_only_o[c][cl] = slot_idle[c][cl] && (idle_cnt_q[c][cl] >= idle_delay_i) &&
+                                       cluster_awake[cl] && rec_hold_q[c][cl] == 0;
+                pm_idle_o[c][cl] &= rec_hold_q[c][cl] == 0;
             end
         end
     end
@@ -647,6 +695,15 @@ module bingo_hw_manager_ctrl #(
     end
 
 `ifndef SYNTHESIS
+    always @(posedge clk_i) begin
+        if (rst_ni) begin
+            for (int c = 0; c < NumCores; c++)
+                for (int cl = 0; cl < NumClusters; cl++)
+                    if ((rec_hold_q[c][cl] != 0) != (rec_hold_d[c][cl] != 0))
+                        $display("[BINGO_RECOVERY_HOLD] %0t core=%0d cluster=%0d active=%0b",
+                                 $time, c, cl, rec_hold_d[c][cl] != 0);
+        end
+    end
     logic [NumCores-1:0][NumClusters-1:0] risk_seen_q;
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin

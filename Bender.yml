@@ -50,6 +50,9 @@ sources:
       - test/tb_bingo_hw_manager_dep_matrix.sv
       - test/tb_bingo_hw_manager_evlog.sv
       - test/tb_bingo_hw_manager_evlog_age.sv
+      - test/tb_bingo_hw_manager_recovery_hold.sv
+      - test/tb_bingo_hw_manager_recovery_hold_cold.sv
+      - test/tb_bingo_hw_manager_pm_access_level.sv
       - test/tb_bingo_hw_manager_top.sv
       - test/tb_bingo_hw_manager_cerf_basic.sv
       - test/tb_bingo_hw_manager_cerf_skip.sv

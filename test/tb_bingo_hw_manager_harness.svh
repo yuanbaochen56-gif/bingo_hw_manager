@@ -973,7 +973,12 @@ logic [63:0] evlog_head [NUM_CHIPLET];
 logic [31:0] evlog_count [NUM_CHIPLET];
 logic [15:0] evlog_dropped [NUM_CHIPLET];
 logic [31:0] evlog_pop [NUM_CHIPLET];
-initial for (int i = 0; i < NUM_CHIPLET; i++) evlog_pop[i] = '0;
+logic [31:0] recovery_hold [NUM_CHIPLET], pm_access_level [NUM_CHIPLET];
+initial for (int i = 0; i < NUM_CHIPLET; i++) begin
+    evlog_pop[i] = '0;
+    recovery_hold[i] = '0;
+    pm_access_level[i] = '0;
+end
 always @(negedge clk_i)
     if (rst_ni && $test$plusargs("EVLOG_DRAIN"))
         for (int i = 0; i < NUM_CHIPLET; i++)
@@ -1082,6 +1087,8 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .bingo_hw_manager_idle_entry_delay_i  ( device_axi_lite_data_t'(`TB_PM_IDLE_DELAY)                    ),
         .bingo_hw_manager_cluster_access_i    ( cluster_access[chiplet_idx]                                 ),
         .bingo_hw_manager_access_wake_hold_i  ( device_axi_lite_data_t'(`TB_PM_ACCESS_HOLD)                   ),
+        .bingo_hw_manager_recovery_hold_i     ( recovery_hold[chiplet_idx]                                  ),
+        .bingo_hw_manager_pm_access_level_i   ( pm_access_level[chiplet_idx]                                ),
         .bingo_hw_manager_park_req_i          ( park_req[chiplet_idx]                                       ),
         .bingo_hw_manager_park_fail_o         ( park_fail[chiplet_idx]                                      ),
         .bingo_hw_manager_risk_late_i         ( risk_late[chiplet_idx]                                      ),

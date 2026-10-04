@@ -41,6 +41,9 @@ module bingo_hw_manager_pm #(
     input  cfg_t        idle_power_level_i,
     // The normal power level specified by the host
     input  cfg_t        normal_power_level_i,
+    // Validated DFS-only external-access servo level; 0 preserves normal.
+    input  cfg_t        access_power_level_i = '0,
+    input  logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_access_only_i = '0,
     // Recovery boost: level of a domain in which a core runs a dead core's
     // tasks (core_boost_i); 0 disables the boost
     input  cfg_t        boost_power_level_i,
@@ -90,6 +93,7 @@ module bingo_hw_manager_pm #(
     // 1. Status Aggregation
     // -------------------------------------------------------------------------
     logic [MAX_DOMAINS-1:0] domain_all_idle;    // 1 if ALL cores in domain are idle
+    logic [MAX_DOMAINS-1:0] domain_access_only;
     logic [MAX_DOMAINS-1:0] domain_boost;       // 1 if a core of the domain is boosted
     logic [MAX_DOMAINS-1:0] domain_derate;      // 1 if a core of the domain is derated
     logic [MAX_DOMAINS-1:0] domain_active_mask; // 1 if at least one core is mapped to this domain
@@ -120,6 +124,7 @@ module bingo_hw_manager_pm #(
     // - Domain 0 -> Normal Power, Domains 1 & 2 -> Idle Power.
     always_comb begin
         domain_all_idle = '1; // Default to true, clear if any core busy
+        domain_access_only = '1;
         domain_boost = '0;
         domain_derate = '0;
         domain_active_mask = '0;
@@ -133,6 +138,8 @@ module bingo_hw_manager_pm #(
                     domain_active_mask[domain_id[core][cluster]] = 1'b1;
                     if (core_status_waiting_task_i[core][cluster] == 1'b0) begin
                         domain_all_idle[domain_id[core][cluster]] = 1'b0;
+                        if (!core_access_only_i[core][cluster])
+                            domain_access_only[domain_id[core][cluster]] = 1'b0;
                     end
                     if (core_boost_i[core][cluster]) begin
                         domain_boost[domain_id[core][cluster]] = 1'b1;
@@ -160,6 +167,9 @@ module bingo_hw_manager_pm #(
         for (int d = 0; d < MAX_DOMAINS; d++) begin
             if (enable_idle_pm_i[0] && domain_all_idle[d]) begin
                 target_power_level[d] = idle_power_level_i[7:0];
+            end else if (enable_idle_pm_i[0] && !pm_mode_i[0] &&
+                         domain_access_only[d] && access_power_level_i != 0) begin
+                target_power_level[d] = access_power_level_i[7:0];
             end else if (enable_idle_pm_i[0] && domain_boost[d] && (boost_power_level_i[7:0] != '0)) begin
                 target_power_level[d] = boost_power_level_i[7:0];
             end else begin

@@ -186,6 +186,8 @@ module bingo_hw_manager_top #(
     // cycles the cluster's domain stays awake after the last one; 0 = off
     input logic [NUM_CLUSTERS_PER_CHIPLET-1:0]  bingo_hw_manager_cluster_access_i = '0,
     input device_axi_lite_data_t                bingo_hw_manager_access_wake_hold_i = '0,
+    input logic [31:0]                         bingo_hw_manager_recovery_hold_i = '0,
+    input logic [31:0]                         bingo_hw_manager_pm_access_level_i = '0,
     // Core parking (bingo_hw_manager_ctrl). Bit (core + cluster*NUM_CORES) asks
     // that logical slot to drain, then send later executing tasks to a live
     // core of its type. 0 leaves placement unchanged. park_fail_o is sticky for
@@ -803,6 +805,13 @@ module bingo_hw_manager_top #(
         end
     end
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_idle;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_rec_hold, ctrl_access_only;
+    logic [31:0] pm_access_level;
+    // Validate all 32 bits before the PM narrows the divider to eight bits.
+    assign pm_access_level =
+        (bingo_hw_manager_pm_access_level_i > 32'(bingo_hw_manager_normal_power_level_i[7:0]) &&
+         bingo_hw_manager_pm_access_level_i < 32'(bingo_hw_manager_idle_power_level_i[7:0])) ?
+        bingo_hw_manager_pm_access_level_i : 32'd0;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_load_clear;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
@@ -1980,6 +1989,8 @@ module bingo_hw_manager_top #(
         // Internal Core status: polling or fenced (bingo_hw_manager_ctrl), so a
         // dead core does not keep its domain at the normal level
         .core_status_waiting_task_i ( ctrl_pm_idle                     ),
+        .access_power_level_i  ( device_axi_lite_data_t'(pm_access_level) ),
+        .core_access_only_i    ( ctrl_access_only                       ),
         // DVFS mode: monitor + notify host
         .pm_mode_i             ( bingo_hw_manager_pm_mode_i             ),
         .dvfs_clint_msip_addr_i( bingo_hw_manager_dvfs_clint_msip_addr_i),
@@ -2164,6 +2175,8 @@ module bingo_hw_manager_top #(
         .idle_delay_i   ( 32'(bingo_hw_manager_idle_entry_delay_i) ),
         .cluster_access_i ( bingo_hw_manager_cluster_access_i ),
         .access_hold_i  ( 32'(bingo_hw_manager_access_wake_hold_i) ),
+        .recovery_hold_i ( bingo_hw_manager_recovery_hold_i ),
+        .retired_i      ( core_retired ),
         .park_req_i     ( park_req         ),
         .checkout_empty_i ( checkout_queue_empty ),
         .ready_empty_i  ( ready_queue_empty ),
@@ -2186,6 +2199,8 @@ module bingo_hw_manager_top #(
         .wd_tick_o      ( ctrl_wd_tick     ),
         .pm_boost_o     ( ctrl_pm_boost    ),
         .pm_idle_o      ( ctrl_pm_idle     ),
+        .rec_hold_o     ( ctrl_rec_hold    ),
+        .access_only_o  ( ctrl_access_only ),
         .load_clear_o   ( ctrl_load_clear  ),
         .smt_found_o    ( smt_found    ),
         .smt_core_o     ( smt_core     ),
@@ -2799,8 +2814,9 @@ module bingo_hw_manager_top #(
     if (EventLogDepth != 0) begin : gen_evlog
         localparam int Slots = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET;
         localparam int Types = 2**CoreTypeIdWidth;
-        localparam int Events = 9 * Slots + Types;
+        localparam int Events = 10 * Slots + Types;
         logic [8:0][NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] seen_q;
+        logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] rec_seen_q;
         logic [Events-1:0] events;
         logic [Events-1:0][15:0] args;
         logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][1:0] reason_q;
@@ -2813,6 +2829,7 @@ module bingo_hw_manager_top #(
             if (!rst_ni) begin
                 seen_q <= '0;
                 reason_q <= '0;
+                rec_seen_q <= '0;
             end else begin
                 seen_q[0] <= core_dead_suspect;
                 seen_q[1] <= core_dead_suspect;
@@ -2823,6 +2840,7 @@ module bingo_hw_manager_top #(
                 seen_q[6] <= park_parked;
                 seen_q[7] <= park_fail;
                 seen_q[8] <= core_retired;
+                rec_seen_q <= ctrl_rec_hold;
                 for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
                     for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
                         reason_q[c][cl] <= (risk[c][cl] && wd_risk_confirm_valid[c][cl] &&
@@ -2849,6 +2867,8 @@ module bingo_hw_manager_top #(
                     events[6 * Slots + s] = park_parked[c][cl] && !seen_q[6][c][cl];
                     events[7 * Slots + s] = park_fail[c][cl] && !seen_q[7][c][cl];
                     events[8 * Slots + s] = core_retired[c][cl] && !seen_q[8][c][cl];
+                    events[9 * Slots + Types + s] = ctrl_rec_hold[c][cl] != rec_seen_q[c][cl];
+                    args[9 * Slots + Types + s] = {15'b0, ctrl_rec_hold[c][cl]};
                 end
             end
             // armed_q (cerf_fb_evt_o) rises in the NBA of this commit edge.

@@ -11,7 +11,7 @@ module bingo_hw_manager_evlog #(
     parameter int unsigned Depth = 32,
     parameter int unsigned AgeWidth = 6,
     localparam int unsigned NumSlots = NumCores * NumClusters,
-    localparam int unsigned NumPending = 9 * NumSlots + NumTypes,
+    localparam int unsigned NumPending = 10 * NumSlots + NumTypes,
     localparam int unsigned PtrWidth = (Depth > 1) ? $clog2(Depth) : 1,
     localparam int unsigned CountWidth = $clog2(Depth + 1)
 ) (
@@ -21,7 +21,8 @@ module bingo_hw_manager_evlog #(
     input logic [31:0] clear_i,
     input logic [31:0] pop_i,
     // Slot groups in order: SUSPECT, CLEAR, FENCE, STUCK, BLOCKED,
-    // RISK, PARKED, PARK_FAIL, RETIRED; then one CERF pulse per type.
+    // RISK, PARKED, PARK_FAIL, RETIRED; then one CERF pulse per type,
+    // followed by RECOVERY_HOLD transitions per slot (arg 1 start, 0 end).
     input logic [NumPending-1:0] event_i,
     input logic [NumPending-1:0][15:0] arg_i,
     input logic move_i,
@@ -52,6 +53,7 @@ module bingo_hw_manager_evlog #(
     int unsigned drops;
 
     function automatic logic [7:0] event_code(input int index);
+        if (index >= 9 * NumSlots + NumTypes) return 8'h0c;
         if (index >= 9 * NumSlots) return 8'h0a;
         case (index / NumSlots)
             0: return 8'h01;
@@ -78,8 +80,9 @@ module bingo_hw_manager_evlog #(
 
     function automatic logic [7:0] event_slot(input int index);
         int slot;
-        if (index >= 9 * NumSlots) return 8'(index - 9 * NumSlots);
-        slot = index % NumSlots;
+        if (index >= 9 * NumSlots + NumTypes) slot = index - 9 * NumSlots - NumTypes;
+        else if (index >= 9 * NumSlots) return 8'(index - 9 * NumSlots);
+        else slot = index % NumSlots;
         return {4'(slot / NumCores), 4'(slot % NumCores)};
     endfunction
 
