@@ -1081,6 +1081,12 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .bingo_hw_manager_pm_base_addr_i      ( '0                                                          ),
         .bingo_hw_manager_core_power_domain_i ( pm_core_domain                                              ),
         .bingo_hw_manager_pm_mode_i           ( '0                                                          ),
+        // HeMAiA DVFS_CLINT_MSIP_ADDR CSR reset is 0; pm_mode_i[0]=0 gates the doorbell.
+        .bingo_hw_manager_dvfs_clint_msip_addr_i ( '0                                                        ),
+        // HeMAiA DVFS_ACK CSR reset is 0; pm_mode_i[0]=0 gates the acknowledged level.
+        .bingo_hw_manager_dvfs_ack_i          ( '0                                                          ),
+        // Standalone DFS TB does not need the host DVFS request output.
+        .bingo_hw_manager_dvfs_request_o      (                                                             ),
         .pm_axi_lite_req_o                    ( /* unused */                                                ),
         .pm_axi_lite_resp_i                   ( pm_ready_resp                                               ),
         // DARTS Tier 1: CERF interface (stimulus files can drive these)
@@ -1096,6 +1102,10 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         // Watchdog / replay status (probed hierarchically by the stimuli)
         .core_fenced_o                        ( /* unused */                                                ),
         .replay_stuck_o                       ( /* unused */                                                ),
+        // Stimuli probe suspect state hierarchically; no TB output wire is needed.
+        .core_dead_suspect_o                  (                                                             ),
+        // Stimuli probe blocked state hierarchically; no TB output wire is needed.
+        .replay_blocked_o                     (                                                             ),
         // Level 3 remote dispatch (see gen_remote_link)
         .remote_dispatch_valid_o              ( rd_valid[chiplet_idx]                                       ),
         .remote_dispatch_ready_i              ( rd_in_ready[chiplet_idx]                                    ),
