@@ -21,6 +21,10 @@
 `include "axi/assign.svh"
 `include "axi/port.svh"
 
+`ifndef TB_EVLOG_DEPTH
+  `define TB_EVLOG_DEPTH 0
+`endif
+
 import axi_pkg::*;
 import axi_test::*;
 
@@ -965,6 +969,15 @@ initial for (int i = 0; i < NUM_CHIPLET; i++) cluster_access[i] = '0;
 // Default 0: placement matches a run with parking left unused.
 device_axi_lite_data_t park_req  [NUM_CHIPLET];
 device_axi_lite_data_t park_fail [NUM_CHIPLET];
+logic [63:0] evlog_head [NUM_CHIPLET];
+logic [31:0] evlog_count [NUM_CHIPLET];
+logic [15:0] evlog_dropped [NUM_CHIPLET];
+logic [31:0] evlog_pop [NUM_CHIPLET];
+initial for (int i = 0; i < NUM_CHIPLET; i++) evlog_pop[i] = '0;
+always @(negedge clk_i)
+    if (rst_ni && $test$plusargs("EVLOG_DRAIN"))
+        for (int i = 0; i < NUM_CHIPLET; i++)
+            if (evlog_count[i] != 0) evlog_pop[i]++;
 initial for (int i = 0; i < NUM_CHIPLET; i++) park_req[i] = '0;
 // Fault precursors (late threshold, policy, halving epoch, clear bitmap) and
 // the at-risk bitmap. Default 0: off, as in a run without these ports.
@@ -1013,6 +1026,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .SubstituteLevelMask                 ( `TB_SUBSTITUTE_LEVEL_MASK           ),
         .SubstitutePolicy                    ( `TB_SUBSTITUTE_POLICY               ),
         .ForeignStuckDrain                   ( `TB_FOREIGN_STUCK_DRAIN             ),
+        .EventLogDepth                       ( `TB_EVLOG_DEPTH                     ),
         .RemoteNumPeers                      ( RL_NUM_PEERS                        ),
         .ImportSubstituteLevelMask           ( `TB_IMPORT_SUBSTITUTE_LEVEL_MASK    ),
         .CsrHeartbeatAddr                    ( `TB_CSR_HEARTBEAT_ADDR              ),
@@ -1097,6 +1111,12 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .cerf_fb_clear_i                      ( cerf_fb_clear[chiplet_idx]                                   ),
         .cerf_fb_set_i                        ( cerf_fb_set[chiplet_idx]                                     ),
         .cerf_fb_evt_o                        ( cerf_fb_evt[chiplet_idx]                                     ),
+        .evlog_enable_i                      ( `TB_EVLOG_DEPTH != 0                                        ),
+        .evlog_clear_i                       ( '0                                                          ),
+        .evlog_pop_i                         ( evlog_pop[chiplet_idx]                                      ),
+        .evlog_head_o                        ( evlog_head[chiplet_idx]                                     ),
+        .evlog_count_o                       ( evlog_count[chiplet_idx]                                    ),
+        .evlog_dropped_o                     ( evlog_dropped[chiplet_idx]                                  ),
         // DARTS: Load monitor
         .load_total_pending_o                 ( /* unused */                                                ),
         // Watchdog / replay status (probed hierarchically by the stimuli)
@@ -1137,6 +1157,9 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .remote_timeout_o                     ( remote_timeout[chiplet_idx]                                 ),
         .remote_done_mismatch_o               ( /* probed below */                                          )
     );
+    if (`TB_EVLOG_DEPTH != 0) begin : gen_evlog_check
+        `include "tb_bingo_evlog_monitor.svh"
+    end
     always @(posedge clk_i) begin
         if (rst_ni && (`TB_ALLOW_DONE_MISMATCH == 0) && i_dut.remote_done_mismatch_o) begin
             $error("[REMOTE_LINK] chip %0d: remote done does not match the proxy head", chiplet_idx);

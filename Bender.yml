@@ -21,6 +21,7 @@ sources:
   - src/bingo_hw_manager_csr_to_fifo_write.sv  # CSR to FIFO Write 
   - src/bingo_hw_manager_csr_to_fifo_read.sv   # CSR to FIFO Read
   - src/bingo_hw_manager_csr_to_fifo.sv        # CSR to FIFO Interface Module
+  - src/bingo_hw_manager_evlog.sv              # Observation-only control event FIFO
   # Level 1
   - src/bingo_hw_manager_cond_exec_controller.sv # DARTS: CERF
   - src/bingo_hw_manager_load_monitor.sv         # DARTS: Load Monitor
@@ -47,6 +48,8 @@ sources:
     files:
       - test/bingo_tb_axi_lite_stall.sv                    # helper: random AXI-Lite handshake stalls
       - test/tb_bingo_hw_manager_dep_matrix.sv
+      - test/tb_bingo_hw_manager_evlog.sv
+      - test/tb_bingo_hw_manager_evlog_age.sv
       - test/tb_bingo_hw_manager_top.sv
       - test/tb_bingo_hw_manager_cerf_basic.sv
       - test/tb_bingo_hw_manager_cerf_skip.sv

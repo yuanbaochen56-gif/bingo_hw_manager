@@ -91,6 +91,8 @@ module bingo_hw_manager_top #(
     parameter int unsigned DoneQueueDepth = 32,
     parameter int unsigned CheckoutQueueDepth = 8,
     parameter int unsigned ReadyQueueDepth = 8,
+    parameter int unsigned EventLogDepth = 0,
+    parameter int unsigned EventLogAgeWidth = 6,
     // Level 3 export queues: one per peer of the transport (e.g.
     // bingo_hw_manager_remote_link NumPeers), each deep enough for a whole
     // checkout queue, so a peer without credits only holds its own exports
@@ -232,6 +234,13 @@ module bingo_hw_manager_top #(
     input  logic [2**CoreTypeIdWidth-1:0][4:0]  cerf_fb_clear_i = '0,
     input  logic [2**CoreTypeIdWidth-1:0][4:0]  cerf_fb_set_i = '0,
     output logic [2**CoreTypeIdWidth-1:0]       cerf_fb_evt_o,
+    // Observation-only event log. CLEAR/POP trigger once per value change.
+    input logic                                evlog_enable_i = 1'b0,
+    input logic [31:0]                         evlog_clear_i = '0,
+    input logic [31:0]                         evlog_pop_i = '0,
+    output logic [63:0]                        evlog_head_o,
+    output logic [31:0]                        evlog_count_o,
+    output logic [15:0]                        evlog_dropped_o,
     // DARTS: Load Monitor output (CSR readable)
     output logic [10:0]                         load_total_pending_o,
     // Watchdog: confirmed dead cores (sticky). The system may reset / isolate them.
@@ -2785,6 +2794,97 @@ module bingo_hw_manager_top #(
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) remote_rejected_q <= '0;
         else         remote_rejected_q <= remote_rejected_q | remote_reject_in | proxy_timeout;
+    end
+
+    if (EventLogDepth != 0) begin : gen_evlog
+        localparam int Slots = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET;
+        localparam int Types = 2**CoreTypeIdWidth;
+        localparam int Events = 9 * Slots + Types;
+        logic [8:0][NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] seen_q;
+        logic [Events-1:0] events;
+        logic [Events-1:0][15:0] args;
+        logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][1:0] reason_q;
+        logic [7:0] move_code, move_slot;
+        logic [15:0] move_arg;
+
+        // The watchdog commits fenced one edge before the existing top print.
+        // Keep that edge's reason, without reading or changing its control.
+        always_ff @(posedge clk_i or negedge rst_ni) begin
+            if (!rst_ni) begin
+                seen_q <= '0;
+                reason_q <= '0;
+            end else begin
+                seen_q[0] <= core_dead_suspect;
+                seen_q[1] <= core_dead_suspect;
+                seen_q[2] <= core_fenced;
+                seen_q[3] <= replay_stuck_slot;
+                seen_q[4] <= replay_blocked_o;
+                seen_q[5] <= risk;
+                seen_q[6] <= park_parked;
+                seen_q[7] <= park_fail;
+                seen_q[8] <= core_retired;
+                for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
+                    for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
+                        reason_q[c][cl] <= (risk[c][cl] && wd_risk_confirm_valid[c][cl] &&
+                            bingo_hw_manager_risk_confirm_i != 0) ? 2'd1 :
+                            ((wd_confirm_thr[c][cl] != 0) ? 2'd2 : 2'd0);
+            end
+        end
+
+        always_comb begin
+            events = '0;
+            args = '0;
+            for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
+                for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
+                    automatic int s = c + cl * NUM_CORES_PER_CLUSTER;
+                    events[0 * Slots + s] = core_dead_suspect[c][cl] &&
+                        !seen_q[0][c][cl] && !core_fenced[c][cl];
+                    events[1 * Slots + s] = !core_dead_suspect[c][cl] &&
+                        seen_q[1][c][cl] && !core_fenced[c][cl];
+                    events[2 * Slots + s] = core_fenced[c][cl] && !seen_q[2][c][cl];
+                    args[2 * Slots + s] = {14'b0, reason_q[c][cl]};
+                    events[3 * Slots + s] = replay_stuck_slot[c][cl] && !seen_q[3][c][cl];
+                    events[4 * Slots + s] = replay_blocked_o[c][cl] && !seen_q[4][c][cl];
+                    events[5 * Slots + s] = risk[c][cl] && !seen_q[5][c][cl];
+                    events[6 * Slots + s] = park_parked[c][cl] && !seen_q[6][c][cl];
+                    events[7 * Slots + s] = park_fail[c][cl] && !seen_q[7][c][cl];
+                    events[8 * Slots + s] = core_retired[c][cl] && !seen_q[8][c][cl];
+                end
+            end
+            // armed_q (cerf_fb_evt_o) rises in the NBA of this commit edge.
+            // Observe its proven next-state rise, not a delayed sampled rise:
+            // this is exactly the existing [BINGO_CERF_FB] print edge.
+            for (int t = 0; t < Types; t++) begin
+                events[9 * Slots + t] = cerf_fb_done && cerf_fb_req &&
+                    cerf_fb_type == CoreTypeIdWidth'(t) && cerf_fb_en_i[t] &&
+                    !cerf_fb_evt_o[t];
+                args[9 * Slots + t] = {6'b0, cerf_fb_set_i[t], cerf_fb_clear_i[t]};
+            end
+            move_code = replay_bounce ? 8'h0e :
+                        ((replay_data.task_type == 2'b01) ? 8'h0d : 8'h04);
+            move_slot = {4'(replay_src_cluster), 4'(replay_src_core)};
+            move_arg = {((replay_bounce) ? 4'h0 : ((replay_rotate) ? 4'hf :
+                4'(replay_dst_core + replay_dst_cluster * NUM_CORES_PER_CLUSTER))),
+                12'(replay_data.task_id)};
+        end
+        bingo_hw_manager_evlog #(
+            .NumCores(NUM_CORES_PER_CLUSTER),
+            .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
+            .NumTypes(Types),
+            .Depth(EventLogDepth),
+            .AgeWidth(EventLogAgeWidth)
+        ) i_evlog (
+            .clk_i, .rst_ni, .enable_i(evlog_enable_i),
+            .clear_i(evlog_clear_i), .pop_i(evlog_pop_i),
+            .event_i(events), .arg_i(args),
+            .move_i(replay_move_fire && !replay_bounce || replay_bounce),
+            .move_code_i(move_code), .move_slot_i(move_slot), .move_arg_i(move_arg),
+            .head_o(evlog_head_o), .count_o(evlog_count_o), .dropped_o(evlog_dropped_o)
+        );
+    end else begin : gen_no_evlog
+        assign evlog_head_o = '0;
+        assign evlog_count_o = '0;
+        assign evlog_dropped_o = '0;
     end
 
 `ifndef SYNTHESIS
