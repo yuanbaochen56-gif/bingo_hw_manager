@@ -140,6 +140,7 @@ module bingo_hw_manager_ctrl #(
         {(NumCores * NumClusters){CoreTypeIdWidth'(1)}},
     // Substitute levels (see bingo_hw_manager_top SubstituteLevelMask)
     parameter logic [2:0] SubstituteLevelMask = 3'b001,
+    parameter logic [2**CoreTypeIdWidth-1:0] SubstituteL2TypeEn = '1,
     // Substitute choice (see above) and width of load_i
     parameter int unsigned SubstitutePolicy = 0,
     parameter int unsigned LoadWidth = 4,
@@ -256,6 +257,7 @@ module bingo_hw_manager_ctrl #(
                 .CoreTypeIdWidth(CoreTypeIdWidth),
                 .CoreTypeId(CoreTypeId),
                 .LevelMask(SubstituteLevelMask),
+                .L2TypeEn(SubstituteL2TypeEn),
                 .LeastWeight(SubstitutePolicy == 1),
                 .WeightWidth(LoadWidth)
             ) i_choice (
@@ -336,6 +338,7 @@ module bingo_hw_manager_ctrl #(
                 .CoreTypeIdWidth(CoreTypeIdWidth),
                 .CoreTypeId(CoreTypeId),
                 .LevelMask(SubstituteLevelMask),
+                .L2TypeEn(SubstituteL2TypeEn),
                 .LeastWeight(SubstitutePolicy == 1),
                 .WeightWidth(LoadWidth)
             ) i_park_choice (

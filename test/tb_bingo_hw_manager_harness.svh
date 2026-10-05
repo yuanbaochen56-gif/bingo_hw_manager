@@ -85,6 +85,9 @@ import axi_test::*;
 `ifndef TB_SUBSTITUTE_LEVEL_MASK
   `define TB_SUBSTITUTE_LEVEL_MASK 3'b001
 `endif
+`ifndef TB_SUBSTITUTE_L2_TYPE_EN
+  `define TB_SUBSTITUTE_L2_TYPE_EN 16'hffff
+`endif
 // Level 3: connect the remote dispatch / done streams of chiplet i to chiplet
 // (i + 1) % NUM_CHIPLET (back to back; needs TB_SUBSTITUTE_LEVEL_MASK[2])
 // Import stand-in levels (bingo_hw_manager_top ImportSubstituteLevelMask)
@@ -1029,6 +1032,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .CoreTypeIdWidth                     ( 4                                   ),
         .CoreTypeId                          ( `TB_CORE_TYPE_ID                    ),
         .SubstituteLevelMask                 ( `TB_SUBSTITUTE_LEVEL_MASK           ),
+        .SubstituteL2TypeEn                  ( `TB_SUBSTITUTE_L2_TYPE_EN           ),
         .SubstitutePolicy                    ( `TB_SUBSTITUTE_POLICY               ),
         .ForeignStuckDrain                   ( `TB_FOREIGN_STUCK_DRAIN             ),
         .EventLogDepth                       ( `TB_EVLOG_DEPTH                     ),

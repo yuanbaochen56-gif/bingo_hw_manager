@@ -38,7 +38,7 @@ module bingo_hw_manager_top #(
     // tasks of the other once that one is fenced; a substitute in the dead core's
     // own cluster is preferred. Give
     // cores whose tasks only work in their own cluster (e.g. operands in local
-    // L1 at local addresses) a different type per cluster. Type 0: the slot
+    // L1 at local addresses) a cleared SubstituteL2TypeEn bit. Type 0: the slot
     // neither hands over its tasks nor takes over others' (e.g. a host slot).
     // Default: all cores of the chiplet are interchangeable.
     parameter int unsigned CoreTypeIdWidth = 4,
@@ -52,6 +52,9 @@ module bingo_hw_manager_top #(
     // Default: level 1 only. Without WatchdogConfirmTimeoutCycles nothing is
     // fenced and this mask has no effect (detection only).
     parameter logic [2:0] SubstituteLevelMask = 3'b001,
+    // A cleared bit keeps that core type within its assigned cluster.
+    // Same-cluster substitutes remain enabled by SubstituteLevelMask[0].
+    parameter logic [2**CoreTypeIdWidth-1:0] SubstituteL2TypeEn = '1,
     // Levels an imported task (level 3, from another chiplet) may use to find a
     // live stand-in for its home slot here (bit 2 is ignored: never re-exported).
     // Default: the local levels of SubstituteLevelMask. Setting it apart from
@@ -2157,6 +2160,7 @@ module bingo_hw_manager_top #(
         .CoreTypeIdWidth(CoreTypeIdWidth),
         .CoreTypeId(CoreTypeId),
         .SubstituteLevelMask(SubstituteLevelMask),
+        .SubstituteL2TypeEn(SubstituteL2TypeEn),
         .SubstitutePolicy(SubstitutePolicy),
         .LoadWidth(CheckoutUsageWidth + 1),
         .ParkSupported(READY_AND_DONE_QUEUE_INTERFACE_TYPE == 1)
@@ -2639,7 +2643,8 @@ module bingo_hw_manager_top #(
             .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
             .CoreTypeIdWidth(CoreTypeIdWidth),
             .CoreTypeId(CoreTypeId),
-            .LevelMask(ImportSubstituteLevelMask & 3'b011)
+            .LevelMask(ImportSubstituteLevelMask & 3'b011),
+            .L2TypeEn(SubstituteL2TypeEn)
         ) i_import_sel (
             .logical_core_i(import_home_core),
             .logical_cluster_i(import_home_cluster),

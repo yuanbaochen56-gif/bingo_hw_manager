@@ -74,6 +74,9 @@ sources:
       - test/tb_bingo_hw_manager_type_thr_replay.sv
       - test/tb_bingo_hw_manager_risk_confirm_replay.sv
       - test/tb_bingo_hw_manager_core_remap.sv
+      - test/tb_bingo_hw_manager_cluster_bound_sel.sv
+      - test/tb_bingo_hw_manager_cluster_bound_fence.sv
+      - test/tb_bingo_hw_manager_cluster_bound_park.sv
       - test/tb_bingo_hw_manager_remap_probe.sv
       - test/tb_bingo_hw_manager_remap_full_flow.sv
       - test/tb_bingo_hw_manager_heartbeat.sv

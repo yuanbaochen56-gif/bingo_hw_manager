@@ -8,7 +8,7 @@
 // Candidates are the logical slot itself and every slot of the chiplet with the
 // same non-zero CoreTypeId that LevelMask allows, minus the fenced slots:
 //   LevelMask[0] (level 1) slots of the logical cluster
-//   LevelMask[1] (level 2) slots of the other clusters of the chiplet
+//   LevelMask[1] (level 2) slots of the other clusters, enabled by core type
 // The logical cluster is searched first, then the other clusters in index
 // order; within a cluster the lowest core wins. With LeastWeight the candidate
 // with the lowest weight_i wins instead (e.g. its queue occupancy), still in the
@@ -27,6 +27,7 @@ module bingo_hw_manager_substitute_sel #(
     // Substitute levels (see bingo_hw_manager_top SubstituteLevelMask); bit 2
     // (remote chiplet) is not handled here
     parameter logic [2:0] LevelMask = 3'b001,
+    parameter logic [2**CoreTypeIdWidth-1:0] L2TypeEn = '1,
     // Among the candidates of a level: lowest index (0) or lowest weight_i (1)
     parameter bit          LeastWeight = 1'b0,
     parameter int unsigned WeightWidth = 1
@@ -53,7 +54,8 @@ module bingo_hw_manager_substitute_sel #(
                 candidate[c][cl] = logical_in_range && !fenced_i[c][cl] &&
                     (((c == int'(logical_core_i)) && (cl == int'(logical_cluster_i))) ||
                      ((logical_type != '0) && (CoreTypeId[c][cl] == logical_type) &&
-                      ((cl == int'(logical_cluster_i)) ? LevelMask[0] : LevelMask[1])));
+                      ((cl == int'(logical_cluster_i)) ? LevelMask[0] :
+                       (LevelMask[1] && L2TypeEn[logical_type]))));
             end
         end
     end
