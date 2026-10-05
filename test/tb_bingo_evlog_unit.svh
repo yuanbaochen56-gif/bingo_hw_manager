@@ -1,8 +1,8 @@
 logic clk = 0, rst = 0, enable = 0, move = 0;
 always #5 clk = ~clk;
 logic [31:0] clear = 0, pop = 0, count;
-logic [21:0] events = 0;
-logic [21:0][15:0] args = '0;
+logic [23:0] events = 0;
+logic [23:0][15:0] args = '0;
 logic [7:0] code = 4, slot = 0;
 logic [15:0] arg = 0, dropped;
 logic [63:0] head;

@@ -77,6 +77,12 @@ sources:
       - test/tb_bingo_hw_manager_cluster_bound_sel.sv
       - test/tb_bingo_hw_manager_cluster_bound_fence.sv
       - test/tb_bingo_hw_manager_cluster_bound_park.sv
+      - test/tb_bingo_hw_manager_exit_remap.sv
+      - test/tb_bingo_hw_manager_exit_replay.sv
+      - test/tb_bingo_hw_manager_exit_after_exit.sv
+      - test/tb_bingo_hw_manager_exit_own.sv
+      - test/tb_bingo_hw_manager_exit_l3.sv
+      - test/tb_bingo_hw_manager_exit_layout.sv
       - test/tb_bingo_hw_manager_remap_probe.sv
       - test/tb_bingo_hw_manager_remap_full_flow.sv
       - test/tb_bingo_hw_manager_heartbeat.sv

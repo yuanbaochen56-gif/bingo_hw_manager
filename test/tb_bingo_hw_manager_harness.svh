@@ -260,6 +260,7 @@ typedef struct packed {
 } bingo_hw_manager_dep_set_info_t;
 
 typedef struct packed {
+    logic                                        is_exit;
     bingo_hw_manager_dep_set_info_t              dep_set_info;
     bingo_hw_manager_dep_check_info_t            dep_check_info;
     bingo_hw_manager_assigned_core_id_t          assigned_core_id;
@@ -284,6 +285,7 @@ end
 
 typedef struct packed {
     logic [ReservedBitsForTaskDesc-1:0]          reserved_bits;
+    logic                                        is_exit;
     bingo_hw_manager_dep_set_info_t              dep_set_info;
     bingo_hw_manager_dep_check_info_t            dep_check_info;
     bingo_hw_manager_assigned_core_id_t          assigned_core_id;
@@ -377,6 +379,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_normal_task(
     tmp.cond_exec_en                     = 1'b0;
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
+    tmp.is_exit                          = 1'b0;
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
@@ -404,6 +407,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_check_task(
     tmp.cond_exec_en                     = 1'b0;
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
+    tmp.is_exit                          = 1'b0;
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
@@ -437,6 +441,7 @@ function automatic bingo_hw_manager_task_desc_full_t pack_dummy_set_task(
     tmp.cond_exec_en                     = 1'b0;
     tmp.cond_exec_group_id               = 5'b0;
     tmp.cond_exec_invert                 = 1'b0;
+    tmp.is_exit                          = 1'b0;
     tmp.reserved_bits                    = '0;
     return tmp;
 endfunction
