@@ -258,6 +258,10 @@ module bingo_hw_manager_top #(
     // Watchdog: busy cores without heartbeat for WatchdogHeartbeatTimeoutCycles
     // (not sticky, cleared by a heartbeat or a done)
     output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    core_dead_suspect_o,
+    // A ready task waits in the slot's ready queue: lets a reader of the CSR
+    // ready queue (which stalls while it is empty) poll without blocking.
+    // Always 0 with the AXI-Lite mailbox queues, which have their own status.
+    output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    ready_queue_pending_o,
     // Level 3 remote dispatch (SubstituteLevelMask[2]; unused and tied off
     // otherwise, all inputs have defaults). valid/ready streams.
     // Export: a task of this chiplet that no live core here may run. Its
@@ -2068,6 +2072,7 @@ module bingo_hw_manager_top #(
     assign wd_late_cycles = (bingo_hw_manager_risk_late_i > device_axi_lite_data_t'({WatchdogCounterWidth{1'b1}})) ?
                             {WatchdogCounterWidth{1'b1}} : bingo_hw_manager_risk_late_i[WatchdogCounterWidth-1:0];
     assign core_dead_suspect_o = core_dead_suspect;
+    assign ready_queue_pending_o = (READY_AND_DONE_QUEUE_INTERFACE_TYPE == 0) ? '0 : ~ready_queue_empty;
     // Validate the full CSR before narrowing it. A valid R is below C and fits.
     assign wd_risk_confirm = (WatchdogConfirmTimeoutCycles != 0 &&
                              bingo_hw_manager_risk_confirm_i > WatchdogHeartbeatTimeoutCycles &&
