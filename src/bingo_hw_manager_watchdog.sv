@@ -11,6 +11,7 @@ module bingo_hw_manager_watchdog #(
     // that does not send heartbeats, or a tied-off slot).
     parameter logic [NumCores-1:0][NumClusters-1:0] CoreMask = '1,
     parameter int unsigned CoreTypeIdWidth = 4,
+    parameter int unsigned WdClassWidth = 3,
     parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId = '0
 ) (
     input  logic clk_i,
@@ -34,12 +35,18 @@ module bingo_hw_manager_watchdog #(
     input  logic [NumCores-1:0][NumClusters-1:0] risk_confirm_valid_i = '1,
     input  logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] suspect_thr_i = '0,
     input  logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] confirm_thr_i = '0,
+    // The adaptive source only asserts validity for a nonzero threshold.
+    input  logic [NumCores-1:0][NumClusters-1:0] suspect_thr_valid_i = '0,
+    input  logic [NumCores-1:0][NumClusters-1:0] adapt_confirm_i = '0,
+    input  logic [NumCores-1:0][NumClusters-1:0][WdClassWidth-1:0] wd_class_i = '0,
 
     output logic [NumCores-1:0][NumClusters-1:0] core_busy_o,      // Indicates when a core is currently executing a task
     output logic [NumCores-1:0][NumClusters-1:0] core_available_o,  // Indicates when a core is available for new tasks
     output logic [NumCores-1:0][NumClusters-1:0] core_dead_suspect_o,   // Indicates when a core is suspected to be dead (no heartbeat for too long)
     output logic [NumCores-1:0][NumClusters-1:0] core_fenced_o,     // Confirmed dead (sticky): the core is isolated from the manager
-    output logic [NumCores-1:0][NumClusters-1:0] late_o             // One-cycle pulse per late beat
+    output logic [NumCores-1:0][NumClusters-1:0] late_o,            // One-cycle pulse per late beat
+    output logic [NumCores-1:0][NumClusters-1:0] progress_o,
+    output logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] interval_o
 );
 
     localparam int unsigned MaxTimeoutCycles =
@@ -78,13 +85,18 @@ module bingo_hw_manager_watchdog #(
                 // fake recovery.
                 core_dead_suspect_o[c][cl] = fenced_q[c][cl] ||
                                              (CoreMask[c][cl] && busy_q[c][cl] &&
-                                              (timer_q[c][cl] >= ((suspect_thr_i[c][cl] != '0) ?
+                                              (timer_q[c][cl] >= ((suspect_thr_i[c][cl] != '0 || suspect_thr_valid_i[c][cl]) ?
                                                suspect_thr_i[c][cl] : HeartbeatTimeoutCycles[CounterWidth-1:0])));
                 core_available_o[c][cl] = waiting_task_i[c][cl] && !busy_q[c][cl] && !core_dead_suspect_o[c][cl];
                 // Same priority as the timer update below: a fenced core is ignored
                 late_o[c][cl] = (late_cycles_i != '0) && CoreMask[c][cl] && !fenced_q[c][cl] &&
                                 busy_q[c][cl] && (task_done_i[c][cl] || heartbeat_i[c][cl]) &&
                                 (timer_q[c][cl] >= late_cycles_i);
+                // Matches done -> dispatch -> heartbeat priority. No fenced
+                // interval or heartbeat concurrent with dispatch is learned.
+                progress_o[c][cl] = CoreMask[c][cl] && !fenced_q[c][cl] && busy_q[c][cl] &&
+                    (task_done_i[c][cl] || (!task_dispatched_i[c][cl] && heartbeat_i[c][cl]));
+                interval_o[c][cl] = timer_q[c][cl];
             end
         end
     end
@@ -124,7 +136,10 @@ module bingo_hw_manager_watchdog #(
                         busy_q[c][cl] <= 1'b0;
                         timer_q[c][cl] <= '0;
 `ifndef SYNTHESIS
-                        if (risk_i[c][cl] && risk_confirm_valid_i[c][cl] && risk_confirm_i != '0)
+                        if (adapt_confirm_i[c][cl])
+                            $display("[BINGO_ADAPT_CONFIRM] %0t core=%0d cluster=%0d type=%0d class=%0d threshold=%0d",
+                                     $time, c, cl, CoreTypeId[c][cl], wd_class_i[c][cl], confirm_thr_i[c][cl]);
+                        else if (risk_i[c][cl] && risk_confirm_valid_i[c][cl] && risk_confirm_i != '0)
                             $display("[BINGO_RISK_CONFIRM] %0t core=%0d cluster=%0d threshold=%0d",
                                      $time, c, cl, risk_confirm_i);
                         else if (confirm_thr_i[c][cl] != '0)

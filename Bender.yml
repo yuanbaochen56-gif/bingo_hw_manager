@@ -26,6 +26,7 @@ sources:
   - src/bingo_hw_manager_cond_exec_controller.sv # DARTS: CERF
   - src/bingo_hw_manager_load_monitor.sv         # DARTS: Load Monitor
   - src/bingo_hw_manager_watchdog.sv           # core state monitoring and dead core detection
+  - src/bingo_hw_manager_wd_adapt.sv           # type/class progress interval bounds
   - src/bingo_hw_manager_substitute_sel.sv     # Substitute of a fenced core (remap and replay)
   - src/bingo_hw_manager_core_remap.sv         # Core remap selector
   - src/bingo_hw_manager_replay_ctrl.sv        # Replay of a fenced core's outstanding tasks
@@ -71,6 +72,12 @@ sources:
       - test/tb_bingo_hw_manager_watchdog_risk_confirm_detect.sv
       - test/tb_bingo_hw_manager_watchdog_type_thr.sv
       - test/tb_bingo_hw_manager_watchdog_type_thr_detect.sv
+      - test/tb_bingo_hw_manager_wd_adapt.sv
+      - test/tb_bingo_hw_manager_wd_adapt_boundary.sv
+      - test/tb_bingo_hw_manager_wd_adapt_replay.sv
+      - test/tb_bingo_hw_manager_wd_adapt_layout.sv
+      - test/tb_bingo_hw_manager_wd_adapt_layout_ci.sv
+      - test/tb_bingo_hw_manager_wd_adapt_unavailable.sv
       - test/tb_bingo_hw_manager_type_thr_replay.sv
       - test/tb_bingo_hw_manager_risk_confirm_replay.sv
       - test/tb_bingo_hw_manager_core_remap.sv

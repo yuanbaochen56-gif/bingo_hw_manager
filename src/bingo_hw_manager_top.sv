@@ -42,6 +42,8 @@ module bingo_hw_manager_top #(
     // neither hands over its tasks nor takes over others' (e.g. a host slot).
     // Default: all cores of the chiplet are interchangeable.
     parameter int unsigned CoreTypeIdWidth = 4,
+    parameter int unsigned WdAdaptTypeBits = 2,
+    parameter int unsigned WdClassWidth = 3,
     parameter logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][CoreTypeIdWidth-1:0] CoreTypeId =
         {(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET){CoreTypeIdWidth'(1)}},
     // Where a fenced core's tasks (outstanding: replay, new: remap) may go, per
@@ -215,6 +217,7 @@ module bingo_hw_manager_top #(
     // Zero/invalid entries fall back to the parameters; validate before narrowing.
     input  logic [2**CoreTypeIdWidth-1:0][31:0] wd_type_h_i = '0,
     input  logic [2**CoreTypeIdWidth-1:0][31:0] wd_type_c_i = '0,
+    input  logic [31:0]                        wd_adapt_i = '0,
     output device_axi_lite_data_t               bingo_hw_manager_risk_o,
     input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
     input device_axi_lite_data_t                bingo_hw_manager_normal_power_level_i,
@@ -357,6 +360,7 @@ module bingo_hw_manager_top #(
 
     // Task info struct (DARTS: includes conditional execution fields)
     typedef struct packed{
+        logic [WdClassWidth-1:0]                     wd_class;
         logic                                        is_exit;
         bingo_hw_manager_dep_set_info_t              dep_set_info;
         bingo_hw_manager_dep_check_info_t            dep_check_info;
@@ -379,8 +383,12 @@ module bingo_hw_manager_top #(
         end
     end
 
-    localparam int unsigned TaskDescWidth = $bits(bingo_hw_manager_task_desc_t);
+    // Retain the legacy width/offset of is_exit. Class is optional metadata
+    // in the low reserved bits, never an extension of the host descriptor.
+    localparam int unsigned WdTaskDescWidth = $bits(bingo_hw_manager_task_desc_t);
+    localparam int unsigned TaskDescWidth = WdTaskDescWidth - WdClassWidth;
     localparam int unsigned ReservedBitsForTaskDesc = HostAxiLiteDataWidth - TaskDescWidth;
+    localparam bit WdClassAvail = (ReservedBitsForTaskDesc >= WdClassWidth);
     if (TaskDescWidth>HostAxiLiteDataWidth) begin : gen_task_desc_width_check
         initial begin
         $error("Task Decriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", TaskDescWidth, HostAxiLiteDataWidth);
@@ -403,6 +411,34 @@ module bingo_hw_manager_top #(
         logic [4:0]                                  cond_exec_group_id;
         logic                                        cond_exec_invert;
     } bingo_hw_manager_task_desc_full_t;
+
+    if (WdClassAvail) begin : gen_wd_class
+        function automatic logic [WdClassWidth-1:0] get_class(
+            input bingo_hw_manager_task_desc_full_t f);
+            return f.reserved_bits[WdClassWidth-1:0];
+        endfunction
+        function automatic bingo_hw_manager_task_desc_full_t set_class(
+            input bingo_hw_manager_task_desc_full_t f,
+            input logic [WdClassWidth-1:0] wd_class);
+            bingo_hw_manager_task_desc_full_t result;
+            result = f;
+            result.reserved_bits[WdClassWidth-1:0] = wd_class;
+            return result;
+        endfunction
+    end else begin : gen_wd_class
+        function automatic logic [WdClassWidth-1:0] get_class(
+            input bingo_hw_manager_task_desc_full_t f);
+            return '0;
+        endfunction
+        function automatic bingo_hw_manager_task_desc_full_t set_class(
+            input bingo_hw_manager_task_desc_full_t f,
+            input logic [WdClassWidth-1:0] wd_class);
+            return f;
+        endfunction
+`ifndef SYNTHESIS
+        initial $info("A7 class unavailable: %0d reserved bits", ReservedBitsForTaskDesc);
+`endif
+    end
 
     // Level 3 remote dispatch
     localparam bit RemoteEn = SubstituteLevelMask[2];
@@ -466,7 +502,7 @@ module bingo_hw_manager_top #(
         f.cond_exec_en        = d.cond_exec_en;
         f.cond_exec_group_id  = d.cond_exec_group_id;
         f.cond_exec_invert    = d.cond_exec_invert;
-        return f;
+        return gen_wd_class.set_class(f, d.wd_class);
     endfunction
 
     // Done info struct
@@ -901,6 +937,13 @@ module bingo_hw_manager_top #(
     logic [WatchdogCounterWidth-1:0] wd_risk_confirm;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WatchdogCounterWidth-1:0] wd_suspect_thr;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WatchdogCounterWidth-1:0] wd_confirm_thr;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] wd_h_eff, wd_c_eff;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] wd_h_ad, wd_c_ad;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_h_ad_valid, wd_c_ad_valid;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_adapt_confirm, wd_risk_use;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_progress;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WatchdogCounterWidth-1:0] wd_interval;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WdClassWidth-1:0] wd_class_q, ready_class;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_risk_confirm_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] risk;
     // --------Finish Type definitions and signal declarations--------------------//
@@ -980,6 +1023,7 @@ module bingo_hw_manager_top #(
 
     // Compose the current task descriptor from the muxed source
     assign cur_task_desc_full = bingo_hw_manager_task_desc_full_t'(muxed_task_data);
+    assign cur_task_desc.wd_class = gen_wd_class.get_class(cur_task_desc_full);
     assign cur_task_desc.is_exit = cur_task_desc_full.is_exit;
     assign cur_task_desc.task_id = cur_task_desc_full.task_id;
     assign cur_task_desc.task_type = cur_task_desc_full.task_type;
@@ -1395,11 +1439,22 @@ module bingo_hw_manager_top #(
                 assign ready_queue_pop[core][cluster] = 1'b0;
                 assign ready_queue_empty[core][cluster] = 1'b0;
                 assign ready_queue_data_out[core][cluster] = '0;
+                assign ready_class[core][cluster] = '0;
             end else begin: gen_ready_queue_generic_fifo
+                // Extra internal metadata never appears in the device's ready word.
+                typedef struct packed {
+                    logic [WdClassWidth-1:0] wd_class;
+                    bingo_hw_manager_ready_task_desc_full_t desc;
+                } ready_entry_t;
+                ready_entry_t entry_in, entry_out;
+                assign entry_in.desc = ready_queue_data_in[core][cluster];
+                assign entry_in.wd_class = ready_source_desc.wd_class;
+                assign ready_queue_data_out[core][cluster] = entry_out.desc;
+                assign ready_class[core][cluster] = entry_out.wd_class;
                 fifo_v3 #(
                     .FALL_THROUGH ( 1'b0                                      ),
                     .DEPTH        ( ReadyQueueDepth                           ),
-                    .dtype        ( bingo_hw_manager_ready_task_desc_full_t   )
+                    .dtype        ( ready_entry_t                             )
                 ) i_ready_queue (
                     .clk_i       ( clk_i                                  ),
                     .rst_ni      ( rst_ni                                 ),
@@ -1409,9 +1464,9 @@ module bingo_hw_manager_top #(
                     .full_o      ( ready_queue_full[core][cluster]        ),
                     .empty_o     ( ready_queue_empty[core][cluster]       ),
                     .usage_o     ( /*not used*/                           ),
-                    .data_i      ( ready_queue_data_in[core][cluster]     ),
+                    .data_i      ( entry_in                              ),
                     .push_i      ( ready_queue_push[core][cluster]        ),
-                    .data_o      ( ready_queue_data_out[core][cluster]    ),
+                    .data_o      ( entry_out                             ),
                     .pop_i       ( ready_queue_pop[core][cluster]         )
                 );
                 // Connect to the core_status_waiting_task
@@ -1422,10 +1477,11 @@ module bingo_hw_manager_top #(
                                                         (core + cluster * NUM_CORES_PER_CLUSTER) * ReadyQueueAddrOffset;
             // Replay pushes never collide with routed pushes: routing into the cluster
             // is blocked while a replay MOVE may push into it.
-            assign ready_queue_data_in[core][cluster].task_id = replay_push_ready[core][cluster] ?
-                replay_data.task_id :
-                import_push[core][cluster] ? import_desc.task_id :
-                waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].task_id;
+            bingo_hw_manager_task_desc_t ready_source_desc;
+            assign ready_source_desc = replay_push_ready[core][cluster] ? replay_data :
+                import_push[core][cluster] ? import_desc :
+                waiting_dep_check_task_desc[remap_route_src_core[core][cluster]];
+            assign ready_queue_data_in[core][cluster].task_id = ready_source_desc.task_id;
             assign ready_queue_data_in[core][cluster].reserved_bits = '0;
             assign ready_queue_push[core][cluster] = (ready_queue_filter_oup_valid[core][cluster] & ~ready_queue_full[core][cluster]) |
                                                      replay_push_ready[core][cluster] | import_push[core][cluster];
@@ -2046,6 +2102,7 @@ module bingo_hw_manager_top #(
         .ConfirmTimeoutCycles(WatchdogConfirmTimeoutCycles),
         .CoreMask(WatchdogCoreMask),
         .CoreTypeIdWidth(CoreTypeIdWidth),
+        .WdClassWidth(WdClassWidth),
         .CoreTypeId(CoreTypeId)
     ) i_watchdog (
         .clk_i                 ( clk_i                          ),
@@ -2058,9 +2115,14 @@ module bingo_hw_manager_top #(
         .late_cycles_i         ( wd_late_cycles                  ), // fault precursor threshold
         .risk_i                ( risk                            ), // registered ctrl risk bitmap
         .risk_confirm_i        ( WatchdogCounterWidth'(bingo_hw_manager_risk_confirm_i) ),
-        .risk_confirm_valid_i  ( wd_risk_confirm_valid           ),
+        .risk_confirm_valid_i  ( wd_risk_use                     ),
         .suspect_thr_i         ( wd_suspect_thr                  ),
         .confirm_thr_i         ( wd_confirm_thr                  ),
+        .suspect_thr_valid_i   ( wd_h_ad_valid                   ),
+        .adapt_confirm_i       ( wd_adapt_confirm                ),
+        .wd_class_i            ( wd_class_q                      ),
+        .progress_o            ( wd_progress                     ),
+        .interval_o            ( wd_interval                     ),
         .late_o                ( wd_late                         ),
         .core_busy_o           ( core_busy                       ),
         .core_available_o      ( core_available                  ),
@@ -2091,14 +2153,47 @@ module bingo_hw_manager_top #(
                               wd_type_c_i[Type] <= WatchdogConfirmTimeoutCycles &&
                               wd_type_c_i[Type] > h_eff);
             assign c_eff = c_valid ? wd_type_c_i[Type] : WatchdogConfirmTimeoutCycles;
-            assign wd_suspect_thr[c][cl] = WatchdogCounterWidth'(h_eff);
-            // Zero retains the parameter path and distinguishes a valid C_t for logging.
-            assign wd_confirm_thr[c][cl] = c_valid ? WatchdogCounterWidth'(c_eff) : '0;
+            assign wd_h_eff[c][cl] = h_eff;
+            assign wd_c_eff[c][cl] = c_eff;
+            assign wd_suspect_thr[c][cl] = WatchdogCounterWidth'(
+                wd_h_ad_valid[c][cl] ? wd_h_ad[c][cl] : h_eff);
             assign wd_risk_confirm_valid[c][cl] = (WatchdogConfirmTimeoutCycles != 0 &&
                                                   bingo_hw_manager_risk_confirm_i > h_eff &&
                                                   bingo_hw_manager_risk_confirm_i < c_eff);
+            // R keeps its A5 validity rule; C_ad wins only if strictly shorter.
+            assign wd_adapt_confirm[c][cl] = wd_c_ad_valid[c][cl] &&
+                wd_c_ad[c][cl] < ((risk[c][cl] && wd_risk_confirm_valid[c][cl]) ?
+                                  bingo_hw_manager_risk_confirm_i : c_eff);
+            assign wd_risk_use[c][cl] = wd_risk_confirm_valid[c][cl] &&
+                                        !wd_adapt_confirm[c][cl];
+            // Zero retains the parameter path and all existing logging.
+            assign wd_confirm_thr[c][cl] = wd_adapt_confirm[c][cl] ?
+                WatchdogCounterWidth'(wd_c_ad[c][cl]) :
+                c_valid ? WatchdogCounterWidth'(c_eff) : '0;
         end
     end
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) wd_class_q <= '0;
+        else begin
+            for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
+                for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
+                    if (ready_queue_pop[c][cl] && !done_q_push[c][cl] && !core_fenced[c][cl])
+                        wd_class_q[c][cl] <= ready_class[c][cl];
+        end
+    end
+    bingo_hw_manager_wd_adapt #(
+        .NumCores(NUM_CORES_PER_CLUSTER), .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
+        .CounterWidth(WatchdogCounterWidth), .WdAdaptTypeBits(WdAdaptTypeBits),
+        .WdClassWidth(WdClassWidth), .CoreTypeIdWidth(CoreTypeIdWidth),
+        .CoreMask(WatchdogCoreMask), .CoreTypeId(CoreTypeId)
+    ) i_wd_adapt (
+        .clk_i(clk_i), .rst_ni(rst_ni), .ctrl_i(wd_adapt_i),
+        .progress_i(wd_progress), .interval_i(wd_interval), .dispatch_i(ready_queue_pop),
+        .done_i(done_q_push), .fenced_i(core_fenced), .busy_i(core_busy),
+        .class_i(wd_class_q), .h_eff_i(wd_h_eff), .c_eff_i(wd_c_eff),
+        .h_ad_o(wd_h_ad), .c_ad_o(wd_c_ad), .h_valid_o(wd_h_ad_valid),
+        .c_valid_o(wd_c_ad_valid)
+    );
 
     //////////////////////////////////////////////////////////////////////
     // Task Replay
@@ -2703,6 +2798,7 @@ module bingo_hw_manager_top #(
         always_comb begin : compose_import_desc
             automatic bingo_hw_manager_task_desc_full_t f;
             f = bingo_hw_manager_task_desc_full_t'(remote_dispatch_desc_i);
+            import_desc.wd_class            = gen_wd_class.get_class(f);
             import_desc.is_exit             = f.is_exit;
             import_desc.task_id             = f.task_id;
             import_desc.task_type           = f.task_type;
@@ -2896,7 +2992,8 @@ module bingo_hw_manager_top #(
                 rec_seen_q <= ctrl_rec_hold;
                 for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
                     for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
-                        reason_q[c][cl] <= (risk[c][cl] && wd_risk_confirm_valid[c][cl] &&
+                        reason_q[c][cl] <= wd_adapt_confirm[c][cl] ? 2'd3 :
+                            (risk[c][cl] && wd_risk_confirm_valid[c][cl] &&
                             bingo_hw_manager_risk_confirm_i != 0) ? 2'd1 :
                             ((wd_confirm_thr[c][cl] != 0) ? 2'd2 : 2'd0);
             end
