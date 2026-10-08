@@ -72,8 +72,16 @@ initial begin
     #1;
     if (got != 3 || gen_dut[0].i_dut.wd_class_q[1][0] != 3)
         $fatal(1, "[ADAPT_REPLAY] replay lost class or changed device ready word");
+    if (gen_dut[0].i_dut.i_wd_adapt.table_q[1][3].samples != 1 ||
+        gen_dut[0].i_dut.i_wd_adapt.imax_q[1][0] != 0)
+        $fatal(1, "[ADAPT_REPLAY] fenced execution learned or replay inherited imax");
+    csr_write(0, 0, 1, CSR_HEARTBEAT, device_axi_lite_data_t'(1));
+    if (gen_dut[0].i_dut.i_wd_adapt.table_q[1][3].samples != 1)
+        $fatal(1, "[ADAPT_REPLAY] replay heartbeat learned before completion");
     csr_done(0, 0, 1, 3);
     wait_drained(1);
+    if (gen_dut[0].i_dut.i_wd_adapt.table_q[1][3].samples != 2)
+        $fatal(1, "[ADAPT_REPLAY] substitute completion did not count exactly once");
     descriptor.task_id = 4;
     descriptor.reserved_bits[2:0] = 7;
     task_queue_master[0].write(task_queue_base[0], '0, descriptor, '1, resp);

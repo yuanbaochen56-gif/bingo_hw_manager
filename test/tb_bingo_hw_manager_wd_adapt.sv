@@ -51,10 +51,14 @@ module tb_bingo_hw_manager_wd_adapt;
         busy[core][0] = 1;
         for (int c = 0; c < load-1; c++) busy[c+1][0] = 1;
         classes[core][0] = 3'(cls);
+        dispatch[core][0] = 1;
+        step();
+        @(negedge clk); dispatch = '0;
         interval[core][0] = 16'(x);
         progress[core][0] = 1;
+        done[core][0] = 1;
         step();
-        @(negedge clk); progress = '0;
+        @(negedge clk); progress = '0; done = '0;
     endtask
 
     task automatic check_bound(input int core, h, c, input bit hvalid = 1, cvalid = 1);
@@ -67,6 +71,25 @@ module tb_bingo_hw_manager_wd_adapt;
     endtask
 
     initial begin
+        reset();
+        ctrl = config_word(1, 0, 1, 2, 1);
+        @(negedge clk);
+        classes[0][0] = 1; dispatch[0][0] = 1; busy[0][0] = 1;
+        step();
+        @(negedge clk);
+        dispatch = '0; progress[0][0] = 1; interval[0][0] = 3;
+        step();
+        if (dut.table_q[1][1].samples != 0 || dut.imax_q[0][0] != 3 || hv[0][0])
+            $fatal(1, "[ADAPT_TB] heartbeat learned an incomplete execution");
+        @(negedge clk); interval[0][0] = 60;
+        step();
+        if (dut.table_q[1][1].samples != 0 || dut.imax_q[0][0] != 60)
+            $fatal(1, "[ADAPT_TB] body heartbeat learned or lost segment maximum");
+        @(negedge clk); interval[0][0] = 2; done[0][0] = 1;
+        step();
+        if (dut.table_q[1][1].samples != 1 || dut.table_q[1][1].maximum != 60)
+            $fatal(1, "[ADAPT_TB] completion did not learn the body segment");
+        check_bound(0, 100, 200);
         reset();
         sample(0, 5, 1);
         check_bound(0, 0, 0, 0, 0);
@@ -122,16 +145,25 @@ module tb_bingo_hw_manager_wd_adapt;
         ctrl = config_word(1, 1, 1, 2, 1);
         sample(0, 6, 1);
         check_bound(0, 12, 24);
+        @(negedge clk); dispatch[0][0] = 1;
+        step();
+        @(negedge clk); dispatch = '0;
         @(negedge clk); busy[1][0] = 1;
         step();
         check_bound(0, 0, 0, 0, 0);
         @(negedge clk); busy[1][0] = 0;
         step();
-        check_bound(0, 0, 0, 0, 0); // peak is sticky within an interval
+        check_bound(0, 0, 0, 0, 0); // peak is sticky within an execution
+        @(negedge clk); progress[0][0] = 1; interval[0][0] = 5;
+        step();
+        if (dut.load_max_q[0][0] != 2 || dut.table_q[1][1].samples != 1)
+            $fatal(1, "[ADAPT_TB] heartbeat reset execution load or updated N");
+        @(negedge clk); progress = '0;
         ctrl[1] = 0;
         check_bound(0, 12, 24);
         ctrl[1] = 1;
-        sample(0, 5, 1);
+        @(negedge clk); done[0][0] = 1; interval[0][0] = 1;
+        step();
         if (dut.table_q[1][1].load != 2)
             $fatal(1, "[ADAPT_TB] load peak not learned");
         check_bound(0, 12, 24);
@@ -141,6 +173,7 @@ module tb_bingo_hw_manager_wd_adapt;
         @(negedge clk);
         busy[0][0] = 1; busy[1][0] = 1;
         progress[0][0] = 1; progress[1][0] = 1;
+        done[0][0] = 1; done[1][0] = 1;
         classes[0][0] = 4; classes[1][0] = 4;
         interval[0][0] = 7; interval[1][0] = 11;
         step();

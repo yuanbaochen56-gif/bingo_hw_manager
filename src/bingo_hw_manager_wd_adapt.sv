@@ -35,6 +35,7 @@ module bingo_hw_manager_wd_adapt #(
     } entry_t;
     entry_t [Types-1:0][Classes-1:0] table_q, table_d;
     logic [NumCores-1:0][NumClusters-1:0][LoadWidth-1:0] load_max_q, load_max_d;
+    logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] imax_q, imax_d;
     logic [LoadWidth-1:0] load_now, load_next;
     logic [3:0] warmup;
 
@@ -56,31 +57,39 @@ module bingo_hw_manager_wd_adapt #(
         end
         table_d = table_q;
         load_max_d = load_max_q;
+        imax_d = imax_q;
         for (int c = 0; c < NumCores; c++) begin
             for (int cl = 0; cl < NumClusters; cl++) begin
                 automatic int type_id = int'(CoreTypeId[c][cl]);
                 automatic int class_id = int'(class_i[c][cl]);
                 automatic logic [LoadWidth-1:0] peak =
                     load_now > load_max_q[c][cl] ? load_now : load_max_q[c][cl];
+                automatic logic [CounterWidth-1:0] sample_max =
+                    interval_i[c][cl] > imax_q[c][cl] ? interval_i[c][cl] : imax_q[c][cl];
                 if (CoreMask[c][cl] && !fenced_i[c][cl] && busy_i[c][cl] &&
-                    progress_i[c][cl] && class_id != 0 && type_id < Types) begin
-                    // Fold simultaneous samples of the same entry in a fixed
-                    // slot order: none are lost and N saturates after each.
-                    if (interval_i[c][cl] > table_d[type_id][class_id].maximum)
-                        table_d[type_id][class_id].maximum = interval_i[c][cl];
+                    done_i[c][cl] && class_id != 0 && type_id < Types) begin
+                    // Each completed execution contributes its largest segment.
+                    // Fold simultaneous completions in a fixed slot order.
+                    if (sample_max > table_d[type_id][class_id].maximum)
+                        table_d[type_id][class_id].maximum = sample_max;
                     if (table_d[type_id][class_id].samples != 4'd15)
                         table_d[type_id][class_id].samples =
                             table_d[type_id][class_id].samples + 1'b1;
                     if (peak > table_d[type_id][class_id].load)
                         table_d[type_id][class_id].load = peak;
                 end
-                if (!CoreMask[c][cl] || fenced_i[c][cl] || !busy_i[c][cl])
-                    load_max_d[c][cl] = '0;
-                else
+                if (CoreMask[c][cl] && !fenced_i[c][cl] && busy_i[c][cl]) begin
                     load_max_d[c][cl] = peak;
+                    if (progress_i[c][cl] && !done_i[c][cl])
+                        imax_d[c][cl] = sample_max;
+                end
+                // Match watchdog priority: done wins over dispatch. Heartbeats,
+                // idle and fenced cycles never clear this execution's history.
                 if (CoreMask[c][cl] && !fenced_i[c][cl] &&
-                    (dispatch_i[c][cl] || progress_i[c][cl]))
+                    dispatch_i[c][cl] && !done_i[c][cl]) begin
+                    imax_d[c][cl] = '0;
                     load_max_d[c][cl] = load_next;
+                end
             end
         end
     end
@@ -123,18 +132,34 @@ module bingo_hw_manager_wd_adapt #(
         if (!rst_ni) begin
             table_q <= '0;
             load_max_q <= '0;
+            imax_q <= '0;
         end else begin
             table_q <= table_d;
             load_max_q <= load_max_d;
+            imax_q <= imax_d;
         end
     end
 
 `ifndef SYNTHESIS
-    bit learn_log;
+    bit learn_log, execution_log;
     // The static flag-image control can opt into identical observation without
     // enabling adaptive thresholds. Default-image regressions print nothing new.
     initial learn_log = $test$plusargs("bingo_adapt_log");
+    initial execution_log = $test$plusargs("bingo_adapt_trace");
     always @(posedge clk_i) begin
+        if (rst_ni && execution_log) begin
+            for (int c = 0; c < NumCores; c++) begin
+                for (int cl = 0; cl < NumClusters; cl++) begin
+                    if (CoreMask[c][cl] && !fenced_i[c][cl] &&
+                        (dispatch_i[c][cl] || progress_i[c][cl]))
+                        $display("[TRACE] A7_EXEC %0t core=%0d cluster=%0d type=%0d class=%0d event=%s interval=%0d imax=%0d load=%0d",
+                                 $time, c, cl, CoreTypeId[c][cl], class_i[c][cl],
+                                 done_i[c][cl] ? "done" :
+                                 dispatch_i[c][cl] ? "dispatch" : "heartbeat",
+                                 interval_i[c][cl], imax_q[c][cl], load_max_q[c][cl]);
+                end
+            end
+        end
         if (rst_ni && learn_log) begin
             for (int t = 0; t < Types; t++) begin
                 for (int k = 1; k < Classes; k++) begin

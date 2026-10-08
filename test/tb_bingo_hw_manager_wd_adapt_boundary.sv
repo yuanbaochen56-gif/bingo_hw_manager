@@ -47,9 +47,15 @@ module tb_bingo_hw_manager_wd_adapt_boundary;
         if (!progress || interval != 4)
             $fatal(1, "[ADAPT_BOUNDARY] wrong timer snapshot");
         step();
-        if (!hv || h_ad != 8 || c_ad != 16 || wd.timer_q[0][0] != 0)
-            $fatal(1, "[ADAPT_BOUNDARY] learning did not take effect within one edge");
-        @(negedge clk); hb = 0;
+        if (hv || adapt.table_q[1][1].samples != 0 || wd.timer_q[0][0] != 0)
+            $fatal(1, "[ADAPT_BOUNDARY] heartbeat learned incomplete execution");
+        @(negedge clk); hb = 0; done = 1;
+        step();
+        if (!hv || h_ad != 8 || c_ad != 16 || adapt.table_q[1][1].samples != 1)
+            $fatal(1, "[ADAPT_BOUNDARY] done learning did not take effect within one edge");
+        @(negedge clk); done = 0; dispatch = 1;
+        step();
+        @(negedge clk); dispatch = 0;
     endtask
     initial begin
         for (int completion = 0; completion < 2; completion++) begin
@@ -92,12 +98,14 @@ module tb_bingo_hw_manager_wd_adapt_boundary;
         step();
         @(negedge clk); rst = 1; dispatch = 1;
         step();
-        @(negedge clk); dispatch = 0; hb = 1;
+        @(negedge clk); dispatch = 0; done = 1;
         step();
         if (adapt.table_q[1][1].maximum != 0 || adapt.table_q[1][1].samples != 1 ||
             hv || cv || suspect || fenced || h_thr != 40 || c_thr != 100)
             $fatal(1, "[ADAPT_BOUNDARY] M=0/floor=0 did not retain static thresholds");
-        @(negedge clk); hb = 0;
+        @(negedge clk); done = 0; dispatch = 1;
+        step();
+        @(negedge clk); dispatch = 0;
         repeat (10) begin step(); @(negedge clk); end
         if (hv || cv || suspect || fenced)
             $fatal(1, "[ADAPT_BOUNDARY] zero interval triggered suspicion");
@@ -105,7 +113,7 @@ module tb_bingo_hw_manager_wd_adapt_boundary;
         #1;
         if (hv || cv || h_thr != 40 || c_thr != 100)
             $fatal(1, "[ADAPT_BOUNDARY] floor incorrectly validated M=0");
-        hb = 1;
+        done = 1;
         step();
         if (!hv || !cv || h_ad != 10 || c_ad != 20)
             $fatal(1, "[ADAPT_BOUNDARY] positive sample did not enable adaptation");
