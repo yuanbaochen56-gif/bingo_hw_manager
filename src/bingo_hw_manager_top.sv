@@ -412,29 +412,23 @@ module bingo_hw_manager_top #(
         logic                                        cond_exec_invert;
     } bingo_hw_manager_task_desc_full_t;
 
-    if (WdClassAvail) begin : gen_wd_class
-        function automatic logic [WdClassWidth-1:0] get_class(
-            input bingo_hw_manager_task_desc_full_t f);
-            return f.reserved_bits[WdClassWidth-1:0];
-        endfunction
-        function automatic bingo_hw_manager_task_desc_full_t set_class(
-            input bingo_hw_manager_task_desc_full_t f,
-            input logic [WdClassWidth-1:0] wd_class);
-            bingo_hw_manager_task_desc_full_t result;
-            result = f;
-            result.reserved_bits[WdClassWidth-1:0] = wd_class;
-            return result;
-        endfunction
-    end else begin : gen_wd_class
-        function automatic logic [WdClassWidth-1:0] get_class(
-            input bingo_hw_manager_task_desc_full_t f);
-            return '0;
-        endfunction
-        function automatic bingo_hw_manager_task_desc_full_t set_class(
-            input bingo_hw_manager_task_desc_full_t f,
-            input logic [WdClassWidth-1:0] wd_class);
-            return f;
-        endfunction
+    function automatic logic [WdClassWidth-1:0] get_class(
+        input bingo_hw_manager_task_desc_full_t f);
+        return WdClassAvail ? WdClassWidth'(f.reserved_bits) : '0;
+    endfunction
+
+    function automatic bingo_hw_manager_task_desc_full_t set_class(
+        input bingo_hw_manager_task_desc_full_t f,
+        input logic [WdClassWidth-1:0] wd_class);
+        bingo_hw_manager_task_desc_full_t result;
+        result = f;
+        if (WdClassAvail)
+            result.reserved_bits =
+                ((f.reserved_bits >> WdClassWidth) << WdClassWidth) | wd_class;
+        return result;
+    endfunction
+
+    if (!WdClassAvail) begin : gen_wd_class
 `ifndef SYNTHESIS
         initial $info("A7 class unavailable: %0d reserved bits", ReservedBitsForTaskDesc);
 `endif
@@ -502,7 +496,7 @@ module bingo_hw_manager_top #(
         f.cond_exec_en        = d.cond_exec_en;
         f.cond_exec_group_id  = d.cond_exec_group_id;
         f.cond_exec_invert    = d.cond_exec_invert;
-        return gen_wd_class.set_class(f, d.wd_class);
+        return set_class(f, d.wd_class);
     endfunction
 
     // Done info struct
@@ -1023,7 +1017,7 @@ module bingo_hw_manager_top #(
 
     // Compose the current task descriptor from the muxed source
     assign cur_task_desc_full = bingo_hw_manager_task_desc_full_t'(muxed_task_data);
-    assign cur_task_desc.wd_class = gen_wd_class.get_class(cur_task_desc_full);
+    assign cur_task_desc.wd_class = get_class(cur_task_desc_full);
     assign cur_task_desc.is_exit = cur_task_desc_full.is_exit;
     assign cur_task_desc.task_id = cur_task_desc_full.task_id;
     assign cur_task_desc.task_type = cur_task_desc_full.task_type;
@@ -2798,7 +2792,7 @@ module bingo_hw_manager_top #(
         always_comb begin : compose_import_desc
             automatic bingo_hw_manager_task_desc_full_t f;
             f = bingo_hw_manager_task_desc_full_t'(remote_dispatch_desc_i);
-            import_desc.wd_class            = gen_wd_class.get_class(f);
+            import_desc.wd_class            = get_class(f);
             import_desc.is_exit             = f.is_exit;
             import_desc.task_id             = f.task_id;
             import_desc.task_type           = f.task_type;
