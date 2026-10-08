@@ -11,6 +11,7 @@ module bingo_hw_manager_wd_adapt #(
     input logic clk_i,
     input logic rst_ni,
     input logic [31:0] ctrl_i,
+    input logic [31:0] late_ctrl_i = '0,
     input logic [NumCores-1:0][NumClusters-1:0] progress_i,
     input logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] interval_i,
     input logic [NumCores-1:0][NumClusters-1:0] dispatch_i,
@@ -23,11 +24,14 @@ module bingo_hw_manager_wd_adapt #(
     output logic [NumCores-1:0][NumClusters-1:0][31:0] h_ad_o,
     output logic [NumCores-1:0][NumClusters-1:0][31:0] c_ad_o,
     output logic [NumCores-1:0][NumClusters-1:0] h_valid_o,
-    output logic [NumCores-1:0][NumClusters-1:0] c_valid_o
+    output logic [NumCores-1:0][NumClusters-1:0] c_valid_o,
+    output logic [NumCores-1:0][NumClusters-1:0][31:0] late_ad_o,
+    output logic [NumCores-1:0][NumClusters-1:0] late_valid_o
 );
     localparam int unsigned Types = 2**WdAdaptTypeBits;
     localparam int unsigned Classes = 2**WdClassWidth;
     localparam int unsigned LoadWidth = $clog2(NumCores * NumClusters + 1);
+    localparam int unsigned LateMathWidth = CounterWidth + 7 > 64 ? CounterWidth + 7 : 64;
     typedef struct packed {
         logic [CounterWidth-1:0] maximum;
         logic [3:0] samples;
@@ -67,7 +71,9 @@ module bingo_hw_manager_wd_adapt #(
                 automatic logic [CounterWidth-1:0] sample_max =
                     interval_i[c][cl] > imax_q[c][cl] ? interval_i[c][cl] : imax_q[c][cl];
                 if (CoreMask[c][cl] && !fenced_i[c][cl] && busy_i[c][cl] &&
-                    done_i[c][cl] && class_id != 0 && type_id < Types) begin
+                    done_i[c][cl] && class_id != 0 && type_id < Types &&
+                    !(late_ctrl_i[0] && late_valid_o[c][cl] &&
+                      sample_max >= late_ad_o[c][cl])) begin
                     // Each completed execution contributes its largest segment.
                     // Fold simultaneous completions in a fixed slot order.
                     if (sample_max > table_d[type_id][class_id].maximum)
@@ -100,6 +106,8 @@ module bingo_hw_manager_wd_adapt #(
         c_ad_o = '0;
         h_valid_o = '0;
         c_valid_o = '0;
+        late_ad_o = '0;
+        late_valid_o = '0;
         for (int c = 0; c < NumCores; c++) begin
             for (int cl = 0; cl < NumClusters; cl++) begin
                 automatic int type_id = int'(CoreTypeId[c][cl]);
@@ -107,12 +115,16 @@ module bingo_hw_manager_wd_adapt #(
                 automatic logic [LoadWidth-1:0] peak =
                     load_now > load_max_q[c][cl] ? load_now : load_max_q[c][cl];
                 automatic logic [63:0] h, confirm;
+                automatic logic [LateMathWidth-1:0] late_bound;
+                automatic logic entry_valid;
                 h = '0;
                 confirm = '0;
-                if (ctrl_i[0] && CoreMask[c][cl] && type_id < Types && class_id != 0 &&
+                late_bound = '0;
+                entry_valid = CoreMask[c][cl] && type_id < Types && class_id != 0 &&
                     table_q[type_id][class_id].maximum >= 1 &&
                     table_q[type_id][class_id].samples >= warmup &&
-                    (!ctrl_i[1] || peak <= table_q[type_id][class_id].load)) begin
+                    (!ctrl_i[1] || peak <= table_q[type_id][class_id].load);
+                if (ctrl_i[0] && entry_valid) begin
                     h = 64'(table_q[type_id][class_id].maximum) << ctrl_i[4:2];
                     if (h < ctrl_i[31:12]) h = 64'(ctrl_i[31:12]);
                     if (h > h_eff_i[c][cl]) h = 64'(h_eff_i[c][cl]);
@@ -123,6 +135,18 @@ module bingo_hw_manager_wd_adapt #(
                     c_ad_o[c][cl] = 32'(confirm);
                     h_valid_o[c][cl] = h >= 1;
                     c_valid_o[c][cl] = h >= 1 && confirm > h;
+                end
+                // Prediction shares history/guards, not the detection EN bit.
+                // Compare wide before narrowing; equality with suspect is invalid.
+                if (late_ctrl_i[0] && entry_valid) begin
+                    late_bound = LateMathWidth'(table_q[type_id][class_id].maximum) <<
+                                 late_ctrl_i[3:1];
+                    if (late_bound < late_ctrl_i[31:12])
+                        late_bound = LateMathWidth'(late_ctrl_i[31:12]);
+                    if (late_bound < (h_valid_o[c][cl] ? h : 64'(h_eff_i[c][cl]))) begin
+                        late_ad_o[c][cl] = 32'(late_bound);
+                        late_valid_o[c][cl] = 1'b1;
+                    end
                 end
             end
         end
@@ -166,6 +190,10 @@ module bingo_hw_manager_wd_adapt #(
                     if (table_d[t][k].maximum > table_q[t][k].maximum ||
                         (table_q[t][k].samples < warmup && table_d[t][k].samples >= warmup))
                         $display("[BINGO_ADAPT_LEARN] %0t type=%0d class=%0d max=%0d n=%0d load=%0d",
+                                 $time, t, k, table_d[t][k].maximum,
+                                 table_d[t][k].samples, table_d[t][k].load);
+                    if (late_ctrl_i[0] && execution_log && table_d[t][k] != table_q[t][k])
+                        $display("[TRACE] P9_TABLE %0t type=%0d class=%0d max=%0d n=%0d load=%0d",
                                  $time, t, k, table_d[t][k].maximum,
                                  table_d[t][k].samples, table_d[t][k].load);
                 end

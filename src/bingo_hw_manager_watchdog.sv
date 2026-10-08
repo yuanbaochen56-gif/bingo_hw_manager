@@ -29,6 +29,8 @@ module bingo_hw_manager_watchdog #(
     // timer has reached late_cycles_i. 0 = off. The timer counts ticks, so
     // like the timeouts this counts cycles of the normal clock.
     input  logic [CounterWidth-1:0]               late_cycles_i = '0,
+    // Nonzero per-slot thresholds override the legacy global late threshold.
+    input  logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] late_thr_i = '0,
     input  logic [NumCores-1:0][NumClusters-1:0] risk_i = '0,
     // Same timer as H/C, not an interval restarted at suspicion. 0 = disabled.
     input  logic [CounterWidth-1:0]               risk_confirm_i = '0,
@@ -79,6 +81,8 @@ module bingo_hw_manager_watchdog #(
     always_comb begin
         for(int c=0; c<NumCores; c++) begin
             for(int cl=0; cl<NumClusters; cl++) begin
+                automatic logic [CounterWidth-1:0] late_cycles =
+                    late_thr_i[c][cl] != '0 ? late_thr_i[c][cl] : late_cycles_i;
                 core_busy_o[c][cl] = busy_q[c][cl];
                 core_fenced_o[c][cl] = fenced_q[c][cl];
                 // A fenced core stays dead_suspect, so the event log never shows a
@@ -89,9 +93,9 @@ module bingo_hw_manager_watchdog #(
                                                suspect_thr_i[c][cl] : HeartbeatTimeoutCycles[CounterWidth-1:0])));
                 core_available_o[c][cl] = waiting_task_i[c][cl] && !busy_q[c][cl] && !core_dead_suspect_o[c][cl];
                 // Same priority as the timer update below: a fenced core is ignored
-                late_o[c][cl] = (late_cycles_i != '0) && CoreMask[c][cl] && !fenced_q[c][cl] &&
+                late_o[c][cl] = (late_cycles != '0) && CoreMask[c][cl] && !fenced_q[c][cl] &&
                                 busy_q[c][cl] && (task_done_i[c][cl] || heartbeat_i[c][cl]) &&
-                                (timer_q[c][cl] >= late_cycles_i);
+                                (timer_q[c][cl] >= late_cycles);
                 // Matches done -> dispatch -> heartbeat priority. No fenced
                 // interval or heartbeat concurrent with dispatch is learned.
                 progress_o[c][cl] = CoreMask[c][cl] && !fenced_q[c][cl] && busy_q[c][cl] &&

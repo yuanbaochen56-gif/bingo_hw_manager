@@ -79,6 +79,11 @@ sources:
       - test/tb_bingo_hw_manager_wd_adapt_layout.sv
       - test/tb_bingo_hw_manager_wd_adapt_layout_ci.sv
       - test/tb_bingo_hw_manager_wd_adapt_unavailable.sv
+      - test/tb_bingo_hw_manager_late_window.sv
+      - test/tb_bingo_hw_manager_late_min.sv
+      - test/tb_bingo_hw_manager_late_valid.sv
+      - test/tb_bingo_hw_manager_late_learn.sv
+      - test/tb_bingo_hw_manager_late_risk.sv
       - test/tb_bingo_hw_manager_type_thr_replay.sv
       - test/tb_bingo_hw_manager_risk_confirm_replay.sv
       - test/tb_bingo_hw_manager_core_remap.sv
