@@ -14,6 +14,7 @@ sources:
   # Files in level 2 on files in levels 1 and 0, etc.
 
   # Level 0
+  - src/bingo_hw_manager_pkg.sv                # Shared constants (task types, queue CSRs, power domains)
   - src/bingo_hw_manager_mailbox_adapter.sv    # AXI Lite to Mailbox Adapter
   - src/bingo_hw_manager_read_mailbox.sv       # AXI Lite read Mailbox Module
   - src/bingo_hw_manager_write_mailbox.sv      # AXI Lite write Mailbox Module

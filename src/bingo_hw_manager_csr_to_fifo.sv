@@ -73,8 +73,8 @@ module bingo_hw_manager_csr_to_fifo #(
     logic [N-1:0] csr_req_ready_write;
 
     // CSR address map
-    localparam logic [11:0] CSR_READY     = 12'h5fe;
-    localparam logic [11:0] CSR_DONE      = 12'h5ff;
+    localparam logic [11:0] CSR_READY     = bingo_hw_manager_pkg::CsrReady;
+    localparam logic [11:0] CSR_DONE      = bingo_hw_manager_pkg::CsrDone;
     localparam logic [11:0] CSR_HEARTBEAT = CsrHeartbeatAddr;
 
     // Signals for Write Done Info

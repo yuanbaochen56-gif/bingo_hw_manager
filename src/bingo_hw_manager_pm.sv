@@ -77,7 +77,7 @@ module bingo_hw_manager_pm #(
     // Constants
     // Notice here is tightly coupled with the PMIC design
     // So we do not make those as configurable parameters
-    localparam int unsigned MAX_DOMAINS = 32;
+    localparam int unsigned MAX_DOMAINS = bingo_hw_manager_pkg::PmMaxDomains;
     localparam int unsigned OFFSET_CLOCK_VALID = 32'h04;
     localparam int unsigned OFFSET_CLOCK_DIVISION_BASE = 32'h08;
     // HOST_DVFS_MSIP_BIT is now a module parameter (injected from the HeMAiA level).

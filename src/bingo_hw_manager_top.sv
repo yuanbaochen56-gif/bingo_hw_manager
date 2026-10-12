@@ -328,13 +328,13 @@ module bingo_hw_manager_top #(
     // out of range; dropped)
     output logic                                remote_done_mismatch_o
 );
+    import bingo_hw_manager_pkg::*;
     // --------Type definitions and signal declarations--------------------//
     // ---- Start of Type definitions -------------------------------------//
-    // Task Type (DARTS: expanded to 2 bits for gating support)
-    // 2'b00: Normal Task
-    // 2'b01: Dummy Task (set/check synchronization)
-    // 2'b10: Gating Task (executes on core, writes CERF on completion)
-    // 2'b11: Reserved
+    // Task Type (DARTS: expanded to 2 bits for gating support), values in bingo_hw_manager_pkg
+    // TaskNormal: Normal Task              TaskDummy: Dummy Task (set/check synchronization)
+    // TaskGating: Gating Task (executes on core, writes CERF on completion)
+    // TaskNoReplay: runs like a normal task, never replayed once it may have started
     typedef logic [1:0]                                  bingo_hw_manager_task_type_t;
     // Task ID
     typedef logic [TaskIdWidth-1:0                     ] bingo_hw_manager_task_id_t;
@@ -843,11 +843,11 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_late;
     logic [31:0][7:0]                                               pm_domain_level;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][5:0] ctrl_slot_domain;
-    // Power domain of each slot (>= 32: none), as bingo_hw_manager_pm reads it
+    // Power domain of each slot (>= PmMaxDomains: none), as bingo_hw_manager_pm reads it
     for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_slot_domain_core
         for (genvar cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin : gen_slot_domain_cluster
-            assign ctrl_slot_domain[c][cl] = (bingo_hw_manager_core_power_domain_i[c][cl] < 32) ?
-                6'(bingo_hw_manager_core_power_domain_i[c][cl]) : 6'd32;
+            assign ctrl_slot_domain[c][cl] = (bingo_hw_manager_core_power_domain_i[c][cl] < PmMaxDomains) ?
+                6'(bingo_hw_manager_core_power_domain_i[c][cl]) : 6'(PmMaxDomains);
         end
     end
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_idle;
@@ -934,6 +934,8 @@ module bingo_hw_manager_top #(
         WatchdogConfirmTimeoutCycles : WatchdogHeartbeatTimeoutCycles;
     localparam int unsigned WatchdogCounterWidth = $clog2(WatchdogMaxTimeoutCycles + 1) + 1;
     logic [WatchdogCounterWidth-1:0] wd_late_cycles;  // late-beat threshold of the watchdog
+    // Not read by the design (each slot uses wd_risk_confirm_valid below): the value
+    // tb_bingo_hw_manager_watchdog_risk_confirm compares the effective threshold with
     logic [WatchdogCounterWidth-1:0] wd_risk_confirm;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WatchdogCounterWidth-1:0] wd_suspect_thr;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WatchdogCounterWidth-1:0] wd_confirm_thr;
@@ -1084,6 +1086,9 @@ module bingo_hw_manager_top #(
     always_comb begin : compose_stream_arbiter_chiplet_dep_set_signals
         for (int unsigned cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
             for (int unsigned core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
+                // is_exit and cond_exec_* stay unassigned (X), and the chiplet dep-set
+                // master sends them to the other chiplet in its write data: a known
+                // gap, left as it is (assigning them changes that output)
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].reserved_bits = '0;
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].dep_set_info = checkout_queue_data_out[core][cluster].dep_set_info;
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].dep_check_info = checkout_queue_data_out[core][cluster].dep_check_info;
@@ -1207,7 +1212,7 @@ module bingo_hw_manager_top #(
         stream_filter i_stream_filter_dummy_check_task_to_ready_and_checkout_queue (
             .valid_i ( dep_check_manager_oup_ready_and_checkout_queue_valid[core]    ),
             .ready_o ( dep_check_manager_oup_ready_and_checkout_queue_ready[core]    ),
-            .drop_i  ( (waiting_dep_check_task_desc[core].task_type == 2'b01) && (waiting_dep_check_task_desc[core].dep_check_info.dep_check_en) ), // Drop if it is a dummy check task
+            .drop_i  ( (waiting_dep_check_task_desc[core].task_type == TaskDummy) && (waiting_dep_check_task_desc[core].dep_check_info.dep_check_en) ), // Drop if it is a dummy check task
             .valid_o ( demux_ready_and_checkout_queue_inp_valid[core]  ),
             .ready_i ( demux_ready_and_checkout_queue_inp_ready[core]  )
         );
@@ -1302,7 +1307,7 @@ module bingo_hw_manager_top #(
                     // Handshake from the checkout demux and the per-(core,cluster) done queue
                     // Dummy set (or a stuck slot's head the CERF skips): no done queue check needed
                     // Normal: per-(core,cluster) done queue must be non-empty
-                    stream_arbiter_dep_matrix_set_inp_valid[stream_arbiter_inp_idx] = ((checkout_queue_data_out[core][cluster].task_type == 2'b01) ||
+                    stream_arbiter_dep_matrix_set_inp_valid[stream_arbiter_inp_idx] = ((checkout_queue_data_out[core][cluster].task_type == TaskDummy) ||
                                                                                        stuck_head_skip[core][cluster]) ?
                                                                                       stream_filter_checkout_queue_dep_set_enable_oup_valid[core][cluster] :
                                                                                       ((stream_filter_checkout_queue_dep_set_enable_oup_valid[core][cluster]) &&
@@ -1386,7 +1391,7 @@ module bingo_hw_manager_top #(
                                                  !route_exit_absorb[core][cluster];
             assign route_exit_absorb[core][cluster] =
                 waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].is_exit &&
-                waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].task_type != 2'b01 &&
+                waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].task_type != TaskDummy &&
                 ((waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].assigned_core_id !=
                   bingo_hw_manager_assigned_core_id_t'(core)) ||
                  (waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].assigned_cluster_id !=
@@ -1403,7 +1408,7 @@ module bingo_hw_manager_top #(
             // 2. DARTS CERF: conditionally skipped task — skip execution but propagate deps
             assign ready_queue_filter_drop[core][cluster] =
                 remap_route_valid[core][cluster] &&
-                (((waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].task_type == 2'b01) &&
+                (((waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].task_type == TaskDummy) &&
                   (waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].dep_set_info.dep_set_en == 1'b1)) ||
                  cond_exec_skip[remap_route_src_core[core][cluster]] ||
                  route_exit_absorb[core][cluster] ||
@@ -1560,7 +1565,7 @@ module bingo_hw_manager_top #(
             end
             assign checkout_head_imported[core][cluster] = RemoteEn && checkout_remote_tag_out[core][cluster].imported;
 
-            // DARTS CERF: if task is conditionally skipped, mark as dummy (2'b01)
+            // DARTS CERF: if task is conditionally skipped, mark as dummy (TaskDummy)
             // so checkout logic fires dep_set without done_queue match
             always_comb begin
                 if (replay_push[core][cluster]) begin
@@ -1574,7 +1579,7 @@ module bingo_hw_manager_top #(
                         waiting_dep_check_task_desc[remap_route_src_core[core][cluster]];
                     if (cond_exec_skip[remap_route_src_core[core][cluster]] ||
                         route_exit_absorb[core][cluster]) begin
-                        checkout_queue_data_in[core][cluster].task_type = 2'b01;
+                        checkout_queue_data_in[core][cluster].task_type = TaskDummy;
                     end
                 end
             end
@@ -1649,9 +1654,9 @@ module bingo_hw_manager_top #(
                     !cerf_state[checkout_queue_data_out[core][cluster].cond_exec_group_id]);
             // An executing task (normal / gating) only leaves the checkout queue with its
             // own done, for the local and the chiplet dep_set path alike.
-            assign checkout_head_exec[core][cluster] = ((checkout_queue_data_out[core][cluster].task_type == 2'b00) ||
-                                                        (checkout_queue_data_out[core][cluster].task_type == 2'b10) ||
-                                                        (checkout_queue_data_out[core][cluster].task_type == 2'b11)) &&
+            assign checkout_head_exec[core][cluster] = ((checkout_queue_data_out[core][cluster].task_type == TaskNormal) ||
+                                                        (checkout_queue_data_out[core][cluster].task_type == TaskGating) ||
+                                                        (checkout_queue_data_out[core][cluster].task_type == TaskNoReplay)) &&
                                                        !stuck_head_skip[core][cluster];
             // Level 3: an exported head only retires on the remote done of the
             // same task (the dones of a proxy slot come back in export order)
@@ -1783,8 +1788,8 @@ module bingo_hw_manager_top #(
     end
 
     // Per-(core, cluster) done queue pop logic:
-    // Pop together with the checkout queue head when that head is a normal (2'b00)
-    // or gating (2'b10) task: it only leaves the checkout queue with its done
+    // Pop together with the checkout queue head when that head is a normal (TaskNormal)
+    // or gating (TaskGating) task: it only leaves the checkout queue with its done
     // (local dep_set, chiplet dep_set, or dropped when dep_set is disabled).
     // Popping on the dep-matrix arbiter's ready instead left the done behind when
     // the head took another path, so the next task retired on it prematurely.
@@ -1926,7 +1931,7 @@ module bingo_hw_manager_top #(
                 for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
                     for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
                         if (csr_req_valid_i[core][cluster] && !csr_req_i[core][cluster].write &&
-                            csr_req_i[core][cluster].addr[11:0] == 12'h5fe) begin
+                            csr_req_i[core][cluster].addr[11:0] == CsrReady) begin
                             exited_q[core][cluster] <= 1'b0;
                         end else if (heartbeat_valid[core][cluster] &&
                                      heartbeat_data_1d[core + cluster * NUM_CORES_PER_CLUSTER][31]) begin
@@ -2243,7 +2248,7 @@ module bingo_hw_manager_top #(
                 if (logical_core < NUM_CORES_PER_CLUSTER && logical_cluster < NUM_CLUSTERS_PER_CHIPLET) begin
                     replay_head_exit_absorb[c][cl] =
                         checkout_queue_data_out[c][cl].is_exit &&
-                        checkout_queue_data_out[c][cl].task_type != 2'b01 &&
+                        checkout_queue_data_out[c][cl].task_type != TaskDummy &&
                         ((smt_found[logical_core][logical_cluster] &&
                           ((smt_core[logical_core][logical_cluster] != logical_core) ||
                            (smt_cluster[logical_core][logical_cluster] != logical_cluster))) ||
@@ -2252,9 +2257,9 @@ module bingo_hw_manager_top #(
                           CoreTypeId[logical_core][logical_cluster] != '0 &&
                           remote_export_type_en[CoreTypeId[logical_core][logical_cluster]]));
                 end
-                replay_head_no_exec[c][cl] = (checkout_queue_data_out[c][cl].task_type == 2'b01) ||
+                replay_head_no_exec[c][cl] = (checkout_queue_data_out[c][cl].task_type == TaskDummy) ||
                                              replay_head_exit_absorb[c][cl];
-                replay_head_no_replay[c][cl] = (checkout_queue_data_out[c][cl].task_type == 2'b11);
+                replay_head_no_replay[c][cl] = (checkout_queue_data_out[c][cl].task_type == TaskNoReplay);
             end
         end
     end
@@ -2446,7 +2451,7 @@ module bingo_hw_manager_top #(
     assign replay_exit_absorb = replay_head_exit_absorb[replay_src_core][replay_src_cluster];
     always_comb begin
         replay_data = checkout_queue_data_out[replay_src_core][replay_src_cluster];
-        if (replay_exit_absorb) replay_data.task_type = 2'b01;
+        if (replay_exit_absorb) replay_data.task_type = TaskDummy;
     end
 
     always_comb begin : compose_replay_signals
@@ -2495,7 +2500,7 @@ module bingo_hw_manager_top #(
         logic                                  outstanding_clear;
         logic                                  replay_hold;
 
-        assign is_dummy_set = (waiting_dep_check_task_desc[core].task_type == 2'b01) &&
+        assign is_dummy_set = (waiting_dep_check_task_desc[core].task_type == TaskDummy) &&
                               waiting_dep_check_task_desc[core].dep_set_info.dep_set_en;
         assign remap_remappable[core] = !is_dummy_set && !cond_exec_skip[core];
 
@@ -2512,7 +2517,7 @@ module bingo_hw_manager_top #(
             .logical_core_i(bingo_hw_manager_assigned_core_id_t'(core)),
             .logical_cluster_i(waiting_dep_check_task_desc[core].assigned_cluster_id),
             .remappable_i(remap_remappable[core]),
-            .no_replay_i(waiting_dep_check_task_desc[core].task_type == 2'b11),
+            .no_replay_i(waiting_dep_check_task_desc[core].task_type == TaskNoReplay),
             .core_fenced_i(core_fenced),
             .core_retired_i(core_retired),
             .core_stuck_i(replay_stuck_slot),
@@ -3066,7 +3071,7 @@ module bingo_hw_manager_top #(
                 args[9 * Slots + t] = {6'b0, cerf_fb_set_i[t], cerf_fb_clear_i[t]};
             end
             move_code = replay_bounce ? 8'h0e :
-                        ((replay_data.task_type == 2'b01) ? 8'h0d : 8'h04);
+                        ((replay_data.task_type == TaskDummy) ? 8'h0d : 8'h04);
             move_slot = {4'(replay_src_cluster), 4'(replay_src_core)};
             move_arg = {((replay_bounce) ? 4'h0 : ((replay_rotate) ? 4'hf :
                 4'(replay_dst_core + replay_dst_cluster * NUM_CORES_PER_CLUSTER))),
@@ -3252,10 +3257,10 @@ module bingo_hw_manager_top #(
             if (|(replay_blocked_o & ~replay_stuck_slot)) begin
                 $error("[BINGO_ASSERT] blocked slot is not stuck");
             end
-            if (export_push && export_in.desc.task_type == 2'b11) begin
+            if (export_push && export_in.desc.task_type == TaskNoReplay) begin
                 $error("[BINGO_ASSERT] exported no-replay task %0d", export_in.desc.task_id);
             end
-            if (replay_push_ready_q && replay_data.task_type == 2'b11 &&
+            if (replay_push_ready_q && replay_data.task_type == TaskNoReplay &&
                 !i_replay_ctrl.exec_moved_q[replay_src_core][replay_src_cluster]) begin
                 $error("[BINGO_ASSERT] replayed possibly started no-replay task %0d",
                        replay_data.task_id);
@@ -3288,7 +3293,7 @@ module bingo_hw_manager_top #(
                     if (core_fenced[c][cl] && checkout_queue_push[c][cl] &&
                         !checkout_remote_tag_in[c][cl].exported &&
                         (!(core_retired[c][cl] || replay_stuck_slot[c][cl]) ||
-                         (checkout_queue_data_in[c][cl].task_type != 2'b01))) begin
+                         (checkout_queue_data_in[c][cl].task_type != TaskDummy))) begin
                         $error("[BINGO_ASSERT] checkout push of task %0d (type %0d) into fenced core %0d cluster %0d (retired %0b)",
                                checkout_queue_data_in[c][cl].task_id, checkout_queue_data_in[c][cl].task_type,
                                c, cl, core_retired[c][cl]);
@@ -3320,7 +3325,7 @@ module bingo_hw_manager_top #(
                     // A7: an executing task retires together with its own done
                     // (a stuck slot's head that the CERF skips does not execute)
                     if (checkout_queue_pop[c][cl] && !replay_pop[c][cl] &&
-                        (checkout_queue_data_out[c][cl].task_type != 2'b01) && !stuck_head_skip[c][cl] &&
+                        (checkout_queue_data_out[c][cl].task_type != TaskDummy) && !stuck_head_skip[c][cl] &&
                         (!done_q_pop[c][cl] || done_q_empty[c][cl] ||
                          (done_q_info[c][cl].task_id != checkout_queue_data_out[c][cl].task_id))) begin
                         $error("[BINGO_ASSERT] core %0d cluster %0d retired task %0d with done pop %0b (done task %0d)",
