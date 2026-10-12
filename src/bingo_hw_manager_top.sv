@@ -3009,8 +3009,16 @@ module bingo_hw_manager_top #(
     if (EventLogDepth != 0) begin : gen_evlog
         localparam int Slots = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET;
         localparam int Types = 2**CoreTypeIdWidth;
-        localparam int Events = 11 * Slots + Types;
-        logic [8:0][NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] seen_q;
+        localparam int Events = EvlogGroups * Slots + Types;
+        // Position of a slot pulse / a type pulse in the event vector
+        function automatic int ev(input evlog_group_e group, input int slot);
+            return evlog_idx(group, slot, Slots, Types);
+        endfunction
+        function automatic int ev_type(input int core_type);
+            return evlog_type_idx(core_type, Slots);
+        endfunction
+        // Last value of the level behind each of the first nine groups
+        logic [EvlogGroupsBeforeTypes-1:0][NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] seen_q;
         logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] rec_seen_q;
         logic [Events-1:0] events;
         logic [Events-1:0][15:0] args;
@@ -3026,15 +3034,15 @@ module bingo_hw_manager_top #(
                 reason_q <= '0;
                 rec_seen_q <= '0;
             end else begin
-                seen_q[0] <= core_dead_suspect;
-                seen_q[1] <= core_dead_suspect;
-                seen_q[2] <= core_fenced;
-                seen_q[3] <= replay_stuck_slot;
-                seen_q[4] <= replay_blocked_o;
-                seen_q[5] <= risk;
-                seen_q[6] <= park_parked;
-                seen_q[7] <= park_fail;
-                seen_q[8] <= core_retired;
+                seen_q[EvgSuspect]  <= core_dead_suspect;
+                seen_q[EvgClear]    <= core_dead_suspect;
+                seen_q[EvgFence]    <= core_fenced;
+                seen_q[EvgStuck]    <= replay_stuck_slot;
+                seen_q[EvgBlocked]  <= replay_blocked_o;
+                seen_q[EvgRisk]     <= risk;
+                seen_q[EvgParked]   <= park_parked;
+                seen_q[EvgParkFail] <= park_fail;
+                seen_q[EvgRetired]  <= core_retired;
                 rec_seen_q <= ctrl_rec_hold;
                 for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
                     for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
@@ -3051,22 +3059,22 @@ module bingo_hw_manager_top #(
             for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
                     automatic int s = c + cl * NUM_CORES_PER_CLUSTER;
-                    events[0 * Slots + s] = core_dead_suspect[c][cl] &&
-                        !seen_q[0][c][cl] && !core_fenced[c][cl];
-                    events[1 * Slots + s] = !core_dead_suspect[c][cl] &&
-                        seen_q[1][c][cl] && !core_fenced[c][cl];
-                    events[2 * Slots + s] = core_fenced[c][cl] && !seen_q[2][c][cl];
-                    args[2 * Slots + s] = {14'b0, reason_q[c][cl]};
-                    events[3 * Slots + s] = replay_stuck_slot[c][cl] && !seen_q[3][c][cl];
-                    events[4 * Slots + s] = replay_blocked_o[c][cl] && !seen_q[4][c][cl];
-                    events[5 * Slots + s] = risk[c][cl] && !seen_q[5][c][cl];
-                    events[6 * Slots + s] = park_parked[c][cl] && !seen_q[6][c][cl];
-                    events[7 * Slots + s] = park_fail[c][cl] && !seen_q[7][c][cl];
-                    events[8 * Slots + s] = core_retired[c][cl] && !seen_q[8][c][cl];
-                    events[9 * Slots + Types + s] = ctrl_rec_hold[c][cl] != rec_seen_q[c][cl];
-                    args[9 * Slots + Types + s] = {15'b0, ctrl_rec_hold[c][cl]};
-                    events[10 * Slots + Types + s] = exit_absorb[c][cl];
-                    args[10 * Slots + Types + s] = {
+                    events[ev(EvgSuspect, s)] = core_dead_suspect[c][cl] &&
+                        !seen_q[EvgSuspect][c][cl] && !core_fenced[c][cl];
+                    events[ev(EvgClear, s)] = !core_dead_suspect[c][cl] &&
+                        seen_q[EvgClear][c][cl] && !core_fenced[c][cl];
+                    events[ev(EvgFence, s)] = core_fenced[c][cl] && !seen_q[EvgFence][c][cl];
+                    args[ev(EvgFence, s)] = {14'b0, reason_q[c][cl]};
+                    events[ev(EvgStuck, s)] = replay_stuck_slot[c][cl] && !seen_q[EvgStuck][c][cl];
+                    events[ev(EvgBlocked, s)] = replay_blocked_o[c][cl] && !seen_q[EvgBlocked][c][cl];
+                    events[ev(EvgRisk, s)] = risk[c][cl] && !seen_q[EvgRisk][c][cl];
+                    events[ev(EvgParked, s)] = park_parked[c][cl] && !seen_q[EvgParked][c][cl];
+                    events[ev(EvgParkFail, s)] = park_fail[c][cl] && !seen_q[EvgParkFail][c][cl];
+                    events[ev(EvgRetired, s)] = core_retired[c][cl] && !seen_q[EvgRetired][c][cl];
+                    events[ev(EvgRecHold, s)] = ctrl_rec_hold[c][cl] != rec_seen_q[c][cl];
+                    args[ev(EvgRecHold, s)] = {15'b0, ctrl_rec_hold[c][cl]};
+                    events[ev(EvgExitAbsorb, s)] = exit_absorb[c][cl];
+                    args[ev(EvgExitAbsorb, s)] = {
                         4'(checkout_queue_data_in[c][cl].assigned_core_id +
                            checkout_queue_data_in[c][cl].assigned_cluster_id * NUM_CORES_PER_CLUSTER),
                         12'(checkout_queue_data_in[c][cl].task_id)};
@@ -3076,13 +3084,13 @@ module bingo_hw_manager_top #(
             // Observe its proven next-state rise, not a delayed sampled rise:
             // this is exactly the existing [BINGO_CERF_FB] print edge.
             for (int t = 0; t < Types; t++) begin
-                events[9 * Slots + t] = cerf_fb_done && cerf_fb_req &&
+                events[ev_type(t)] = cerf_fb_done && cerf_fb_req &&
                     cerf_fb_type == CoreTypeIdWidth'(t) && cerf_fb_en_i[t] &&
                     !cerf_fb_evt_o[t];
-                args[9 * Slots + t] = {6'b0, cerf_fb_set_i[t], cerf_fb_clear_i[t]};
+                args[ev_type(t)] = {6'b0, cerf_fb_set_i[t], cerf_fb_clear_i[t]};
             end
-            move_code = replay_bounce ? 8'h0e :
-                        ((replay_data.task_type == TaskDummy) ? 8'h0d : 8'h04);
+            move_code = replay_bounce ? EvBounce :
+                        ((replay_data.task_type == TaskDummy) ? EvMoveDummy : EvMove);
             move_slot = {4'(replay_src_cluster), 4'(replay_src_core)};
             move_arg = {((replay_bounce) ? 4'h0 : ((replay_rotate) ? 4'hf :
                 4'(replay_dst_core + replay_dst_cluster * NUM_CORES_PER_CLUSTER))),

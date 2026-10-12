@@ -11,7 +11,7 @@ module bingo_hw_manager_evlog #(
     parameter int unsigned Depth = 32,
     parameter int unsigned AgeWidth = 6,
     localparam int unsigned NumSlots = NumCores * NumClusters,
-    localparam int unsigned NumPending = 11 * NumSlots + NumTypes,
+    localparam int unsigned NumPending = bingo_hw_manager_pkg::EvlogGroups * NumSlots + NumTypes,
     localparam int unsigned PtrWidth = (Depth > 1) ? $clog2(Depth) : 1,
     localparam int unsigned CountWidth = $clog2(Depth + 1)
 ) (
@@ -20,9 +20,8 @@ module bingo_hw_manager_evlog #(
     input logic enable_i,
     input logic [31:0] clear_i,
     input logic [31:0] pop_i,
-    // Slot groups in order: SUSPECT, CLEAR, FENCE, STUCK, BLOCKED,
-    // RISK, PARKED, PARK_FAIL, RETIRED; then one CERF pulse per type,
-    // followed by RECOVERY_HOLD transitions and EXIT_ABSORB per slot.
+    // One pulse per (group, slot) and per core type, at bingo_hw_manager_pkg's
+    // evlog_idx() / evlog_type_idx()
     input logic [NumPending-1:0] event_i,
     input logic [NumPending-1:0][15:0] arg_i,
     input logic move_i,
@@ -52,39 +51,41 @@ module bingo_hw_manager_evlog #(
     int selected, best_priority;
     int unsigned drops;
 
-    function automatic logic [7:0] event_code(input int index);
-        if (index >= 10 * NumSlots + NumTypes) return 8'h0f;
-        if (index >= 9 * NumSlots + NumTypes) return 8'h0c;
-        if (index >= 9 * NumSlots) return 8'h0a;
-        case (index / NumSlots)
-            0: return 8'h01;
-            1: return 8'h02;
-            2: return 8'h03;
-            3: return 8'h05;
-            4: return 8'h06;
-            5: return 8'h07;
-            6: return 8'h08;
-            7: return 8'h09;
-            default: return 8'h0b;
-        endcase
+    import bingo_hw_manager_pkg::*;
+    // The event vector: EvlogGroupsBeforeTypes slot groups, the per-type pulses,
+    // the remaining slot groups
+    localparam int TypeBase = EvlogGroupsBeforeTypes * NumSlots;
+
+    function automatic logic is_type_pulse(input int index);
+        return index >= TypeBase && index < TypeBase + NumTypes;
     endfunction
 
+    // Position of a slot pulse within the slot groups
+    function automatic int slot_pos(input int index);
+        return (index >= TypeBase + NumTypes) ? index - NumTypes : index;
+    endfunction
+
+    function automatic logic [7:0] event_code(input int index);
+        if (is_type_pulse(index)) return EvCerfFb;
+        return evlog_group_code(evlog_group_e'(slot_pos(index) / NumSlots));
+    endfunction
+
+    // Lower is written first: a fence, a CERF fallback, stuck, blocked, then by code
     function automatic int priority_of(input int index);
         case (event_code(index))
-            8'h03: return 0;
-            8'h0a: return 1;
-            8'h05: return 2;
-            8'h06: return 3;
+            EvFence:   return 0;
+            EvCerfFb:  return 1;
+            EvStuck:   return 2;
+            EvBlocked: return 3;
             default: return 4 + int'(event_code(index));
         endcase
     endfunction
 
+    // Slot field of the record: {cluster, core}, or the core type of a type pulse
     function automatic logic [7:0] event_slot(input int index);
         int slot;
-        if (index >= 10 * NumSlots + NumTypes) slot = index - 10 * NumSlots - NumTypes;
-        else if (index >= 9 * NumSlots + NumTypes) slot = index - 9 * NumSlots - NumTypes;
-        else if (index >= 9 * NumSlots) return 8'(index - 9 * NumSlots);
-        else slot = index % NumSlots;
+        if (is_type_pulse(index)) return 8'(index - TypeBase);
+        slot = slot_pos(index) % NumSlots;
         return {4'(slot / NumCores), 4'(slot % NumCores)};
     endfunction
 

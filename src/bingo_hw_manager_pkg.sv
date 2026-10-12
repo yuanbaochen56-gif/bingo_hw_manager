@@ -18,4 +18,68 @@ package bingo_hw_manager_pkg;
     // Power domains 0 .. PmMaxDomains-1. A slot configured with a larger domain
     // (the host writes 99 for the host and tied-off slots) belongs to none.
     localparam int unsigned PmMaxDomains = 32;
+
+    // Event log (bingo_hw_manager_evlog). The top raises one pulse per (group,
+    // slot) and one per core type for a CERF fallback; the log turns the pulse
+    // into a record with the group's code. The host decodes the codes, so they
+    // are an interface: add new ones, never renumber.
+    typedef enum int unsigned {
+        EvgSuspect,     // watchdog: suspect
+        EvgClear,       //           suspect cleared before the fence
+        EvgFence,       //           fenced (arg: which threshold confirmed)
+        EvgStuck,       // replay: slot stuck
+        EvgBlocked,     //         slot blocked
+        EvgRisk,        // late heartbeat: at risk
+        EvgParked,      // parked
+        EvgParkFail,    // park failed
+        EvgRetired,     // fenced slot retired (all its tasks moved)
+        EvgRecHold,     // recovery hold entered / left (arg: new state)
+        EvgExitAbsorb   // exit task absorbed (arg: logical slot, task)
+    } evlog_group_e;
+    localparam int unsigned EvlogGroups = 11;
+    // The per-type pulses sit between the first EvlogGroupsBeforeTypes groups and the rest
+    localparam int unsigned EvlogGroupsBeforeTypes = 9;
+
+    localparam logic [7:0] EvSuspect    = 8'h01;
+    localparam logic [7:0] EvClear      = 8'h02;
+    localparam logic [7:0] EvFence      = 8'h03;
+    localparam logic [7:0] EvMove       = 8'h04; // replay moved a task (arg: destination slot, task)
+    localparam logic [7:0] EvStuck      = 8'h05;
+    localparam logic [7:0] EvBlocked    = 8'h06;
+    localparam logic [7:0] EvRisk       = 8'h07;
+    localparam logic [7:0] EvParked     = 8'h08;
+    localparam logic [7:0] EvParkFail   = 8'h09;
+    localparam logic [7:0] EvCerfFb     = 8'h0a; // CERF fallback of a core type (slot field: the type)
+    localparam logic [7:0] EvRetired    = 8'h0b;
+    localparam logic [7:0] EvRecHold    = 8'h0c;
+    localparam logic [7:0] EvMoveDummy  = 8'h0d; // replay moved a task that runs on no core
+    localparam logic [7:0] EvBounce     = 8'h0e; // replay found no destination
+    localparam logic [7:0] EvExitAbsorb = 8'h0f;
+
+    function automatic logic [7:0] evlog_group_code(input evlog_group_e group);
+        case (group)
+            EvgSuspect:  return EvSuspect;
+            EvgClear:    return EvClear;
+            EvgFence:    return EvFence;
+            EvgStuck:    return EvStuck;
+            EvgBlocked:  return EvBlocked;
+            EvgRisk:     return EvRisk;
+            EvgParked:   return EvParked;
+            EvgParkFail: return EvParkFail;
+            EvgRetired:  return EvRetired;
+            EvgRecHold:  return EvRecHold;
+            default:     return EvExitAbsorb;
+        endcase
+    endfunction
+
+    // Position of a pulse in the event vector of the log
+    function automatic int unsigned evlog_idx(
+        input evlog_group_e group, input int unsigned slot,
+        input int unsigned num_slots, input int unsigned num_types);
+        return int'(group) * num_slots + ((int'(group) >= EvlogGroupsBeforeTypes) ? num_types : 0) + slot;
+    endfunction
+    function automatic int unsigned evlog_type_idx(
+        input int unsigned core_type, input int unsigned num_slots);
+        return EvlogGroupsBeforeTypes * num_slots + core_type;
+    endfunction
 endpackage
