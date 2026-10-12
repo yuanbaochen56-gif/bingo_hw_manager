@@ -88,6 +88,10 @@ import axi_test::*;
 `ifndef TB_SUBSTITUTE_L2_TYPE_EN
   `define TB_SUBSTITUTE_L2_TYPE_EN 16'hffff
 `endif
+// Core types that take no substitute (bingo_hw_manager_fence_fb_i), 0 = off
+`ifndef TB_FENCE_FB
+  `define TB_FENCE_FB 16'h0000
+`endif
 // Level 3: connect the remote dispatch / done streams of chiplet i to chiplet
 // (i + 1) % NUM_CHIPLET (back to back; needs TB_SUBSTITUTE_LEVEL_MASK[2])
 // Import stand-in levels (bingo_hw_manager_top ImportSubstituteLevelMask)
@@ -686,6 +690,10 @@ logic [CERF_FB_NUM_TYPES-1:0][4:0] cerf_fb_clear [NUM_CHIPLET];
 logic [CERF_FB_NUM_TYPES-1:0][4:0] cerf_fb_set   [NUM_CHIPLET];
 logic [CERF_FB_NUM_TYPES-1:0]      cerf_fb_evt   [NUM_CHIPLET];
 
+// Fence fallback types (see bingo_hw_manager_ctrl): TB_FENCE_FB from the start;
+// a stimulus file may write it like the host register.
+logic [CERF_FB_NUM_TYPES-1:0] fence_fb [NUM_CHIPLET] = '{default: 16'(`TB_FENCE_FB)};
+
 initial begin
     cerf_write_en = '0;
     for (int i = 0; i < NUM_CHIPLET; i++) begin
@@ -1130,6 +1138,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .cerf_fb_clear_i                      ( cerf_fb_clear[chiplet_idx]                                   ),
         .cerf_fb_set_i                        ( cerf_fb_set[chiplet_idx]                                     ),
         .cerf_fb_evt_o                        ( cerf_fb_evt[chiplet_idx]                                     ),
+        .bingo_hw_manager_fence_fb_i          ( fence_fb[chiplet_idx]                                        ),
         .evlog_enable_i                      ( `TB_EVLOG_DEPTH != 0                                        ),
         .evlog_clear_i                       ( '0                                                          ),
         .evlog_pop_i                         ( evlog_pop[chiplet_idx]                                      ),

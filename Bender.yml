@@ -90,6 +90,12 @@ sources:
       - test/tb_bingo_hw_manager_cluster_bound_sel.sv
       - test/tb_bingo_hw_manager_cluster_bound_fence.sv
       - test/tb_bingo_hw_manager_cluster_bound_park.sv
+      - test/tb_bingo_hw_manager_fence_fb_stuck.sv
+      - test/tb_bingo_hw_manager_fence_fb_l1.sv
+      - test/tb_bingo_hw_manager_fence_fb_l3.sv
+      - test/tb_bingo_hw_manager_fence_fb_other.sv
+      - test/tb_bingo_hw_manager_fence_fb_off.sv
+      - test/tb_bingo_hw_manager_fence_fb_park.sv
       - test/tb_bingo_hw_manager_exit_remap.sv
       - test/tb_bingo_hw_manager_exit_replay.sv
       - test/tb_bingo_hw_manager_exit_after_exit.sv

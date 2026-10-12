@@ -107,6 +107,16 @@
 // (0 = no limit), the lowest domain index first: the dead or parked cores no
 // longer draw power, and the survivors of their type get that budget.
 //
+// Fence fallback (fence_fb_i, host-configured per core type, 0 = off): a type
+// whose bit is set takes no substitute, as if it had no other slot. The table
+// entry of a fenced slot of that type is written as none, and a park of such a
+// slot fails as with no live core of the type. The fenced slot then becomes
+// stuck, so its outstanding and later tasks are left to the CERF degradation
+// below (e.g. a host backup that is cheaper than a replay on another cluster).
+// The top keeps such a type from level 3 as well. The entries of live slots do
+// not depend on the bit. The table samples it when an entry is written, like
+// the load: set it before the first fence or park.
+//
 // CERF degradation: a host table, one entry per core type, default off. A type
 // is faulted while any of its slots is stuck or rejected. The lowest enabled
 // faulted type that has not fired yet requests one CERF update (clear one
@@ -185,6 +195,8 @@ module bingo_hw_manager_ctrl #(
     input  logic [NumCores-1:0][NumClusters-1:0]     rejected_i = '0,
     // Per core type: enable, CERF group to clear, CERF group to set. 0 = off.
     input  logic [2**CoreTypeIdWidth-1:0]            cerf_fb_en_i = '0,
+    // Fence fallback: core types that take no substitute (see above). 0 = off.
+    input  logic [2**CoreTypeIdWidth-1:0]            fence_fb_i = '0,
     input  logic [2**CoreTypeIdWidth-1:0][4:0]       cerf_fb_clear_i = '0,
     input  logic [2**CoreTypeIdWidth-1:0][4:0]       cerf_fb_set_i = '0,
     // The CERF update committed this cycle (host did not write the mask)
@@ -243,6 +255,7 @@ module bingo_hw_manager_ctrl #(
     // ------------------------------------------------------------------
     // Candidate choice per logical slot over the current fenced set
     // ------------------------------------------------------------------
+    logic [NumCores-1:0][NumClusters-1:0]                     choice_any;
     logic [NumCores-1:0][NumClusters-1:0]                     choice_found;
     logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    choice_core;
     logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] choice_cluster;
@@ -265,10 +278,13 @@ module bingo_hw_manager_ctrl #(
                 .logical_cluster_i(ClusterIdWidth'(cl)),
                 .fenced_i(fenced_i),
                 .weight_i(load_i),
-                .found_o(choice_found[c][cl]),
+                .found_o(choice_any[c][cl]),
                 .core_o(choice_core[c][cl]),
                 .cluster_o(choice_cluster[c][cl])
             );
+            // Fence fallback: a fenced slot of such a type has no substitute
+            assign choice_found[c][cl] = choice_any[c][cl] &&
+                                         !(fenced_i[c][cl] && fence_fb_i[CoreTypeId[c][cl]]);
         end
     end
 
@@ -390,7 +406,9 @@ module bingo_hw_manager_ctrl #(
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
                 recompute[c][cl] = init_q || fence_new[c][cl] ||
                     (smt_found_q[c][cl] && fence_new[smt_core_q[c][cl]][smt_cluster_q[c][cl]]);
+                // Fence fallback: such a type has no parking substitute either
                 park_choice_ok[c][cl] = park_choice_found[c][cl] &&
+                    !fence_fb_i[CoreTypeId[c][cl]] &&
                     !((park_choice_core[c][cl] == CoreIdWidth'(c)) &&
                       (park_choice_cluster[c][cl] == ClusterIdWidth'(cl)));
                 park_drained[c][cl] = checkout_empty_i[c][cl] && ready_empty_i[c][cl] &&

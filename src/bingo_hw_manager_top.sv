@@ -243,6 +243,11 @@ module bingo_hw_manager_top #(
     input  logic [2**CoreTypeIdWidth-1:0][4:0]  cerf_fb_clear_i = '0,
     input  logic [2**CoreTypeIdWidth-1:0][4:0]  cerf_fb_set_i = '0,
     output logic [2**CoreTypeIdWidth-1:0]       cerf_fb_evt_o,
+    // Fence fallback (bingo_hw_manager_ctrl): per core type, a fenced or parked
+    // slot of that type takes no substitute at any level (it is not exported
+    // either), so a fence makes it stuck and the degradation above applies.
+    // 0 = off. Set it before the first fence or park.
+    input  logic [2**CoreTypeIdWidth-1:0]       bingo_hw_manager_fence_fb_i = '0,
     // Observation-only event log. CLEAR/POP trigger once per value change.
     input logic                                evlog_enable_i = 1'b0,
     input logic [31:0]                         evlog_clear_i = '0,
@@ -2222,6 +2227,10 @@ module bingo_hw_manager_top #(
     // in order (the head is the one it was running). The replay controller
     // moves them to live cores; see bingo_hw_manager_replay_ctrl.
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_head_exported;
+    // Level 3: a fence-fallback type is not exported, as a type the transport
+    // has no target for
+    logic [2**CoreTypeIdWidth-1:0] remote_export_type_en;
+    assign remote_export_type_en = remote_export_type_en_i & ~bingo_hw_manager_fence_fb_i;
     always_comb begin : compose_replay_inputs
         for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
             for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
@@ -2241,7 +2250,7 @@ module bingo_hw_manager_top #(
                          (RemoteEn && !smt_found[logical_core][logical_cluster] &&
                           !checkout_head_imported[c][cl] &&
                           CoreTypeId[logical_core][logical_cluster] != '0 &&
-                          remote_export_type_en_i[CoreTypeId[logical_core][logical_cluster]]));
+                          remote_export_type_en[CoreTypeId[logical_core][logical_cluster]]));
                 end
                 replay_head_no_exec[c][cl] = (checkout_queue_data_out[c][cl].task_type == 2'b01) ||
                                              replay_head_exit_absorb[c][cl];
@@ -2347,6 +2356,7 @@ module bingo_hw_manager_top #(
         .stuck_i        ( replay_stuck_slot ),
         .rejected_i     ( remote_rejected_q ),
         .cerf_fb_en_i   ( cerf_fb_en_i     ),
+        .fence_fb_i     ( bingo_hw_manager_fence_fb_i ),
         .cerf_fb_clear_i( cerf_fb_clear_i  ),
         .cerf_fb_set_i  ( cerf_fb_set_i    ),
         .cerf_fb_done_i ( cerf_fb_done     ),
@@ -2404,7 +2414,7 @@ module bingo_hw_manager_top #(
         .checkout_exported_i        ( replay_head_exported        ),
         .checkout_imported_i        ( checkout_head_imported      ),
         .export_type_ready_i        ( export_type_ready           ),
-        .remote_type_en_i           ( remote_export_type_en_i     ),
+        .remote_type_en_i           ( remote_export_type_en       ),
         .bounce_ready_i             ( !reject_valid_q             ),
         .smt_found_i                ( smt_found                   ),
         .smt_core_i                 ( smt_core                    ),
@@ -2506,7 +2516,7 @@ module bingo_hw_manager_top #(
             .core_fenced_i(core_fenced),
             .core_retired_i(core_retired),
             .core_stuck_i(replay_stuck_slot),
-            .remote_type_en_i(remote_export_type_en_i),
+            .remote_type_en_i(remote_export_type_en),
             .remote_rejected_i(remote_rejected_q),
             .smt_found_i(smt_found),
             .smt_core_i(smt_core),
