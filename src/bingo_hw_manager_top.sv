@@ -703,7 +703,6 @@ module bingo_hw_manager_top #(
     // Ready queue signals
     //////////////////////
     // Ready task info
-    device_axi_lite_addr_t                  [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_base_addr;
     bingo_hw_manager_ready_task_desc_full_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_data_in;
     logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_push;
     logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_full;
@@ -1357,10 +1356,11 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////////////////
     // Ready Queue
     //////////////////////////////////////////////////////////////////////
-    // This is the ready queue interface
-    // Device will read ready tasks info from this queue via 32bit AXI Lite
-    // The information contains only task ID
-    // Before each ready queue, there is a filter to filter out the dummy set tasks since it will not be run on the core
+    // A task routed to a slot enters its checkout queue and, if it runs on a
+    // core, its ready queue (bingo_hw_manager_ready_queue), where the core
+    // reads its id. Before each ready queue a filter drops the tasks that run
+    // on no core here: dummy sets, CERF-skipped tasks, absorbed exits and
+    // tasks exported to another chiplet.
     for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin: gen_ready_queue_per_core
         for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin: gen_ready_queue_per_core_per_cluster
             stream_filter i_stream_filter_for_ready_queue_dummy_set (
@@ -1402,85 +1402,41 @@ module bingo_hw_manager_top #(
                  route_exit_absorb[core][cluster] ||
                  route_remote[core][cluster]);
             assign ready_queue_filter_oup_ready[core][cluster] = ~ready_queue_full[core][cluster];
-            if (READY_AND_DONE_QUEUE_INTERFACE_TYPE==0) begin: gen_ready_queue_axi_lite_mailbox                               
-                bingo_hw_manager_read_mailbox #(
-                    .MailboxDepth(ReadyQueueDepth                ),
-                    .IrqEdgeTrig (1'b0                           ),
-                    .IrqActHigh  (1'b1                           ),
-                    .AxiAddrWidth(DeviceAxiLiteAddrWidth         ),
-                    .AxiDataWidth(DeviceAxiLiteDataWidth         ),
-                    .ChipIdWidth (ChipIdWidth                    ),
-                    .req_lite_t  (device_axi_lite_req_t          ),
-                    .resp_lite_t (device_axi_lite_resp_t         )
-                ) i_bingo_hw_manager_ready_queue (
-                    .clk_i       (clk_i                                                        ),
-                    .rst_ni      (rst_ni                                                       ),
-                    .chip_id_i   (chip_id_i                                                    ),
-                    .test_i      (1'b0                                                         ),
-                    .req_i       (ready_queue_axi_lite_req_i[core][cluster]                    ),
-                    .resp_o      (ready_queue_axi_lite_resp_o[core][cluster]                   ),
-                    .irq_o       (/*not used*/                                                 ),
-                    .base_addr_i (ready_queue_base_addr[core][cluster]                         ),
-                    .mbox_data_i (ready_queue_data_in[core][cluster]                           ),
-                    .mbox_push_i (ready_queue_push[core][cluster]                              ),
-                    .mbox_full_o (ready_queue_full[core][cluster]                              ),
-                    .mbox_flush_i(1'b0                                                         )
-                );
-                // Connect to the core_status_waiting_task
-                // This signal indicates whether the core is waiting for a task to be read from the ready queue
-                // If ar_valid is high and r_ready is low, it means the core is waiting for a task
-                assign core_status_waiting_task[core][cluster] = ready_queue_axi_lite_req_i[core][cluster].ar_valid && 
-                                                                !ready_queue_axi_lite_req_i[core][cluster].r_ready;
-                // Tie off the generic fifo read signals
-                assign ready_queue_pop[core][cluster] = 1'b0;
-                assign ready_queue_empty[core][cluster] = 1'b0;
-                assign ready_queue_data_out[core][cluster] = '0;
-                assign ready_class[core][cluster] = '0;
-            end else begin: gen_ready_queue_generic_fifo
-                // Extra internal metadata never appears in the device's ready word.
-                typedef struct packed {
-                    logic [WdClassWidth-1:0] wd_class;
-                    bingo_hw_manager_ready_task_desc_full_t desc;
-                } ready_entry_t;
-                ready_entry_t entry_in, entry_out;
-                assign entry_in.desc = ready_queue_data_in[core][cluster];
-                assign entry_in.wd_class = ready_source_desc.wd_class;
-                assign ready_queue_data_out[core][cluster] = entry_out.desc;
-                assign ready_class[core][cluster] = entry_out.wd_class;
-                fifo_v3 #(
-                    .FALL_THROUGH ( 1'b0                                      ),
-                    .DEPTH        ( ReadyQueueDepth                           ),
-                    .dtype        ( ready_entry_t                             )
-                ) i_ready_queue (
-                    .clk_i       ( clk_i                                  ),
-                    .rst_ni      ( rst_ni                                 ),
-                    .testmode_i  ( 1'b0                                   ),
-                    // Replay: the entries of a fenced core are moved from its checkout queue
-                    .flush_i     ( replay_ready_flush[core][cluster]      ),
-                    .full_o      ( ready_queue_full[core][cluster]        ),
-                    .empty_o     ( ready_queue_empty[core][cluster]       ),
-                    .usage_o     ( /*not used*/                           ),
-                    .data_i      ( entry_in                              ),
-                    .push_i      ( ready_queue_push[core][cluster]        ),
-                    .data_o      ( entry_out                             ),
-                    .pop_i       ( ready_queue_pop[core][cluster]         )
-                );
-                // Connect to the core_status_waiting_task
-                // Since we do not have the axi lite interface, we tie off the ready queue axi lite resp signals
-                assign ready_queue_axi_lite_resp_o[core][cluster] = '0;
-            end
-            assign ready_queue_base_addr[core][cluster] = ready_queue_base_addr_i +
-                                                        (core + cluster * NUM_CORES_PER_CLUSTER) * ReadyQueueAddrOffset;
-            // Replay pushes never collide with routed pushes: routing into the cluster
-            // is blocked while a replay MOVE may push into it.
-            bingo_hw_manager_task_desc_t ready_source_desc;
-            assign ready_source_desc = replay_push_ready[core][cluster] ? replay_data :
-                import_push[core][cluster] ? import_desc :
-                waiting_dep_check_task_desc[remap_route_src_core[core][cluster]];
-            assign ready_queue_data_in[core][cluster].task_id = ready_source_desc.task_id;
-            assign ready_queue_data_in[core][cluster].reserved_bits = '0;
-            assign ready_queue_push[core][cluster] = (ready_queue_filter_oup_valid[core][cluster] & ~ready_queue_full[core][cluster]) |
-                                                     replay_push_ready[core][cluster] | import_push[core][cluster];
+            bingo_hw_manager_ready_queue #(
+                .InterfaceType ( READY_AND_DONE_QUEUE_INTERFACE_TYPE     ),
+                .Depth         ( ReadyQueueDepth                         ),
+                .WdClassWidth  ( WdClassWidth                            ),
+                .ChipIdWidth   ( ChipIdWidth                             ),
+                .AxiAddrWidth  ( DeviceAxiLiteAddrWidth                  ),
+                .AxiDataWidth  ( DeviceAxiLiteDataWidth                  ),
+                .task_desc_t   ( bingo_hw_manager_task_desc_t            ),
+                .ready_desc_t  ( bingo_hw_manager_ready_task_desc_full_t ),
+                .req_lite_t    ( device_axi_lite_req_t                   ),
+                .resp_lite_t   ( device_axi_lite_resp_t                  ),
+                .addr_t        ( device_axi_lite_addr_t                  )
+            ) i_ready (
+                .clk_i           ( clk_i                                                            ),
+                .rst_ni          ( rst_ni                                                           ),
+                .chip_id_i       ( chip_id_i                                                        ),
+                .route_push_i    ( ready_queue_filter_oup_valid[core][cluster]                      ),
+                .route_desc_i    ( waiting_dep_check_task_desc[remap_route_src_core[core][cluster]] ),
+                .replay_push_i   ( replay_push_ready[core][cluster]                                 ),
+                .replay_desc_i   ( replay_data                                                      ),
+                .import_push_i   ( import_push[core][cluster]                                       ),
+                .import_desc_i   ( import_desc                                                      ),
+                .push_o          ( ready_queue_push[core][cluster]                                  ),
+                .push_data_o     ( ready_queue_data_in[core][cluster]                               ),
+                .full_o          ( ready_queue_full[core][cluster]                                  ),
+                .flush_i         ( replay_ready_flush[core][cluster]                                ),
+                .pop_i           ( ready_queue_pop[core][cluster]                                   ),
+                .empty_o         ( ready_queue_empty[core][cluster]                                 ),
+                .data_o          ( ready_queue_data_out[core][cluster]                              ),
+                .class_o         ( ready_class[core][cluster]                                       ),
+                .base_addr_i     ( ready_queue_base_addr_i +
+                                   (core + cluster * NUM_CORES_PER_CLUSTER) * ReadyQueueAddrOffset  ),
+                .axi_lite_req_i  ( ready_queue_axi_lite_req_i[core][cluster]                        ),
+                .axi_lite_resp_o ( ready_queue_axi_lite_resp_o[core][cluster]                       )
+            );
         end
     end
 
@@ -1891,7 +1847,15 @@ module bingo_hw_manager_top #(
 
     end else begin: gen_no_csr_to_fifo_intf
         // If it is AXI Lite Mailbox interface, the ready queue and done queue interface are already connected
-        // So we do not need to do anything here
+        // A core waits for a task while its read of the ready mailbox is
+        // pending (ar_valid high, r_ready low); the mailbox pops itself
+        for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin : gen_waiting_core
+            for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin : gen_waiting_cluster
+                assign core_status_waiting_task[core][cluster] = ready_queue_axi_lite_req_i[core][cluster].ar_valid &&
+                                                                 !ready_queue_axi_lite_req_i[core][cluster].r_ready;
+            end
+        end
+        assign ready_queue_pop = '0;
         // Level 3 needs the CSR interface (see gen_remote_intf_check)
         assign remote_done_push    = '0;
         assign remote_reject_in    = '0;
