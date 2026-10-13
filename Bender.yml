@@ -47,6 +47,7 @@ sources:
   - src/bingo_hw_manager_remap_count.sv        # Tasks of a logical slot in other slots' checkout queues
   - src/bingo_hw_manager_remote_export.sv      # Level 3, origin side: export queues and proxy slots
   - src/bingo_hw_manager_remote_import.sv      # Level 3, executor side: imports, their dones and rejects
+  - src/bingo_hw_manager_top_assert.sv         # Simulation-only invariants of the top
   # Level 2
   - src/bingo_hw_manager_top.sv                # Top-level module
   - target: test
