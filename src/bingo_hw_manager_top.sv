@@ -745,18 +745,11 @@ module bingo_hw_manager_top #(
     logic                                                                                    remote_done_mismatch_q;
     // Remote done / reject for a slot that cannot be a proxy: accepted and dropped
     logic                                                                                    remote_done_stray;
+    // The head may retire this cycle (bingo_hw_manager_checkout_queue), and the
+    // retiring head offered to the local dependency matrix or to another chiplet
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_retire_valid;
-    // How the head of a checkout queue may leave it this cycle (a replay move is
-    // not a retirement). Everything that retires a head reads this one rule.
-    typedef enum logic [1:0] {
-        RetireNone,     // stays
-        RetireSkip,     // runs on no core (dummy set, or a head the CERF skips): leaves without a done
-        RetireWithDone  // ran on a core: leaves together with its own done
-    } retire_kind_e;
-    retire_kind_e                  [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] retire_kind;
-    // The head retires now: its dep_set path, or the remote done stream for an
-    // imported head, accepted it
-    logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] retire_fire;
+    logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_local_set_valid;
+    logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_chiplet_set_valid;
     // Level 3 export (origin side)
     logic [NUM_CORES_PER_CLUSTER-1:0]                                       remap_remote;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]         route_remote;
@@ -780,6 +773,7 @@ module bingo_hw_manager_top #(
     logic                                  import_reject;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] import_push;
     bingo_hw_manager_task_desc_t           import_desc;
+    remote_tag_t                           import_tag;
     // Level 3 remote dones
     remote_done_t [NUM_CORES_PER_CLUSTER*NUM_CLUSTERS_PER_CHIPLET-1:0] remote_done_arb_data;
     logic         [NUM_CORES_PER_CLUSTER*NUM_CLUSTERS_PER_CHIPLET-1:0] remote_done_arb_valid;
@@ -793,28 +787,6 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    remote_rejected_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    remote_reject_in;
 
-    ///////////////////////////////////////////
-    // Stream Demux Checkout Queue Chiplet Set
-    ///////////////////////////////////////////
-    // After each checkout queue, we need to demux the chiplet dep set tasks
-    // There are two types of outputs from the checkout queue
-    // [0]: Local dep set
-    // [1]: Chiplet dep set
-    typedef logic [1:0] stream_demux_checkout_queue_chiplet_dep_set_oup_t;
-    logic                                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_checkout_queue_chiplet_dep_set_inp_valid;
-    logic                                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_checkout_queue_chiplet_dep_set_inp_ready;
-    logic                                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_checkout_queue_chiplet_dep_set_oup_sel;
-    stream_demux_checkout_queue_chiplet_dep_set_oup_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_checkout_queue_chiplet_dep_set_oup_valid;
-    stream_demux_checkout_queue_chiplet_dep_set_oup_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stream_demux_checkout_queue_chiplet_dep_set_oup_ready;
-
-    ///////////////////////////////////////////
-    // Stream Filter Checkout Queue Dep Set Enable
-    ///////////////////////////////////////////    
-    logic                                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stream_filter_checkout_queue_dep_set_enable_inp_valid;
-    logic                                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stream_filter_checkout_queue_dep_set_enable_inp_ready;
-    logic                                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stream_filter_checkout_queue_dep_set_enable_drop;
-    logic                                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stream_filter_checkout_queue_dep_set_enable_oup_valid;
-    logic                                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] stream_filter_checkout_queue_dep_set_enable_oup_ready;
     ///////////////////////////////////////
     // Per (Core, Cluster) Done Queue signals
     // Each (core, cluster) pair has its own done queue FIFO.
@@ -1118,7 +1090,7 @@ module bingo_hw_manager_top #(
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].assigned_chiplet_id = checkout_queue_data_out[core][cluster].assigned_chiplet_id;
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].task_id = checkout_queue_data_out[core][cluster].task_id;
                 stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].task_type = checkout_queue_data_out[core][cluster].task_type;
-                stream_arbiter_chiplet_dep_set_inp_valid[core + cluster * NUM_CORES_PER_CLUSTER] = stream_demux_checkout_queue_chiplet_dep_set_oup_valid[core][cluster][1];
+                stream_arbiter_chiplet_dep_set_inp_valid[core + cluster * NUM_CORES_PER_CLUSTER] = checkout_chiplet_set_valid[core][cluster];
             end           
         end
     end
@@ -1325,9 +1297,9 @@ module bingo_hw_manager_top #(
                     stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_matrix_col = checkout_queue_data_out[core][cluster].assigned_core_id;
                     stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_matrix_set_tag = checkout_queue_data_out[core][cluster].dep_set_info.dep_set_tag;
                     stream_arbiter_dep_matrix_set_inp_data[stream_arbiter_inp_idx].dep_set_code  = checkout_queue_data_out[core][cluster].dep_set_info.dep_set_code;
-                    // Handshake from the checkout demux: valid only for a head that may
-                    // retire (retire_kind), so a task that ran already has its done here
-                    stream_arbiter_dep_matrix_set_inp_valid[stream_arbiter_inp_idx] = stream_filter_checkout_queue_dep_set_enable_oup_valid[core][cluster];
+                    // Valid only for a head that may retire, so a task that ran
+                    // already has its done here (bingo_hw_manager_checkout_queue)
+                    stream_arbiter_dep_matrix_set_inp_valid[stream_arbiter_inp_idx] = checkout_local_set_valid[core][cluster];
             end
         end
         // For Chiplet Set Queue
@@ -1516,224 +1488,88 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////////////////
     // Checkout Queue
     //////////////////////////////////////////////////////////////////////
-    // Check out queues are internal fifos
-    // input is from the waiting dep check queue
-    // after it has been checked by the dep matrix, it will be pushed to the checkout queue
-    // and then wait the done queue to pop it
+    // Every task placed on a physical slot waits in its checkout queue until it
+    // retires (see bingo_hw_manager_checkout_queue): with its own done if it ran
+    // on a core, at once if it runs on no core, never from a stuck slot unless
+    // it runs on no core. The retiring head sets its dependencies here or on
+    // another chiplet; an imported head goes back to its origin instead.
     for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin: gen_checkout_queue_per_core
         for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin: gen_checkout_queue_per_core_per_cluster
-            fifo_v3 #(
-                .FALL_THROUGH ( 1'b0                                  ),
-                .DEPTH        ( CheckoutFifoDepth                     ),
-                .dtype        ( bingo_hw_manager_task_desc_t          )
-            ) i_checkout_queue (
-                .clk_i       ( clk_i                                  ),
-                .rst_ni      ( rst_ni                                 ),
-                .testmode_i  ( 1'b0                                   ),
-                .flush_i     ( 1'b0                                   ),
-                .full_o      ( checkout_queue_full_raw[core][cluster] ),
-                .empty_o     ( checkout_queue_empty[core][cluster]    ),
-                .usage_o     ( checkout_queue_usage[core][cluster]    ),
-                .data_i      ( checkout_queue_data_in[core][cluster]  ),
-                .push_i      ( checkout_queue_push[core][cluster]     ),
-                .data_o      ( checkout_queue_data_out[core][cluster] ),
-                .pop_i       ( checkout_queue_pop[core][cluster]      )
+            localparam int unsigned Slot = core + cluster * NUM_CORES_PER_CLUSTER;
+            bingo_hw_manager_checkout_queue #(
+                .NumCores          ( NUM_CORES_PER_CLUSTER                            ),
+                .NumClusters       ( NUM_CLUSTERS_PER_CHIPLET                         ),
+                .Core              ( core                                             ),
+                .Cluster           ( cluster                                          ),
+                .Depth             ( CheckoutQueueDepth                               ),
+                .TaskIdWidth       ( TaskIdWidth                                      ),
+                .CoreIdWidth       ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
+                .ClusterIdWidth    ( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
+                .RemoteEn          ( RemoteEn                                         ),
+                .ForeignStuckDrain ( ForeignStuckDrain                                ),
+                .OutstandingWidth  ( RemapOutstandingWidth                            ),
+                .task_desc_t       ( bingo_hw_manager_task_desc_t                     ),
+                .remote_tag_t      ( remote_tag_t                                     ),
+                .chip_id_t         ( chip_id_t                                        )
+            ) i_checkout (
+                .clk_i                ( clk_i                                                            ),
+                .rst_ni               ( rst_ni                                                           ),
+                .chip_id_i            ( chip_id_i                                                        ),
+                .route_push_i         ( remap_route_fire[core][cluster]                                  ),
+                .route_desc_i         ( waiting_dep_check_task_desc[remap_route_src_core[core][cluster]] ),
+                .route_skip_i         ( cond_exec_skip[remap_route_src_core[core][cluster]]              ),
+                .route_exit_absorb_i  ( route_exit_absorb[core][cluster]                                 ),
+                .route_export_i       ( route_remote[core][cluster]                                      ),
+                .replay_push_i        ( replay_push[core][cluster]                                       ),
+                .replay_desc_i        ( replay_data                                                      ),
+                .replay_tag_i         ( checkout_remote_tag_out[replay_src_core][replay_src_cluster]     ),
+                .replay_rotate_i      ( replay_rotate                                                    ),
+                .replay_exit_absorb_i ( replay_exit_absorb                                               ),
+                .replay_pop_i         ( replay_pop[core][cluster]                                        ),
+                .replay_hold_i        ( replay_hold_slot[core][cluster]                                  ),
+                .import_push_i        ( import_push[core][cluster]                                       ),
+                .import_desc_i        ( import_desc                                                      ),
+                .import_tag_i         ( import_tag                                                       ),
+                .push_o               ( checkout_queue_push[core][cluster]                               ),
+                .push_desc_o          ( checkout_queue_data_in[core][cluster]                            ),
+                .push_tag_o           ( checkout_remote_tag_in[core][cluster]                            ),
+                .exit_absorb_o        ( exit_absorb[core][cluster]                                       ),
+                .pop_o                ( checkout_queue_pop[core][cluster]                                ),
+                .full_o               ( checkout_queue_full[core][cluster]                               ),
+                .full_raw_o           ( checkout_queue_full_raw[core][cluster]                           ),
+                .empty_o              ( checkout_queue_empty[core][cluster]                              ),
+                .usage_o              ( checkout_queue_usage[core][cluster]                              ),
+                .head_o               ( checkout_queue_data_out[core][cluster]                           ),
+                .head_tag_o           ( checkout_remote_tag_out[core][cluster]                           ),
+                .head_imported_o      ( checkout_head_imported[core][cluster]                            ),
+                .head_exec_o          ( checkout_head_exec[core][cluster]                                ),
+                .stuck_i              ( replay_stuck_slot[core][cluster]                                 ),
+                .rejected_i           ( remote_rejected_q[core][cluster]                                 ),
+                .cerf_state_i         ( cerf_state                                                       ),
+                .retired_i            ( core_retired                                                     ),
+                .outstanding_i        ( remap_outstanding_q                                              ),
+                .moved_in_i           ( moved_in_q[core][cluster]                                        ),
+                .stuck_drain_o        ( stuck_drain[core][cluster]                                       ),
+                .stuck_head_skip_o    ( stuck_head_skip[core][cluster]                                   ),
+                .done_empty_i         ( done_q_empty[core][cluster]                                      ),
+                .done_task_id_i       ( done_q_info[core][cluster].task_id                               ),
+                .done_pop_o           ( done_q_pop[core][cluster]                                        ),
+                .remote_mismatch_o    ( remote_head_mismatch[core][cluster]                              ),
+                .retire_valid_o       ( checkout_retire_valid[core][cluster]                             ),
+                .retire_fire_o        ( /* pops the queue */                                             ),
+                .local_set_valid_o    ( checkout_local_set_valid[core][cluster]                          ),
+                .local_set_ready_i    ( stream_arbiter_dep_matrix_set_inp_ready[Slot]                    ),
+                .chiplet_set_valid_o  ( checkout_chiplet_set_valid[core][cluster]                        ),
+                .chiplet_set_ready_i  ( stream_arbiter_chiplet_dep_set_inp_ready[Slot]                   ),
+                .remote_done_valid_o  ( remote_done_arb_valid[Slot]                                      ),
+                .remote_done_ready_i  ( remote_done_arb_ready[Slot]                                      )
             );
-            // Level 3: the spare entry is only for replay rotations
-            if (RemoteEn) begin : gen_checkout_remote
-                assign checkout_queue_full[core][cluster] = checkout_queue_full_raw[core][cluster] ||
-                    (checkout_queue_usage[core][cluster] == CheckoutUsageWidth'(CheckoutQueueDepth));
-                fifo_v3 #(
-                    .FALL_THROUGH ( 1'b0              ),
-                    .DEPTH        ( CheckoutFifoDepth ),
-                    .dtype        ( remote_tag_t      )
-                ) i_checkout_remote_tag (
-                    .clk_i       ( clk_i                                  ),
-                    .rst_ni      ( rst_ni                                 ),
-                    .testmode_i  ( 1'b0                                   ),
-                    .flush_i     ( 1'b0                                   ),
-                    .full_o      ( /* same as the checkout queue */       ),
-                    .empty_o     ( /* same as the checkout queue */       ),
-                    .usage_o     ( /* same as the checkout queue */       ),
-                    .data_i      ( checkout_remote_tag_in[core][cluster]  ),
-                    .push_i      ( checkout_queue_push[core][cluster]     ),
-                    .data_o      ( checkout_remote_tag_out[core][cluster] ),
-                    .pop_i       ( checkout_queue_pop[core][cluster]      )
-                );
-                always_comb begin
-                    checkout_remote_tag_in[core][cluster] = '0;
-                    if (replay_push[core][cluster]) begin
-                        checkout_remote_tag_in[core][cluster] =
-                            checkout_remote_tag_out[replay_src_core][replay_src_cluster];
-                        if (replay_rotate) checkout_remote_tag_in[core][cluster].exported = 1'b1;
-                    end else if (import_push[core][cluster]) begin
-                        checkout_remote_tag_in[core][cluster].imported    = 1'b1;
-                        checkout_remote_tag_in[core][cluster].origin_chip = remote_dispatch_origin_chip_i;
-                        checkout_remote_tag_in[core][cluster].proxy_slot  = remote_dispatch_proxy_slot_i;
-                    end else begin
-                        checkout_remote_tag_in[core][cluster].exported = route_remote[core][cluster];
-                    end
-                end
-            end else begin : gen_checkout_no_remote
-                assign checkout_queue_full[core][cluster]     = checkout_queue_full_raw[core][cluster];
-                assign checkout_remote_tag_in[core][cluster]  = '0;
-                assign checkout_remote_tag_out[core][cluster] = '0;
-            end
-            assign checkout_head_imported[core][cluster] = RemoteEn && checkout_remote_tag_out[core][cluster].imported;
-
-            // DARTS CERF: if task is conditionally skipped, mark as dummy (TaskDummy)
-            // so checkout logic fires dep_set without done_queue match
-            always_comb begin
-                if (replay_push[core][cluster]) begin
-                    // Replayed entry: already checked (and CERF-marked) at its first dispatch
-                    checkout_queue_data_in[core][cluster] = replay_data;
-                end else if (import_push[core][cluster]) begin
-                    // Imported entry: checked on its origin chiplet
-                    checkout_queue_data_in[core][cluster] = import_desc;
-                end else begin
-                    checkout_queue_data_in[core][cluster] =
-                        waiting_dep_check_task_desc[remap_route_src_core[core][cluster]];
-                    if (cond_exec_skip[remap_route_src_core[core][cluster]] ||
-                        route_exit_absorb[core][cluster]) begin
-                        checkout_queue_data_in[core][cluster].task_type = TaskDummy;
-                    end
-                end
-            end
-            assign checkout_queue_push[core][cluster] = remap_route_fire[core][cluster] | replay_push[core][cluster] |
-                                                        import_push[core][cluster];
-            assign exit_absorb[core][cluster] =
-                (remap_route_fire[core][cluster] && route_exit_absorb[core][cluster]) ||
-                (replay_push[core][cluster] && replay_exit_absorb);
-            // Pop on the handshake only: the downstream arbiters may raise ready without
-            // valid, which would retire an executing head before its done arrived.
-            // While a replay MOVE drains this queue, only the replay controller pops it
-            // (valid is held low then). A stuck slot keeps its remaining entries: a
-            // dummy-set among them must not fire before its lost source task
-            // (only heads that run on no core leave it, see stuck_drain).
-            // An imported head retires into the remote done stream instead.
-            assign checkout_queue_pop[core][cluster] = retire_fire[core][cluster] || replay_pop[core][cluster];
-
-            stream_demux #(
-                .N_OUP ( 2 )
-            ) i_stream_demux_checkout_queue_chiplet_dep_set (
-                .inp_valid_i ( stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster]    ),
-                .inp_ready_o ( stream_demux_checkout_queue_chiplet_dep_set_inp_ready[core][cluster]    ),
-                .oup_sel_i   ( stream_demux_checkout_queue_chiplet_dep_set_oup_sel[core][cluster]      ),
-                .oup_valid_o ( stream_demux_checkout_queue_chiplet_dep_set_oup_valid[core][cluster]    ),
-                .oup_ready_i ( stream_demux_checkout_queue_chiplet_dep_set_oup_ready[core][cluster]    )
-            );
-
-            // A stuck or rejected slot runs nothing more. Its head may still retire
-            // the way a skipped task does (dep_set, no done) when it never runs on
-            // a core anyway (dummy-set, or skipped at dispatch) or when the CERF
-            // now skips it (degradation, see bingo_hw_manager_ctrl). For the
-            // slot's own logical core with no task in another slot: then every
-            // older task of that core has left this FIFO. With ForeignStuckDrain,
-            // also for a logical core X that died before this slot: X is retired
-            // (its own queue holds none of its tasks) and every task of X in
-            // another slot is in this one, so this FIFO keeps X's order (a type
-            // with a substitute whose two cores both died). Anything else waits.
-            logic stuck_head_own, stuck_head_foreign;
-            assign stuck_head_own =
-                (checkout_queue_data_out[core][cluster].assigned_core_id ==
-                 bingo_hw_manager_assigned_core_id_t'(core)) &&
-                (checkout_queue_data_out[core][cluster].assigned_cluster_id ==
-                 bingo_hw_manager_assigned_cluster_id_t'(cluster)) &&
-                (remap_outstanding_q[core][cluster] == '0);
-            if (ForeignStuckDrain) begin : gen_foreign_drain
-                bingo_hw_manager_assigned_core_id_t    x_core;
-                bingo_hw_manager_assigned_cluster_id_t x_cluster;
-                assign x_core    = checkout_queue_data_out[core][cluster].assigned_core_id;
-                assign x_cluster = checkout_queue_data_out[core][cluster].assigned_cluster_id;
-                assign stuck_head_foreign =
-                    ((x_core != bingo_hw_manager_assigned_core_id_t'(core)) ||
-                     (x_cluster != bingo_hw_manager_assigned_cluster_id_t'(cluster))) &&
-                    (int'(x_core) < NUM_CORES_PER_CLUSTER) && (int'(x_cluster) < NUM_CLUSTERS_PER_CHIPLET) &&
-                    core_retired[x_core][x_cluster] &&
-                    (moved_in_q[core][cluster][x_core][x_cluster] == remap_outstanding_q[x_core][x_cluster]);
-            end else begin : gen_no_foreign_drain
-                assign stuck_head_foreign = 1'b0;
-            end
-            assign stuck_drain[core][cluster] =
-                (replay_stuck_slot[core][cluster] || remote_rejected_q[core][cluster]) &&
-                !checkout_queue_empty[core][cluster] && !checkout_head_imported[core][cluster] &&
-                (stuck_head_own || stuck_head_foreign);
-            assign stuck_head_skip[core][cluster] = stuck_drain[core][cluster] &&
-                checkout_queue_data_out[core][cluster].cond_exec_en &&
-                (checkout_queue_data_out[core][cluster].cond_exec_invert ?
-                    cerf_state[checkout_queue_data_out[core][cluster].cond_exec_group_id] :
-                    !cerf_state[checkout_queue_data_out[core][cluster].cond_exec_group_id]);
-            // An executing task (normal / gating) only leaves the checkout queue with its
-            // own done, for the local and the chiplet dep_set path alike.
-            assign checkout_head_exec[core][cluster] = ((checkout_queue_data_out[core][cluster].task_type == TaskNormal) ||
-                                                        (checkout_queue_data_out[core][cluster].task_type == TaskGating) ||
-                                                        (checkout_queue_data_out[core][cluster].task_type == TaskNoReplay)) &&
-                                                       !stuck_head_skip[core][cluster];
-            // Level 3: an exported head only retires on the remote done of the
-            // same task (the dones of a proxy slot come back in export order)
-            assign remote_head_mismatch[core][cluster] = RemoteEn &&
-                checkout_remote_tag_out[core][cluster].exported &&
-                !checkout_queue_empty[core][cluster] && checkout_head_exec[core][cluster] &&
-                !done_q_empty[core][cluster] &&
-                (done_q_info[core][cluster].task_id != checkout_queue_data_out[core][cluster].task_id);
-            // The retire rule. A head that ran on a core waits for its done (for an
-            // exported head: the remote done of the same task) and never leaves a
-            // stuck or rejected slot. A head that runs on no core leaves at once; on
-            // a stuck or rejected slot only when stuck_drain allows it.
-            always_comb begin
-                retire_kind[core][cluster] = RetireNone;
-                if (!checkout_queue_empty[core][cluster] && !replay_hold_slot[core][cluster]) begin
-                    if (checkout_head_exec[core][cluster]) begin
-                        if (!(replay_stuck_slot[core][cluster] || remote_rejected_q[core][cluster]) &&
-                            !done_q_empty[core][cluster] && !remote_head_mismatch[core][cluster]) begin
-                            retire_kind[core][cluster] = RetireWithDone;
-                        end
-                    end else if (!(replay_stuck_slot[core][cluster] || remote_rejected_q[core][cluster]) ||
-                                 stuck_drain[core][cluster]) begin
-                        retire_kind[core][cluster] = RetireSkip;
-                    end
-                end
-            end
-            assign checkout_retire_valid[core][cluster] = (retire_kind[core][cluster] != RetireNone);
-            // An imported head retires into the remote done stream, any other into its dep_set path
-            assign stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] =
-                checkout_retire_valid[core][cluster] && !checkout_head_imported[core][cluster];
-            assign remote_done_arb_valid[core + cluster * NUM_CORES_PER_CLUSTER] =
-                checkout_retire_valid[core][cluster] && checkout_head_imported[core][cluster];
-            assign retire_fire[core][cluster] =
-                (stream_demux_checkout_queue_chiplet_dep_set_inp_valid[core][cluster] &&
-                 stream_demux_checkout_queue_chiplet_dep_set_inp_ready[core][cluster]) ||
-                (remote_done_arb_valid[core + cluster * NUM_CORES_PER_CLUSTER] &&
-                 remote_done_arb_ready[core + cluster * NUM_CORES_PER_CLUSTER]);
-            assign remote_done_arb_data[core + cluster * NUM_CORES_PER_CLUSTER] = '{
+            assign remote_done_arb_data[Slot] = '{
                 chip:       checkout_remote_tag_out[core][cluster].origin_chip,
                 proxy_slot: checkout_remote_tag_out[core][cluster].proxy_slot,
                 task_id:    checkout_queue_data_out[core][cluster].task_id,
                 reject:     1'b0
             };
-            assign stream_demux_checkout_queue_chiplet_dep_set_oup_sel[core][cluster] = 
-                (checkout_queue_data_out[core][cluster].dep_set_info.dep_set_chiplet_id != chip_id_i);
-            // To Chiplet Dep Set
-            assign stream_demux_checkout_queue_chiplet_dep_set_oup_ready[core][cluster][1] = stream_arbiter_chiplet_dep_set_inp_ready[core + cluster * NUM_CORES_PER_CLUSTER];
-            // To Local Dep Set
-            assign stream_demux_checkout_queue_chiplet_dep_set_oup_ready[core][cluster][0] = stream_filter_checkout_queue_dep_set_enable_inp_ready[core][cluster];
-
-            stream_filter i_stream_filter_checkout_queue_dep_set_enable (
-                .valid_i ( stream_filter_checkout_queue_dep_set_enable_inp_valid[core][cluster]    ),
-                .ready_o ( stream_filter_checkout_queue_dep_set_enable_inp_ready[core][cluster]    ),
-                .drop_i  ( stream_filter_checkout_queue_dep_set_enable_drop[core][cluster]         ),
-                .valid_o ( stream_filter_checkout_queue_dep_set_enable_oup_valid[core][cluster]    ),
-                .ready_i ( stream_filter_checkout_queue_dep_set_enable_oup_ready[core][cluster]    )
-            );
-            assign stream_filter_checkout_queue_dep_set_enable_inp_valid[core][cluster] = stream_demux_checkout_queue_chiplet_dep_set_oup_valid[core][cluster][0];
-            // Only drop the signal when dep set is disabled and the per-(core,cluster) done queue is non-empty
-            // (a head that ran has its done here already, see retire_kind; the done
-            // queue only decides for a head that runs on no core)
-            assign stream_filter_checkout_queue_dep_set_enable_drop[core][cluster] =
-                (checkout_queue_data_out[core][cluster].dep_set_info.dep_set_en == 1'b0) &&
-                (!done_q_empty[core][cluster]);
-            assign stream_filter_checkout_queue_dep_set_enable_oup_ready[core][cluster] = stream_arbiter_dep_matrix_set_inp_ready[core + cluster * NUM_CORES_PER_CLUSTER];
-
         end
     end
 
@@ -1813,22 +1649,6 @@ module bingo_hw_manager_top #(
                 .data_o      ( done_q_info[core][cluster]       ),
                 .pop_i       ( done_q_pop[core][cluster]        )
             );
-        end
-    end
-
-    // Per-(core, cluster) done queue pop logic:
-    // Pop together with the checkout queue head when that head ran on a core
-    // (RetireWithDone): it only leaves the checkout queue with its done
-    // (local dep_set, chiplet dep_set, or dropped when dep_set is disabled).
-    // Popping on the dep-matrix arbiter's ready instead left the done behind when
-    // the head took another path, so the next task retired on it prematurely.
-    // A replay move is not a retirement. No cross-core or cross-cluster blocking.
-    always_comb begin
-        for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
-            for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
-                done_q_pop[core][cluster] = retire_fire[core][cluster] &&
-                                            (retire_kind[core][cluster] == RetireWithDone);
-            end
         end
     end
 
@@ -2857,6 +2677,10 @@ module bingo_hw_manager_top #(
             import_desc.cond_exec_group_id  = '0;
             import_desc.cond_exec_invert    = 1'b0;
         end
+        assign import_tag = '{exported:    1'b0,
+                              imported:    1'b1,
+                              origin_chip: remote_dispatch_origin_chip_i,
+                              proxy_slot:  remote_dispatch_proxy_slot_i};
         assign import_fire = remote_dispatch_valid_i && import_home_found && import_sub_found &&
                              !replay_pending && !(|replay_move) &&
                              !remap_route_valid[import_core][import_cluster] &&
@@ -2946,6 +2770,7 @@ module bingo_hw_manager_top #(
         assign import_core                   = '0;
         assign import_cluster                = '0;
         assign import_desc                   = '0;
+        assign import_tag                    = '0;
         assign import_fire                   = 1'b0;
         assign import_reject                 = 1'b0;
         assign import_push                   = '0;

@@ -37,6 +37,7 @@ sources:
   - src/bingo_hw_manager_dep_check_manager.sv  # Dependency Check Manager Module
   - src/bingo_hw_manager_pm.sv                 # Power Management Module
   - src/bingo_hw_manager_remote_link.sv        # Level 3 transport: remote dispatch / done over AXI-Lite
+  - src/bingo_hw_manager_checkout_queue.sv     # Checkout queue of a slot and the retire rule of its head
   # Level 2
   - src/bingo_hw_manager_top.sv                # Top-level module
   - target: test
