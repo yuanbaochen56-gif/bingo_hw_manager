@@ -1315,8 +1315,8 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_counters
                 end
             end
             for (int i = 0; i < NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET; i++) begin
-                if (gen_dut[gi].i_dut.gen_csr_to_fifo_intf.write_done_queue_valid_1d[i] &&
-                    gen_dut[gi].i_dut.gen_csr_to_fifo_intf.core_fenced_1d[i]) begin
+                if (gen_dut[gi].i_dut.gen_csr_to_fifo_intf.i_csr_port.write_done_queue_valid_1d[i] &&
+                    gen_dut[gi].i_dut.gen_csr_to_fifo_intf.i_csr_port.core_fenced_1d[i]) begin
                     fence_drop_count[gi]++;
                 end
             end

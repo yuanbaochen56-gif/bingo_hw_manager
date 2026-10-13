@@ -38,6 +38,8 @@ sources:
   - src/bingo_hw_manager_pm.sv                 # Power Management Module
   - src/bingo_hw_manager_remote_link.sv        # Level 3 transport: remote dispatch / done over AXI-Lite
   - src/bingo_hw_manager_ready_queue.sv        # Ready queue of a slot (CSR FIFO or AXI-Lite mailbox)
+  - src/bingo_hw_manager_done_queues.sv        # Done queue of every slot and what pushes into it
+  - src/bingo_hw_manager_csr_port.sv           # CSR port of the cores: ready reads, done writes, heartbeats
   - src/bingo_hw_manager_checkout_queue.sv     # Checkout queue of a slot and the retire rule of its head
   # Level 2
   - src/bingo_hw_manager_top.sv                # Top-level module

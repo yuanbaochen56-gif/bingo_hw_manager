@@ -797,13 +797,6 @@ module bingo_hw_manager_top #(
     logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_empty;
     bingo_hw_manager_done_info_full_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_data_in;
     logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_push;
-    logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_full;
-    // Legacy single-queue signals for AXI-Lite mailbox mode (TYPE==0)
-    // In AXI-Lite mode, we still use a single mailbox + internal demux
-    device_axi_lite_data_t               done_queue_mbox_data;
-    logic                                done_queue_mbox_pop;
-    logic                                done_queue_mbox_empty;
-    bingo_hw_manager_done_info_full_t    cur_done_queue_info_axi;
     ///////////////////////////////////////
     // DARTS Tier 1: CERF state and per-core conditional skip signals
     logic [31:0] cerf_state;
@@ -1530,323 +1523,53 @@ module bingo_hw_manager_top #(
     end
 
     //////////////////////////////////////////////////////////////////////
-    // Local Per-Core Done Queues
+    // Core interface and done queues
     //////////////////////////////////////////////////////////////////////
-    // Each core has its own done queue FIFO. This eliminates HOL blocking
-    // where one core's completion stalls behind another core's entry in a
-    // shared FIFO. Completions for different cores drain independently.
-
-    if (READY_AND_DONE_QUEUE_INTERFACE_TYPE==0) begin: gen_done_queue_axi_lite_mailbox
-        // AXI-Lite mailbox mode: single mailbox writes into a shared FIFO,
-        // then we demux to per-(core,cluster) FIFOs based on done_info fields.
-        bingo_hw_manager_write_mailbox #(
-            .MailboxDepth(DoneQueueDepth               ),
-            .IrqEdgeTrig (1'b0                         ),
-            .IrqActHigh  (1'b1                         ),
-            .AxiAddrWidth(DeviceAxiLiteAddrWidth       ),
-            .AxiDataWidth(DeviceAxiLiteDataWidth       ),
-            .ChipIdWidth (ChipIdWidth                  ),
-            .req_lite_t  (device_axi_lite_req_t        ),
-            .resp_lite_t (device_axi_lite_resp_t       )
-        ) i_bingo_hw_manager_done_queue (
-            .clk_i       (clk_i                     ),
-            .rst_ni      (rst_ni                    ),
-            .chip_id_i   (chip_id_i                 ),
-            .test_i      (1'b0                      ),
-            .req_i       (done_queue_axi_lite_req_i ),
-            .resp_o      (done_queue_axi_lite_resp_o),
-            .irq_o       (),
-            .base_addr_i (done_queue_base_addr_i    ),
-            .mbox_data_o (done_queue_mbox_data      ),
-            .mbox_pop_i  (done_queue_mbox_pop       ),
-            .mbox_empty_o(done_queue_mbox_empty     ),
-            .mbox_flush_i(1'b0)
-        );
-        assign cur_done_queue_info_axi = bingo_hw_manager_done_info_full_t'(done_queue_mbox_data);
-        // Pop the mailbox when the target per-(core,cluster) FIFO accepts it
-        assign done_queue_mbox_pop = !done_queue_mbox_empty &&
-                                     !done_q_full[cur_done_queue_info_axi.assigned_core_id][cur_done_queue_info_axi.assigned_cluster_id];
-        // Route mailbox data to per-(core,cluster) FIFOs
-        always_comb begin
-            for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
-                for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                    done_q_data_in[c][cl] = cur_done_queue_info_axi;
-                    done_q_push[c][cl] = done_queue_mbox_pop &&
-                        (cur_done_queue_info_axi.assigned_core_id == bingo_hw_manager_assigned_core_id_t'(c)) &&
-                        (cur_done_queue_info_axi.assigned_cluster_id == bingo_hw_manager_assigned_cluster_id_t'(cl));
-                end
-            end
-        end
-    end else begin: gen_done_queue_generic_fifo
-        // Generic FIFO mode: CSR writes go through arbiter, then demux to per-(core,cluster) FIFOs.
-        assign done_queue_axi_lite_resp_o = '0;
-        assign done_queue_mbox_empty = 1'b1;
-        assign done_queue_mbox_data = '0;
-        assign done_queue_mbox_pop = 1'b0;
-    end
-
-    // Per-(core, cluster) done queue FIFO instantiation
-    for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin: gen_done_q_core
-        for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin: gen_done_q_cluster
-            fifo_v3 #(
-                .FALL_THROUGH ( 1'b0                               ),
-                .DEPTH        ( DoneQueueDepth                     ),
-                .dtype        ( bingo_hw_manager_done_info_full_t  )
-            ) i_done_q (
-                .clk_i       ( clk_i                            ),
-                .rst_ni      ( rst_ni                           ),
-                .testmode_i  ( 1'b0                             ),
-                .flush_i     ( 1'b0                             ),
-                .full_o      ( done_q_full[core][cluster]       ),
-                .empty_o     ( done_q_empty[core][cluster]      ),
-                .usage_o     ( /*not used*/                     ),
-                .data_i      ( done_q_data_in[core][cluster]    ),
-                .push_i      ( done_q_push[core][cluster]       ),
-                .data_o      ( done_q_info[core][cluster]       ),
-                .pop_i       ( done_q_pop[core][cluster]        )
-            );
-        end
-    end
-
-    // For generic FIFO done queue, we need to connect the CSR interface signals
+    // With the CSR interface the cores read their ready queues, write their
+    // dones and send heartbeats through CSR requests (bingo_hw_manager_csr_port),
+    // which cut a fenced core off. With the AXI-Lite interface they use the
+    // mailboxes of the ready queues and of the done queues instead.
+    // Each (core, cluster) slot has its own done queue
+    // (bingo_hw_manager_done_queues), so the completions of different cores
+    // and clusters drain independently; a done of an exported task comes back
+    // into the done queue of its proxy slot.
+    logic                             csr_done_valid;
+    logic                             csr_done_ready;
+    bingo_hw_manager_done_info_full_t csr_done;
     if (READY_AND_DONE_QUEUE_INTERFACE_TYPE==1) begin: gen_csr_to_fifo_intf
-        localparam N_CORES_TOTAL = NUM_CLUSTERS_PER_CHIPLET * NUM_CORES_PER_CLUSTER;
-        // 1D CSR Requests
-        csr_req_t [N_CORES_TOTAL-1:0] csr_req_1d;
-        logic     [N_CORES_TOTAL-1:0] csr_req_valid_1d;
-        logic     [N_CORES_TOTAL-1:0] csr_req_ready_1d;
-        csr_rsp_t [N_CORES_TOTAL-1:0] csr_rsp_1d;
-        logic     [N_CORES_TOTAL-1:0] csr_rsp_valid_1d;
-        logic     [N_CORES_TOTAL-1:0] csr_rsp_ready_1d;
-        // 1D Ready Queue FIFO Interface
-        device_axi_lite_data_t [N_CORES_TOTAL-1:0] read_ready_queue_data_1d;
-        logic                  [N_CORES_TOTAL-1:0] read_ready_queue_valid_1d;
-        logic                  [N_CORES_TOTAL-1:0] read_ready_queue_ready_1d;
-        // 1D Done QUeue FIFO Interface
-        device_axi_lite_data_t [N_CORES_TOTAL-1:0] write_done_queue_data_1d;
-        logic                  [N_CORES_TOTAL-1:0] write_done_queue_valid_1d;
-        logic                  [N_CORES_TOTAL-1:0] write_done_queue_ready_1d;
-        device_axi_lite_data_t write_done_queue_data;
-        logic                  write_done_queue_valid;
-        logic                  write_done_queue_ready;
-        //
-        logic                  [N_CORES_TOTAL-1:0] heartbeat_valid_1d;
-        device_axi_lite_data_t [N_CORES_TOTAL-1:0] heartbeat_data_1d;
-        logic                  [N_CORES_TOTAL-1:0] csr_req_unknown_1d;
-        // Done writes of fenced cores are accepted and dropped before the arbiter
-        logic                  [N_CORES_TOTAL-1:0] core_fenced_1d;
-        logic                  [N_CORES_TOTAL-1:0] write_done_arb_valid_1d;
-        logic                  [N_CORES_TOTAL-1:0] write_done_arb_ready_1d;
-
-        bingo_hw_manager_csr_to_fifo #(
-            .TaskIdWidth (TaskIdWidth),
-            .N (N_CORES_TOTAL),
-            .NUM_CORES_PER_CLUSTER (NUM_CORES_PER_CLUSTER),
-            .NUM_CLUSTERS_PER_CHIPLET (NUM_CLUSTERS_PER_CHIPLET),
-            .csr_req_t (csr_req_t),
-            .csr_rsp_t (csr_rsp_t),
-            .data_t    (device_axi_lite_data_t),
-            .bingo_hw_manager_done_info_full_t (bingo_hw_manager_done_info_full_t),
-            .CsrHeartbeatAddr (CsrHeartbeatAddr)
-        ) i_bingo_hw_manager_csr_to_fifo (
-            .csr_req_i         (csr_req_1d               ),
-            .csr_req_valid_i   (csr_req_valid_1d         ),
-            .csr_req_ready_o   (csr_req_ready_1d         ),
-            .csr_rsp_o         (csr_rsp_1d               ),
-            .csr_rsp_valid_o   (csr_rsp_valid_1d         ),
-            .csr_rsp_ready_i   (csr_rsp_ready_1d         ),
-            // FIFO Read Interface
-            .fifo_data_i       (read_ready_queue_data_1d ),
-            .fifo_data_valid_i (read_ready_queue_valid_1d),
-            .fifo_data_ready_o (read_ready_queue_ready_1d),
-            // FIFO Write Interface
-            .fifo_data_o       (write_done_queue_data_1d ),
-            .fifo_data_valid_o (write_done_queue_valid_1d),
-            .fifo_data_ready_i (write_done_queue_ready_1d),
-            // heartbeat signal
-            .heartbeat_valid_o  ( heartbeat_valid_1d     ),
-            .heartbeat_data_o   ( heartbeat_data_1d      ),
-            .csr_req_unknown_o  ( csr_req_unknown_1d     )
-            );
-
-`ifndef SYNTHESIS
-        // A CSR request with an unknown address is never served and silently stalls
-        // its core (e.g. an integration that forwards a translated CSR number).
-        // Report it once when it appears.
-        logic [N_CORES_TOTAL-1:0] csr_req_unknown_q;
-        always @(posedge clk_i or negedge rst_ni) begin
-            if (!rst_ni) begin
-                csr_req_unknown_q <= '0;
-            end else begin
-                csr_req_unknown_q <= csr_req_unknown_1d;
-                for (int unsigned i = 0; i < N_CORES_TOTAL; i++) begin
-                    if (csr_req_unknown_1d[i] && !csr_req_unknown_q[i]) begin
-                        $error("[BINGO_CSR] chip %0d core %0d cluster %0d: unknown CSR address 0x%0h (write=%0b), request will stall",
-                               chip_id_i, i % NUM_CORES_PER_CLUSTER, i / NUM_CORES_PER_CLUSTER,
-                               csr_req_1d[i].addr, csr_req_1d[i].write);
-                    end
-                end
-            end
-        end
-`endif
-
-        always_comb begin : connect_ready_queue_1d_to_2d
-            for (int unsigned core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
-                for (int unsigned cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
-                    csr_req_1d[core + cluster * NUM_CORES_PER_CLUSTER] = csr_req_i[core][cluster];
-                    csr_req_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER] = csr_req_valid_i[core][cluster];
-                    csr_req_ready_o[core][cluster] = csr_req_ready_1d[core + cluster * NUM_CORES_PER_CLUSTER];
-                    csr_rsp_o[core][cluster] = csr_rsp_1d[core + cluster * NUM_CORES_PER_CLUSTER];
-                    csr_rsp_valid_o[core][cluster] = csr_rsp_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER];
-                    csr_rsp_ready_1d[core + cluster * NUM_CORES_PER_CLUSTER] = csr_rsp_ready_i[core][cluster];
-                    // A fenced core can no longer take tasks (its ready reads stall) or
-                    // report heartbeats: its outstanding tasks are replayed elsewhere.
-                    read_ready_queue_data_1d[core + cluster * NUM_CORES_PER_CLUSTER] = device_axi_lite_data_t'(ready_queue_data_out[core][cluster]);
-                    read_ready_queue_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER] = !ready_queue_empty[core][cluster] &&
-                                                                                        !core_fenced[core][cluster];
-                    ready_queue_pop[core][cluster] = read_ready_queue_ready_1d[core + cluster * NUM_CORES_PER_CLUSTER] &&
-                                                     !ready_queue_empty[core][cluster] && !core_fenced[core][cluster];
-                    heartbeat_valid[core][cluster] = heartbeat_valid_1d[core + cluster * NUM_CORES_PER_CLUSTER] &&
-                                                     !core_fenced[core][cluster];
-                    core_fenced_1d[core + cluster * NUM_CORES_PER_CLUSTER] = core_fenced[core][cluster];
-                end
-            end
-        end
-        // Connect to the core_status_waiting_task
-        // This signal indicates whether the core is waiting for a task to be read from the ready queue
-        // If csr_req_i.write==0 and csr_req_valid_i is high and csr_req_ready_o is low, it means the core is waiting for a task
-        always_comb begin : connect_core_status_waiting_task_signals
-            for ( int core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
-                for ( int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
-                    core_status_waiting_task[core][cluster] = (csr_req_i[core][cluster].write == 1'b0) &&
-                                                              csr_req_valid_i[core][cluster] &&
-                                                              !csr_req_ready_o[core][cluster];
-                end
-            end
-        end
-
-        // A real exit reports bit 31 after its done write. It no longer polls,
-        // but is idle for PM and boost. A new ready read starts the next offload,
-        // including when a task is already available and the read never stalls.
-        always_ff @(posedge clk_i or negedge rst_ni) begin
-            if (!rst_ni) begin
-                exited_q <= '0;
-            end else begin
-                for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
-                    for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
-                        if (csr_req_valid_i[core][cluster] && !csr_req_i[core][cluster].write &&
-                            csr_req_i[core][cluster].addr[11:0] == CsrReady) begin
-                            exited_q[core][cluster] <= 1'b0;
-                        end else if (heartbeat_valid[core][cluster] &&
-                                     heartbeat_data_1d[core + cluster * NUM_CORES_PER_CLUSTER][31]) begin
-                            exited_q[core][cluster] <= 1'b1;
-`ifndef SYNTHESIS
-                            if (!exited_q[core][cluster])
-                                $display("[BINGO_EXIT] %0t chip=%0d core=%0d cluster=%0d",
-                                         $time, chip_id_i, core, cluster);
-`endif
-                        end
-                    end
-                end
-            end
-        end
-
-        // For the Done Queue, we arbitrate all cores' write requests, then demux
-        // the result to per-core FIFOs based on assigned_core_id in the data.
-        stream_arbiter #(
-            .DATA_T(device_axi_lite_data_t),
-            .N_INP (N_CORES_TOTAL)
-        ) i_stream_arbiter_done_queue_write (
-            .clk_i      (clk_i),
-            .rst_ni     (rst_ni),
-            .inp_data_i (write_done_queue_data_1d),
-            .inp_valid_i(write_done_arb_valid_1d),
-            .inp_ready_o(write_done_arb_ready_1d),
-            .oup_data_o (write_done_queue_data),
-            .oup_valid_o(write_done_queue_valid),
-            .oup_ready_i(write_done_queue_ready)
+        bingo_hw_manager_csr_port #(
+            .NumCores         ( NUM_CORES_PER_CLUSTER                   ),
+            .NumClusters      ( NUM_CLUSTERS_PER_CHIPLET                ),
+            .TaskIdWidth      ( TaskIdWidth                             ),
+            .CsrHeartbeatAddr ( CsrHeartbeatAddr                        ),
+            .csr_req_t        ( csr_req_t                               ),
+            .csr_rsp_t        ( csr_rsp_t                               ),
+            .data_t           ( device_axi_lite_data_t                  ),
+            .ready_desc_t     ( bingo_hw_manager_ready_task_desc_full_t ),
+            .done_info_t      ( bingo_hw_manager_done_info_full_t       ),
+            .chip_id_t        ( chip_id_t                               )
+        ) i_csr_port (
+            .clk_i           ( clk_i                    ),
+            .rst_ni          ( rst_ni                   ),
+            .chip_id_i       ( chip_id_i                ),
+            .csr_req_i       ( csr_req_i                ),
+            .csr_req_valid_i ( csr_req_valid_i          ),
+            .csr_req_ready_o ( csr_req_ready_o          ),
+            .csr_rsp_o       ( csr_rsp_o                ),
+            .csr_rsp_valid_o ( csr_rsp_valid_o          ),
+            .csr_rsp_ready_i ( csr_rsp_ready_i          ),
+            .fenced_i        ( core_fenced              ),
+            .ready_data_i    ( ready_queue_data_out     ),
+            .ready_empty_i   ( ready_queue_empty        ),
+            .ready_pop_o     ( ready_queue_pop          ),
+            .heartbeat_o     ( heartbeat_valid          ),
+            .waiting_o       ( core_status_waiting_task ),
+            .exited_o        ( exited_q                 ),
+            .done_valid_o    ( csr_done_valid           ),
+            .done_o          ( csr_done                 ),
+            .done_ready_i    ( csr_done_ready           )
         );
-        // A fenced core's task is replayed on another core, so its own (late) done
-        // must never retire the task a second time: accept the write and drop it.
-        assign write_done_arb_valid_1d  = write_done_queue_valid_1d & ~core_fenced_1d;
-        assign write_done_queue_ready_1d = write_done_arb_ready_1d | core_fenced_1d;
-
-`ifndef SYNTHESIS
-        always @(posedge clk_i) begin
-            if (rst_ni) begin
-                for (int unsigned i = 0; i < N_CORES_TOTAL; i++) begin
-                    if (write_done_queue_valid_1d[i] && core_fenced_1d[i]) begin
-                        $display("[BINGO_FENCE] %0t chip=%0d core=%0d cluster=%0d dropped done task=%0d",
-                                 $time, chip_id_i, i % NUM_CORES_PER_CLUSTER, i / NUM_CORES_PER_CLUSTER,
-                                 write_done_queue_data_1d[i][TaskIdWidth-1:0]);
-                    end
-                end
-            end
-        end
-`endif
-
-        // Extract core_id + cluster_id from the arbitrated done_info to route to per-(core,cluster) FIFO
-        bingo_hw_manager_done_info_full_t write_done_info;
-        assign write_done_info = bingo_hw_manager_done_info_full_t'(write_done_queue_data);
-        // Route to per-(core, cluster) done queue FIFOs
-        // Level 3: the done of an exported task enters the done FIFO of its
-        // proxy slot (fenced, so it gets no CSR done); a CSR done to the same
-        // FIFO in the same cycle wins.
-        // Only a fenced slot can be a proxy (exports only leave fenced slots). A
-        // remote done or reject for any other slot (a live one, or an id out of
-        // range: a stray or corrupted packet) is accepted and dropped, so it
-        // cannot retire a live core's task, stop a live slot or block the link.
-        logic csr_done_to_remote_slot;
-        logic remote_done_slot_ok;
-        always_comb begin
-            remote_done_slot_ok = (int'(remote_done_proxy_slot_i) < N_CORES_TOTAL) &&
-                core_fenced[int'(remote_done_proxy_slot_i) % NUM_CORES_PER_CLUSTER]
-                           [int'(remote_done_proxy_slot_i) / NUM_CORES_PER_CLUSTER];
-        end
-        assign remote_done_stray = RemoteEn && remote_done_valid_i && !remote_done_slot_ok;
-        always_comb begin
-            remote_done_push        = '0;
-            remote_reject_in        = '0;
-            remote_done_ready_o     = remote_done_stray;
-            csr_done_to_remote_slot = write_done_queue_valid &&
-                (write_done_info.assigned_core_id ==
-                 bingo_hw_manager_assigned_core_id_t'(remote_done_proxy_slot_i % NUM_CORES_PER_CLUSTER)) &&
-                (write_done_info.assigned_cluster_id ==
-                 bingo_hw_manager_assigned_cluster_id_t'(remote_done_proxy_slot_i / NUM_CORES_PER_CLUSTER));
-            for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
-                for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                    done_q_data_in[c][cl] = write_done_info;
-                    done_q_push[c][cl] = write_done_queue_valid &&
-                        (write_done_info.assigned_core_id == bingo_hw_manager_assigned_core_id_t'(c)) &&
-                        (write_done_info.assigned_cluster_id == bingo_hw_manager_assigned_cluster_id_t'(cl)) &&
-                        !done_q_full[c][cl];
-                    if (RemoteEn && remote_done_valid_i && remote_done_slot_ok && remote_done_reject_i &&
-                        (int'(remote_done_proxy_slot_i) == c + cl * NUM_CORES_PER_CLUSTER)) begin
-                        // A reject marks the slot once the dones received before
-                        // it have retired their entries
-                        if (done_q_empty[c][cl]) begin
-                            remote_reject_in[c][cl] = 1'b1;
-                            remote_done_ready_o     = 1'b1;
-                        end
-                    end else if (RemoteEn && remote_done_valid_i && remote_done_slot_ok && !csr_done_to_remote_slot &&
-                        (int'(remote_done_proxy_slot_i) == c + cl * NUM_CORES_PER_CLUSTER) &&
-                        !done_q_full[c][cl]) begin
-                        remote_done_push[c][cl]             = 1'b1;
-                        remote_done_ready_o                 = 1'b1;
-                        done_q_push[c][cl]                  = 1'b1;
-                        done_q_data_in[c][cl]               = '0;
-                        done_q_data_in[c][cl].assigned_core_id    = bingo_hw_manager_assigned_core_id_t'(c);
-                        done_q_data_in[c][cl].assigned_cluster_id = bingo_hw_manager_assigned_cluster_id_t'(cl);
-                        done_q_data_in[c][cl].task_id             = remote_done_task_id_i;
-                    end
-                end
-            end
-        end
-        assign write_done_queue_ready = !done_q_full[write_done_info.assigned_core_id][write_done_info.assigned_cluster_id];
-
-
     end else begin: gen_no_csr_to_fifo_intf
-        // If it is AXI Lite Mailbox interface, the ready queue and done queue interface are already connected
         // A core waits for a task while its read of the ready mailbox is
         // pending (ar_valid high, r_ready low); the mailbox pops itself
         for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin : gen_waiting_core
@@ -1856,18 +1579,57 @@ module bingo_hw_manager_top #(
             end
         end
         assign ready_queue_pop = '0;
-        // Level 3 needs the CSR interface (see gen_remote_intf_check)
-        assign remote_done_push    = '0;
-        assign remote_reject_in    = '0;
-        assign remote_done_ready_o = 1'b0;
-        assign remote_done_stray   = 1'b0;
         // Tie the csr signals to zero
         assign csr_req_ready_o = '0;
-        assign csr_rsp_o = '0;
+        assign csr_rsp_o       = '0;
         assign csr_rsp_valid_o = '0;
         assign heartbeat_valid = '0;
-        assign exited_q = '0;
+        assign exited_q        = '0;
+        assign csr_done_valid  = 1'b0;
+        assign csr_done        = '0;
     end
+
+    bingo_hw_manager_done_queues #(
+        .NumCores      ( NUM_CORES_PER_CLUSTER                         ),
+        .NumClusters   ( NUM_CLUSTERS_PER_CHIPLET                      ),
+        .InterfaceType ( READY_AND_DONE_QUEUE_INTERFACE_TYPE           ),
+        .Depth         ( DoneQueueDepth                                ),
+        .RemoteEn      ( RemoteEn                                      ),
+        .TaskIdWidth   ( TaskIdWidth                                   ),
+        .CoreIdWidth   ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
+        .ClusterIdWidth( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
+        .SlotIdWidth   ( RemoteSlotIdWidth                             ),
+        .ChipIdWidth   ( ChipIdWidth                                   ),
+        .AxiAddrWidth  ( DeviceAxiLiteAddrWidth                        ),
+        .AxiDataWidth  ( DeviceAxiLiteDataWidth                        ),
+        .done_info_t   ( bingo_hw_manager_done_info_full_t             ),
+        .req_lite_t    ( device_axi_lite_req_t                         ),
+        .resp_lite_t   ( device_axi_lite_resp_t                        )
+    ) i_done_queues (
+        .clk_i                    ( clk_i                      ),
+        .rst_ni                   ( rst_ni                     ),
+        .chip_id_i                ( chip_id_i                  ),
+        .csr_done_valid_i         ( csr_done_valid             ),
+        .csr_done_i               ( csr_done                   ),
+        .csr_done_ready_o         ( csr_done_ready             ),
+        .base_addr_i              ( done_queue_base_addr_i     ),
+        .axi_lite_req_i           ( done_queue_axi_lite_req_i  ),
+        .axi_lite_resp_o          ( done_queue_axi_lite_resp_o ),
+        .fenced_i                 ( core_fenced                ),
+        .remote_done_valid_i      ( remote_done_valid_i        ),
+        .remote_done_ready_o      ( remote_done_ready_o        ),
+        .remote_done_proxy_slot_i ( remote_done_proxy_slot_i   ),
+        .remote_done_task_id_i    ( remote_done_task_id_i      ),
+        .remote_done_reject_i     ( remote_done_reject_i       ),
+        .remote_push_o            ( remote_done_push           ),
+        .reject_o                 ( remote_reject_in           ),
+        .stray_o                  ( remote_done_stray          ),
+        .push_o                   ( done_q_push                ),
+        .push_data_o              ( done_q_data_in             ),
+        .head_o                   ( done_q_info                ),
+        .empty_o                  ( done_q_empty               ),
+        .pop_i                    ( done_q_pop                 )
+    );
 
     //////////////////////////////////////////////////////////////////////
     // Power Manager
