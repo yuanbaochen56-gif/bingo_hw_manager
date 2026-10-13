@@ -870,7 +870,6 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0] replay_head_logical;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0] replay_head_logical_cluster;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_head_no_exec;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_head_exit_absorb;
     logic                                  replay_exit_absorb;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] smt_found;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0]    smt_core;
@@ -1731,39 +1730,14 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////////////////
     // A fenced core's checkout queue holds all its dispatched, unfinished tasks
     // in order (the head is the one it was running). The replay controller
-    // moves them to live cores; see bingo_hw_manager_replay_ctrl.
+    // (bingo_hw_manager_replay_ctrl) moves them to live cores, one MOVE step at
+    // a time; its data path (bingo_hw_manager_replay_path) presents each
+    // checkout head to it and carries out the steps on the queues.
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_head_exported;
     // Level 3: a fence-fallback type is not exported, as a type the transport
     // has no target for
     logic [2**CoreTypeIdWidth-1:0] remote_export_type_en;
     assign remote_export_type_en = remote_export_type_en_i & ~bingo_hw_manager_fence_fb_i;
-    always_comb begin : compose_replay_inputs
-        for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
-            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                automatic int logical_core = int'(checkout_queue_data_out[c][cl].assigned_core_id);
-                automatic int logical_cluster = int'(checkout_queue_data_out[c][cl].assigned_cluster_id);
-                replay_head_exported[c][cl]        = checkout_remote_tag_out[c][cl].exported;
-                replay_head_logical[c][cl]         = checkout_queue_data_out[c][cl].assigned_core_id;
-                replay_head_logical_cluster[c][cl] = checkout_queue_data_out[c][cl].assigned_cluster_id;
-                replay_head_exit_absorb[c][cl] = 1'b0;
-                if (logical_core < NUM_CORES_PER_CLUSTER && logical_cluster < NUM_CLUSTERS_PER_CHIPLET) begin
-                    replay_head_exit_absorb[c][cl] =
-                        checkout_queue_data_out[c][cl].is_exit &&
-                        checkout_queue_data_out[c][cl].task_type != TaskDummy &&
-                        ((smt_found[logical_core][logical_cluster] &&
-                          ((smt_core[logical_core][logical_cluster] != logical_core) ||
-                           (smt_cluster[logical_core][logical_cluster] != logical_cluster))) ||
-                         (RemoteEn && !smt_found[logical_core][logical_cluster] &&
-                          !checkout_head_imported[c][cl] &&
-                          CoreTypeId[logical_core][logical_cluster] != '0 &&
-                          remote_export_type_en[CoreTypeId[logical_core][logical_cluster]]));
-                end
-                replay_head_no_exec[c][cl] = (checkout_queue_data_out[c][cl].task_type == TaskDummy) ||
-                                             replay_head_exit_absorb[c][cl];
-                replay_head_no_replay[c][cl] = (checkout_queue_data_out[c][cl].task_type == TaskNoReplay);
-            end
-        end
-    end
 
     //////////////////////////////////////////////////////////////////////
     // Control plane: slot mapping table (substitute of every logical slot)
@@ -1944,42 +1918,48 @@ module bingo_hw_manager_top #(
     );
     assign replay_stuck   = (|replay_stuck_slot) || (|remote_rejected_q);
     assign replay_stuck_o = replay_stuck;
-    assign replay_exit_absorb = replay_head_exit_absorb[replay_src_core][replay_src_cluster];
-    always_comb begin
-        replay_data = checkout_queue_data_out[replay_src_core][replay_src_cluster];
-        if (replay_exit_absorb) replay_data.task_type = TaskDummy;
-    end
-
-    always_comb begin : compose_replay_signals
-        replay_pop          = '0;
-        replay_push         = '0;
-        replay_push_ready   = '0;
-        replay_pending      = 1'b0;
-        replay_move_cluster = '0;
-        if (replay_move_fire) begin
-            replay_pop[replay_src_core][replay_src_cluster]         = 1'b1;
-            // Level 3: a bounced (rejected) imported entry is only dropped
-            if (!replay_bounce) begin
-                replay_push[replay_dst_core][replay_dst_cluster]        = 1'b1;
-                replay_push_ready[replay_dst_core][replay_dst_cluster]  = replay_push_ready_q;
-            end
-        end
-        // Nothing is routed into the slot being moved (fenced, not retired), only
-        // into its current destination, which may be in another cluster.
-        if (|replay_move) begin
-            replay_move_cluster[replay_dst_cluster] = 1'b1;
-        end
-        for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-            for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
-                // A stuck slot is never migrated, so a retired core's new tasks
-                // need not wait for it (its entries could only go to a core of
-                // its own type, and none is live).
-                if (core_fenced[c][cl] && !core_retired[c][cl] && !replay_stuck_slot[c][cl]) begin
-                    replay_pending = 1'b1;
-                end
-            end
-        end
-    end
+    bingo_hw_manager_replay_path #(
+        .NumCores        ( NUM_CORES_PER_CLUSTER                            ),
+        .NumClusters     ( NUM_CLUSTERS_PER_CHIPLET                         ),
+        .CoreIdWidth     ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
+        .ClusterIdWidth  ( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
+        .CoreTypeIdWidth ( CoreTypeIdWidth                                  ),
+        .CoreTypeId      ( CoreTypeId                                       ),
+        .RemoteEn        ( RemoteEn                                         ),
+        .task_desc_t     ( bingo_hw_manager_task_desc_t                     ),
+        .remote_tag_t    ( remote_tag_t                                     )
+    ) i_replay_path (
+        .head_i                 ( checkout_queue_data_out     ),
+        .head_tag_i             ( checkout_remote_tag_out     ),
+        .head_imported_i        ( checkout_head_imported      ),
+        .smt_found_i            ( smt_found                   ),
+        .smt_core_i             ( smt_core                    ),
+        .smt_cluster_i          ( smt_cluster                 ),
+        .remote_type_en_i       ( remote_export_type_en       ),
+        .head_logical_core_o    ( replay_head_logical         ),
+        .head_logical_cluster_o ( replay_head_logical_cluster ),
+        .head_no_exec_o         ( replay_head_no_exec         ),
+        .head_no_replay_o       ( replay_head_no_replay       ),
+        .head_exported_o        ( replay_head_exported        ),
+        .fenced_i               ( core_fenced                 ),
+        .retired_i              ( core_retired                ),
+        .stuck_i                ( replay_stuck_slot           ),
+        .move_i                 ( replay_move                 ),
+        .move_fire_i            ( replay_move_fire            ),
+        .push_ready_i           ( replay_push_ready_q         ),
+        .bounce_i               ( replay_bounce               ),
+        .src_core_i             ( replay_src_core             ),
+        .src_cluster_i          ( replay_src_cluster          ),
+        .dst_core_i             ( replay_dst_core             ),
+        .dst_cluster_i          ( replay_dst_cluster          ),
+        .data_o                 ( replay_data                 ),
+        .exit_absorb_o          ( replay_exit_absorb          ),
+        .pop_o                  ( replay_pop                  ),
+        .push_o                 ( replay_push                 ),
+        .push_ready_o           ( replay_push_ready           ),
+        .pending_o              ( replay_pending              ),
+        .move_cluster_o         ( replay_move_cluster         )
+    );
 
     //////////////////////////////////////////////////////////////////////
     // Placement of new tasks
