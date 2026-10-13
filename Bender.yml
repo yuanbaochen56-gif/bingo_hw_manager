@@ -23,6 +23,7 @@ sources:
   - src/bingo_hw_manager_csr_to_fifo_read.sv   # CSR to FIFO Read
   - src/bingo_hw_manager_csr_to_fifo.sv        # CSR to FIFO Interface Module
   - src/bingo_hw_manager_evlog.sv              # Observation-only control event FIFO
+  - src/bingo_hw_manager_evlog_events.sv       # Event pulses and move records of the control event log
   # Level 1
   - src/bingo_hw_manager_cond_exec_controller.sv # DARTS: CERF
   - src/bingo_hw_manager_load_monitor.sv         # DARTS: Load Monitor

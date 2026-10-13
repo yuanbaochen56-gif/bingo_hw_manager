@@ -62,7 +62,7 @@ initial begin
     wait (gen_dut[0].i_dut.i_watchdog.timer_q[0][0] == expected_c);
     @(posedge clk_i); #1;
     if (!gen_dut[0].i_dut.core_fenced[0][0] ||
-        gen_dut[0].i_dut.gen_evlog.reason_q[0][0] != expected_reason)
+        gen_dut[0].i_dut.gen_evlog.i_events.reason_q[0][0] != expected_reason)
         $fatal(1, "[ADAPT_REPLAY] wrong final threshold or EVLOG reason");
     @(negedge clk_i); #1;
     if (!gen_dut[0].i_dut.gen_evlog.events[4] ||
