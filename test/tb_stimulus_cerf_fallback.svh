@@ -29,12 +29,16 @@ initial begin
     cerf_fb_task_3.cond_exec_group_id = 5'd1;
 end
 
+// A push of task 2 into the ready queue of core 1. Sampled ($sampled: the
+// value just before the edge), so the check sees the push the queue takes at
+// that edge, not the next waiting head that the same edge exposes.
+logic cerf_fb_task2_push;
+assign cerf_fb_task2_push = gen_dut[0].i_dut.ready_queue_push[1][0] &&
+                            (gen_dut[0].i_dut.ready_queue_data_in[1][0].task_id == 2);
+
 bit cerf_fb_task2_ready;
 always @(posedge clk_i) begin
-    if (rst_ni && gen_dut[0].i_dut.ready_queue_push[1][0] &&
-        (gen_dut[0].i_dut.ready_queue_data_in[1][0].task_id == 2)) begin
-        cerf_fb_task2_ready <= 1'b1;
-    end
+    if (rst_ni && $sampled(cerf_fb_task2_push)) cerf_fb_task2_ready <= 1'b1;
 end
 
 initial begin : cerf_fallback_test

@@ -49,14 +49,18 @@ initial begin
         1'b1, bingo_hw_manager_dep_code_t'(8'b00000001), 1'b0, 1'b0, 0, 0, '0);
 end
 
+// A push of task 4 into the ready queue of core c. Sampled ($sampled: the
+// value just before the edge), so the check sees the push the queue takes at
+// that edge, not the next waiting head that the same edge exposes.
+logic [2:0] cfd_t4_push;
+for (genvar c = 0; c < 3; c++) begin : gen_cfd_t4_push
+    assign cfd_t4_push[c] = gen_dut[0].i_dut.ready_queue_push[c][0] &&
+                            (gen_dut[0].i_dut.ready_queue_data_in[c][0].task_id == 4);
+end
+
 bit cfd_t4_ready;
 always @(posedge clk_i) begin
-    for (int c = 0; c < 3; c++) begin
-        if (rst_ni && gen_dut[0].i_dut.ready_queue_push[c][0] &&
-            (gen_dut[0].i_dut.ready_queue_data_in[c][0].task_id == 4)) begin
-            cfd_t4_ready <= 1'b1;
-        end
-    end
+    if (rst_ni && |$sampled(cfd_t4_push)) cfd_t4_ready <= 1'b1;
 end
 
 initial begin : cerf_fallback_double_test
