@@ -741,7 +741,6 @@ module bingo_hw_manager_top #(
     // Checkout head imported from another chiplet: retires into the remote done stream
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_head_imported;
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remote_head_mismatch;
-    logic                                                                                    remote_done_mismatch_q;
     // Remote done / reject for a slot that cannot be a proxy: accepted and dropped
     logic                                                                                    remote_done_stray;
     // The head may retire this cycle (bingo_hw_manager_checkout_queue), and the
@@ -757,7 +756,6 @@ module bingo_hw_manager_top #(
     logic                                  replay_export;
     logic                                  replay_bounce;
     remote_export_t                        export_in;
-    remote_export_t                        export_out;
     logic                                  export_push;
     // Per core type: its export queue has room
     logic [2**CoreTypeIdWidth-1:0]         export_type_ready;
@@ -2017,11 +2015,6 @@ module bingo_hw_manager_top #(
     );
     assign replay_stuck   = (|replay_stuck_slot) || (|remote_rejected_q);
     assign replay_stuck_o = replay_stuck;
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) remote_done_mismatch_q <= 1'b0;
-        else         remote_done_mismatch_q <= remote_done_mismatch_q | (|remote_head_mismatch) | remote_done_stray;
-    end
-    assign remote_done_mismatch_o = remote_done_mismatch_q;
     assign replay_exit_absorb = replay_head_exit_absorb[replay_src_core][replay_src_cluster];
     always_comb begin
         replay_data = checkout_queue_data_out[replay_src_core][replay_src_cluster];
@@ -2238,121 +2231,81 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////////////////
     // Level 3: remote dispatch (SubstituteLevelMask[2])
     //////////////////////////////////////////////////////////////////////
-    // Origin side. A task whose logical slot D is fenced and has no live
-    // substitute on this chiplet (any enabled level) stays in D's checkout
-    // queue, marked exported, and a copy leaves through remote_dispatch_o:
-    //   - outstanding tasks: rotated by the replay controller (see there)
-    //   - new tasks of a retired D: routed to D's checkout queue only
-    // D is the proxy: the remote done (remote_done_i) is pushed into D's done
-    // FIFO and retires the head with the normal dep_set, so dependencies,
-    // dummy-sets and the per-logical-core order are handled as for a local
-    // task. The remote chiplet must return the dones of one proxy in export
-    // order (it runs them on one core of that type, in order).
-    // Executor side. An imported task goes to the lowest live slot of its
-    // CoreTypeId (level 1/2 substitute of the lowest slot of that type), into
-    // its ready and checkout queues, as a task of that home slot, tagged with
-    // its origin. When it retires, its done leaves through remote_done_o
-    // instead of setting local dependencies. Imports wait while a local replay
-    // is pending, and never collide with a routed or replayed push.
-
-    // Export queues: replay rotations and routed exports never coincide (the
-    // new tasks of fenced logical cores are held while a replay is pending);
-    // routed exports of different slots are granted one per cycle, among the
-    // slots whose export queue has room.
-    always_comb begin : compose_route_remote_grant
-        automatic logic taken;
-        taken = replay_export;
-        route_remote_grant = '0;
-        for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-            for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
-                if (route_remote[c][cl] && !checkout_queue_full[c][cl] &&
-                    export_type_ready[CoreTypeId[c][cl]] && !taken) begin
-                    route_remote_grant[c][cl] = 1'b1;
-                    taken = 1'b1;
-                end
-            end
-        end
+    // Origin side (bingo_hw_manager_remote_export): a task of a fenced slot D
+    // that no live core of this chiplet may run stays in D's checkout queue,
+    // marked exported, and a copy goes to another chiplet. D is its proxy: the
+    // remote done comes back into D's done queue and retires the head with the
+    // normal dep_set. A proxy whose export is rejected or times out stops.
+    // Executor side: an imported task runs on a live core of its type here, as
+    // a task of the lowest slot of that type, and its done (or a reject) goes
+    // back to its origin.
+    bingo_hw_manager_task_desc_full_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] route_desc_full;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]       proxy_waiting;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]       proxy_timeout;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] proxy_wait;
+    always_comb begin
+        for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++)
+            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
+                route_desc_full[c][cl] = desc_to_full(waiting_dep_check_task_desc[remap_route_src_core[c][cl]]);
     end
-
-    always_comb begin : compose_export_input
-        export_in   = '0;
-        export_push = 1'b0;
-        if (replay_export) begin
-            export_push          = 1'b1;
-            export_in.desc       = desc_to_full(replay_data);
-            export_in.core_type  = CoreTypeId[replay_data.assigned_core_id][replay_data.assigned_cluster_id];
-            export_in.proxy_slot = remote_slot_t'(replay_src_core + replay_src_cluster * NUM_CORES_PER_CLUSTER);
-        end
-        for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-            for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
-                if (route_remote_grant[c][cl] && remap_route_fire[c][cl]) begin
-                    export_push          = 1'b1;
-                    export_in.desc       = desc_to_full(waiting_dep_check_task_desc[remap_route_src_core[c][cl]]);
-                    export_in.core_type  = CoreTypeId[c][cl];
-                    export_in.proxy_slot = remote_slot_t'(c + cl * NUM_CORES_PER_CLUSTER);
-                end
-            end
-        end
-    end
+    bingo_hw_manager_remote_export #(
+        .NumCores         ( NUM_CORES_PER_CLUSTER             ),
+        .NumClusters      ( NUM_CLUSTERS_PER_CHIPLET          ),
+        .RemoteEn         ( RemoteEn                          ),
+        .CoreTypeIdWidth  ( CoreTypeIdWidth                   ),
+        .CoreTypeId       ( CoreTypeId                        ),
+        .CoreIdWidth      ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
+        .ClusterIdWidth   ( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
+        .NumPeers         ( RemoteNumPeers                    ),
+        .PeerIdWidth      ( RemotePeerIdWidth                 ),
+        .FifoDepth        ( RemoteExportFifoDepth             ),
+        .task_desc_full_t ( bingo_hw_manager_task_desc_full_t ),
+        .remote_slot_t    ( remote_slot_t                     ),
+        .remote_tag_t     ( remote_tag_t                      ),
+        .remote_export_t  ( remote_export_t                   ),
+        .chip_id_t        ( chip_id_t                         ),
+        .data_t           ( host_axi_lite_data_t              )
+    ) i_remote_export (
+        .clk_i                         ( clk_i                         ),
+        .rst_ni                        ( rst_ni                        ),
+        .chip_id_i                     ( chip_id_i                     ),
+        .replay_export_i               ( replay_export                 ),
+        .replay_desc_i                 ( desc_to_full(replay_data)     ),
+        .replay_src_core_i             ( replay_src_core               ),
+        .replay_src_cluster_i          ( replay_src_cluster            ),
+        .route_export_i                ( route_remote                  ),
+        .route_desc_i                  ( route_desc_full               ),
+        .route_fire_i                  ( remap_route_fire              ),
+        .checkout_full_i               ( checkout_queue_full           ),
+        .route_grant_o                 ( route_remote_grant            ),
+        .type_ready_o                  ( export_type_ready             ),
+        .export_push_o                 ( export_push                   ),
+        .export_o                      ( export_in                     ),
+        .type_peer_i                   ( remote_export_type_peer_i     ),
+        .peer_ready_i                  ( remote_export_peer_ready_i    ),
+        .remote_dispatch_valid_o       ( remote_dispatch_valid_o       ),
+        .remote_dispatch_ready_i       ( remote_dispatch_ready_i       ),
+        .remote_dispatch_desc_o        ( remote_dispatch_desc_o        ),
+        .remote_dispatch_core_type_o   ( remote_dispatch_core_type_o   ),
+        .remote_dispatch_origin_chip_o ( remote_dispatch_origin_chip_o ),
+        .remote_dispatch_proxy_slot_o  ( remote_dispatch_proxy_slot_o  ),
+        .head_tag_i                    ( checkout_remote_tag_out       ),
+        .head_empty_i                  ( checkout_queue_empty          ),
+        .head_exec_i                   ( checkout_head_exec            ),
+        .head_mismatch_i               ( remote_head_mismatch          ),
+        .done_empty_i                  ( done_q_empty                  ),
+        .reject_i                      ( remote_reject_in              ),
+        .done_stray_i                  ( remote_done_stray             ),
+        .timeout_cycles_i              ( 32'(remote_proxy_timeout_i)   ),
+        .waiting_o                     ( proxy_waiting                 ),
+        .timeout_o                     ( proxy_timeout                 ),
+        .wait_cycles_o                 ( proxy_wait                    ),
+        .timeout_any_o                 ( remote_timeout_o              ),
+        .rejected_o                    ( remote_rejected_q             ),
+        .mismatch_o                    ( remote_done_mismatch_o        )
+    );
 
     if (RemoteEn) begin : gen_remote_dispatch
-        // One export queue per peer. A proxy only exports tasks of its own
-        // type, so all of them go through one queue, in order.
-        logic [RemoteNumPeers-1:0] export_peer_full, export_peer_empty;
-        logic [RemoteNumPeers-1:0] export_peer_req, export_peer_gnt;
-        remote_export_t [RemoteNumPeers-1:0] export_peer_out;
-        logic [RemotePeerIdWidth-1:0] export_in_peer;
-        assign export_in_peer = remote_export_type_peer_i[export_in.core_type];
-        for (genvar t = 0; t < 2**CoreTypeIdWidth; t++) begin : gen_export_type_ready
-            assign export_type_ready[t] = (remote_export_type_peer_i[t] < RemoteNumPeers) &&
-                                          !export_peer_full[remote_export_type_peer_i[t]];
-        end
-        for (genvar p = 0; p < RemoteNumPeers; p++) begin : gen_export_fifo
-            fifo_v3 #(
-                .FALL_THROUGH ( 1'b0                  ),
-                .DEPTH        ( RemoteExportFifoDepth ),
-                .dtype        ( remote_export_t       )
-            ) i_export_fifo (
-                .clk_i       ( clk_i                                                  ),
-                .rst_ni      ( rst_ni                                                 ),
-                .testmode_i  ( 1'b0                                                   ),
-                .flush_i     ( 1'b0                                                   ),
-                .full_o      ( export_peer_full[p]                                    ),
-                .empty_o     ( export_peer_empty[p]                                   ),
-                .usage_o     ( /*not used*/                                           ),
-                .data_i      ( export_in                                              ),
-                .push_i      ( export_push && (export_in_peer == RemotePeerIdWidth'(p)) ),
-                .data_o      ( export_peer_out[p]                                     ),
-                .pop_i       ( export_peer_gnt[p]                                     )
-            );
-            // Only a peer that takes the export at once competes: the transport
-            // takes a credit only when it sends, so the chosen peer stays ready
-            assign export_peer_req[p] = !export_peer_empty[p] && remote_export_peer_ready_i[p];
-        end
-        rr_arb_tree #(
-            .NumIn     ( RemoteNumPeers  ),
-            .DataType  ( remote_export_t ),
-            .ExtPrio   ( 1'b0            ),
-            .AxiVldRdy ( 1'b1            ),
-            .LockIn    ( 1'b1            )
-        ) i_export_arb (
-            .clk_i   ( clk_i                   ),
-            .rst_ni  ( rst_ni                  ),
-            .flush_i ( 1'b0                    ),
-            .rr_i    ( '0                      ),
-            .req_i   ( export_peer_req         ),
-            .gnt_o   ( export_peer_gnt         ),
-            .data_i  ( export_peer_out         ),
-            .req_o   ( remote_dispatch_valid_o ),
-            .gnt_i   ( remote_dispatch_ready_i ),
-            .data_o  ( export_out              ),
-            .idx_o   ( /*not used*/            )
-        );
-        assign remote_dispatch_desc_o        = host_axi_lite_data_t'(export_out.desc);
-        assign remote_dispatch_core_type_o   = export_out.core_type;
-        assign remote_dispatch_origin_chip_o = chip_id_i;
-        assign remote_dispatch_proxy_slot_o  = export_out.proxy_slot;
-
         // Import: home slot = lowest slot of the requested type
         always_comb begin : find_import_home
             import_home_found   = 1'b0;
@@ -2482,13 +2435,6 @@ module bingo_hw_manager_top #(
         assign remote_done_task_id_o    = remote_done_out.task_id;
         assign remote_done_reject_o     = remote_done_out.reject;
     end else begin : gen_no_remote_dispatch
-        assign export_type_ready             = '0;
-        assign export_out                    = '0;
-        assign remote_dispatch_valid_o       = 1'b0;
-        assign remote_dispatch_desc_o        = '0;
-        assign remote_dispatch_core_type_o   = '0;
-        assign remote_dispatch_origin_chip_o = '0;
-        assign remote_dispatch_proxy_slot_o  = '0;
         assign import_home_found             = 1'b0;
         assign import_home_core              = '0;
         assign import_home_cluster           = '0;
@@ -2510,51 +2456,6 @@ module bingo_hw_manager_top #(
         assign remote_done_proxy_slot_o      = '0;
         assign remote_done_task_id_o         = '0;
         assign remote_done_reject_o          = 1'b0;
-    end
-
-    // Origin side: proxy wait timeout. A proxy slot waits while its checkout
-    // head is an exported executing task whose remote done has not arrived
-    // (the dones come back in export order, so this is the time the remote
-    // chiplet takes for that one task). After remote_proxy_timeout_i waiting
-    // cycles in a row (0: never) the done is taken as lost: the slot gives up
-    // as on a reject. Resending is not safe (the task may only be slow and
-    // would run twice).
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]        proxy_waiting;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]        proxy_timeout;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0]  proxy_wait_q;
-    logic                                                                   remote_timeout_q;
-    always_comb begin
-        for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
-            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                proxy_waiting[c][cl] = RemoteEn && checkout_remote_tag_out[c][cl].exported &&
-                                       !checkout_queue_empty[c][cl] && checkout_head_exec[c][cl] &&
-                                       done_q_empty[c][cl] && !remote_rejected_q[c][cl];
-                proxy_timeout[c][cl] = proxy_waiting[c][cl] && (remote_proxy_timeout_i != '0) &&
-                                       (proxy_wait_q[c][cl] >= 32'(remote_proxy_timeout_i));
-            end
-        end
-    end
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-            proxy_wait_q     <= '0;
-            remote_timeout_q <= 1'b0;
-        end else begin
-            for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
-                for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                    if (!proxy_waiting[c][cl])          proxy_wait_q[c][cl] <= '0;
-                    else if (proxy_wait_q[c][cl] != '1) proxy_wait_q[c][cl] <= proxy_wait_q[c][cl] + 32'd1;
-                end
-            end
-            if (|proxy_timeout) remote_timeout_q <= 1'b1;
-        end
-    end
-    assign remote_timeout_o = remote_timeout_q;
-
-    // Origin side: a proxy slot whose export was rejected (or timed out) stops
-    // retiring and exporting (sticky, part of replay_stuck_o)
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) remote_rejected_q <= '0;
-        else         remote_rejected_q <= remote_rejected_q | remote_reject_in | proxy_timeout;
     end
 
     if (EventLogDepth != 0) begin : gen_evlog
@@ -2808,7 +2709,7 @@ module bingo_hw_manager_top #(
                     if (proxy_timeout[c][cl]) begin
                         $display("[BINGO_REMOTE_TIMEOUT] %0t chip=%0d task=%0d proxy_slot=%0d: no remote done for %0d cycles, the proxy is stuck",
                                  $time, chip_id_i, checkout_queue_data_out[c][cl].task_id,
-                                 c + cl * NUM_CORES_PER_CLUSTER, proxy_wait_q[c][cl]);
+                                 c + cl * NUM_CORES_PER_CLUSTER, proxy_wait[c][cl]);
                     end
                 end
             end

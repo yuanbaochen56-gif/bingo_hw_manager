@@ -946,7 +946,7 @@ if (`TB_REMOTE_LINK == 2) begin : gen_rlink
         always @(posedge clk_i) begin
             // an export waits in the export queue of a peer without credits
             // (the top only offers exports to peers that have one)
-            if (rst_ni && |(~gen_dut[i].i_dut.gen_remote_dispatch.export_peer_empty & ~remote_peer_ready[i])) begin
+            if (rst_ni && |(~gen_dut[i].i_dut.i_remote_export.gen_export_queues.export_peer_empty & ~remote_peer_ready[i])) begin
                 remote_credit_stall[i]++;
             end
         end
