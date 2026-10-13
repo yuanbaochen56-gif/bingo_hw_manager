@@ -156,7 +156,10 @@ module bingo_hw_manager_wd_adapt #(
                 // Prediction shares history/guards, not the detection EN bit.
                 // Compare wide before narrowing; equality with suspect is invalid.
                 if (late_ctrl_i[0] && entry_valid) begin
-                    late_bound = (LateMathWidth'(table_q[type_id][class_id].maximum) << moved_shift) <<
+                    // BINGO_WD_LATE[10:9] FRAC: (1 + FRAC / 4) times the maximum,
+                    // then SH_L
+                    late_bound = LateMathWidth'(table_q[type_id][class_id].maximum) << moved_shift;
+                    late_bound = (late_bound + (late_bound >> 2) * late_ctrl_i[10:9]) <<
                                  late_ctrl_i[3:1];
                     if (late_bound < late_ctrl_i[31:12])
                         late_bound = LateMathWidth'(late_ctrl_i[31:12]);
