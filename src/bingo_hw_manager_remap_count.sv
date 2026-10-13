@@ -10,10 +10,10 @@
 //   outstanding_o[X]       tasks of X in the checkout queue of any other slot
 //   moved_in_o[p][pcl][X]  of those, the ones in the queue of slot (p, pcl)
 //                          (ForeignStuckDrain only, else 0)
-// The top holds a dummy-set of X back while X has outstanding tasks (its
-// dep_set must fire after them), and a stuck slot may only drain X's heads
-// once every task of X elsewhere sits in that slot (see
-// bingo_hw_manager_checkout_queue).
+// The router holds a dummy-set of X back while X has outstanding tasks (its
+// dep_set must fire after them, see bingo_hw_manager_router), and a stuck slot
+// may only drain X's heads once every task of X elsewhere sits in that slot
+// (see bingo_hw_manager_checkout_queue).
 module bingo_hw_manager_remap_count #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,

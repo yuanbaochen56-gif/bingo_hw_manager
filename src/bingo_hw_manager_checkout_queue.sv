@@ -44,7 +44,7 @@ module bingo_hw_manager_checkout_queue #(
     parameter bit          RemoteEn = 1'b0,
     // See bingo_hw_manager_top ForeignStuckDrain
     parameter bit          ForeignStuckDrain = 1'b1,
-    // Width of the remap outstanding counters of the top
+    // Width of the remap outstanding counters (bingo_hw_manager_remap_count)
     parameter int unsigned OutstandingWidth = 1,
     parameter type         task_desc_t = logic,  // bingo_hw_manager_task_desc_t of the top
     parameter type         remote_tag_t = logic, // remote_tag_t of the top
@@ -60,9 +60,9 @@ module bingo_hw_manager_checkout_queue #(
     input  logic                    route_push_i,
     input  task_desc_t              route_desc_i,
     input  logic                    route_skip_i,        // the CERF skips it at dispatch
-    input  logic                    route_exit_absorb_i, // an exit absorbed here (see the top)
+    input  logic                    route_exit_absorb_i, // an exit absorbed here (bingo_hw_manager_router)
     input  logic                    route_export_i,      // level 3: exported, this slot is its proxy
-    // Replayed entry (bingo_hw_manager_replay_ctrl)
+    // Replayed entry (bingo_hw_manager_replay_path)
     input  logic                    replay_push_i,
     input  task_desc_t              replay_desc_i,
     input  remote_tag_t             replay_tag_i,        // side tag of the entry on its source slot

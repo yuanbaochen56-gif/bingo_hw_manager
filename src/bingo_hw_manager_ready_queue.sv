@@ -7,10 +7,10 @@
 //
 // Push (at most one source per cycle, in this priority): a replayed entry
 // that runs on a core, an imported task (level 3), or a routed task. A routed
-// task is only offered here when it runs on a core (the top drops dummy sets,
-// CERF-skipped tasks, absorbed exits and exports before the queue), and it
-// waits while the queue is full; replayed and imported entries are only
-// pushed when the queue has room.
+// task is only offered here when it runs on a core (bingo_hw_manager_router
+// drops dummy sets, CERF-skipped tasks, absorbed exits and exports before the
+// queue), and it waits while the queue is full; replayed and imported entries
+// are only pushed when the queue has room.
 //
 // InterfaceType (bingo_hw_manager_top READY_AND_DONE_QUEUE_INTERFACE_TYPE):
 //   1: a FIFO the core reads through the CSR interface (pop_i). The watchdog

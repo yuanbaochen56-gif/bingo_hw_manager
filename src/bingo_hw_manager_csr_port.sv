@@ -10,8 +10,9 @@
 // - A fenced core is cut off: its ready reads stall, its heartbeats are
 //   ignored, and its done writes are accepted and dropped (its tasks are
 //   replayed on other cores, so a late done must not retire one twice).
-// - The done writes of all cores are arbitrated into one stream (done_o); the
-//   top routes it to the done queue of the slot named in the done info.
+// - The done writes of all cores are arbitrated into one stream (done_o);
+//   bingo_hw_manager_done_queues puts each into the done queue of the slot
+//   named in its done info.
 // - A core waits for a task while its ready read stalls (waiting_o), and has
 //   exited once it reports bit 31 in a heartbeat after its done write, until
 //   its next ready read (exited_o).
@@ -197,8 +198,8 @@ module bingo_hw_manager_csr_port #(
     end
     assign exited_o = exited_q;
 
-    // For the Done Queue, we arbitrate all cores' write requests; the top
-    // routes the result to the per-core FIFO named in the data.
+    // For the Done Queue, we arbitrate all cores' write requests; the done
+    // queues route the result to the per-core FIFO named in the data.
     stream_arbiter #(
         .DATA_T(data_t),
         .N_INP (N_CORES_TOTAL)
