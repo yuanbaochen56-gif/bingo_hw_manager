@@ -659,11 +659,8 @@ module bingo_hw_manager_top #(
     ////////////////////////////////
     // Ready Queue Filter Signals
     ////////////////////////////////
-    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_inp_valid;
-    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_inp_ready;
-    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_drop;
-    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_oup_valid;
-    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_filter_oup_ready;
+    // The routed task runs on a core: it also enters the slot's ready queue
+    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] route_ready_push;
 
     //////////////////////
     // Dep matrix signals
@@ -756,7 +753,6 @@ module bingo_hw_manager_top #(
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_local_set_valid;
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_chiplet_set_valid;
     // Level 3 export (origin side)
-    logic [NUM_CORES_PER_CLUSTER-1:0]                                       remap_remote;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]         route_remote;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]         route_remote_grant;
     logic                                  replay_rotate;
@@ -893,10 +889,8 @@ module bingo_hw_manager_top #(
     logic                                  replay_stuck;
     bingo_hw_manager_task_desc_t           replay_data;
 
-    // Per logical core (waiting queue head): 1 if the task executes on a core
-    // and may therefore be remapped (not a dummy-set, not CERF-skipped).
-    logic [NUM_CORES_PER_CLUSTER-1:0] remap_remappable;
-    logic [NUM_CORES_PER_CLUSTER-1:0] remap_select_valid_raw;
+    // Placement of the waiting queue heads (bingo_hw_manager_router): per
+    // logical core its physical slot, per physical slot the routed task
     logic [NUM_CORES_PER_CLUSTER-1:0] remap_select_valid;
     bingo_hw_manager_assigned_core_id_t    [NUM_CORES_PER_CLUSTER-1:0] remap_physical_core;
     bingo_hw_manager_assigned_cluster_id_t [NUM_CORES_PER_CLUSTER-1:0] remap_physical_cluster;
@@ -1200,20 +1194,6 @@ module bingo_hw_manager_top #(
             .oup_ready_i ( demux_ready_and_checkout_queue_oup_ready[core]    )
         );
 
-        always_comb begin : connect_demux_ready_and_checkout_queue_ready_signals
-            for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
-                demux_ready_and_checkout_queue_oup_ready[core][cluster] = 1'b0;
-
-                if (remap_select_valid[core] &&
-                    (remap_physical_cluster[core] == bingo_hw_manager_assigned_cluster_id_t'(cluster)) &&
-                    (remap_route_src_core[remap_physical_core[core]][remap_physical_cluster[core]] ==
-                        bingo_hw_manager_assigned_core_id_t'(core))) begin
-
-                    demux_ready_and_checkout_queue_oup_ready[core][cluster] =
-                        remap_route_fire[remap_physical_core[core]][remap_physical_cluster[core]];
-                end
-            end
-        end
     end
 
 
@@ -1338,51 +1318,10 @@ module bingo_hw_manager_top #(
     // Ready Queue
     //////////////////////////////////////////////////////////////////////
     // A task routed to a slot enters its checkout queue and, if it runs on a
-    // core, its ready queue (bingo_hw_manager_ready_queue), where the core
-    // reads its id. Before each ready queue a filter drops the tasks that run
-    // on no core here: dummy sets, CERF-skipped tasks, absorbed exits and
-    // tasks exported to another chiplet.
+    // core (route_ready_push, see bingo_hw_manager_router), its ready queue
+    // (bingo_hw_manager_ready_queue), where the core reads its id.
     for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin: gen_ready_queue_per_core
         for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin: gen_ready_queue_per_core_per_cluster
-            stream_filter i_stream_filter_for_ready_queue_dummy_set (
-                .valid_i (   ready_queue_filter_inp_valid[core][cluster]       ),
-                .ready_o (   ready_queue_filter_inp_ready[core][cluster]       ),
-                .drop_i  (   ready_queue_filter_drop[core][cluster]            ),
-                .valid_o (   ready_queue_filter_oup_valid[core][cluster]       ),
-                .ready_i (   ready_queue_filter_oup_ready[core][cluster]       )
-            );
-            assign ready_queue_filter_inp_valid[core][cluster] =
-                remap_route_valid[core][cluster] && !checkout_queue_full[core][cluster];
-            // Level 3: an exported task only enters the proxy's checkout queue
-            // (with its export) and never its ready queue
-            assign route_remote[core][cluster] = RemoteEn && remap_route_valid[core][cluster] &&
-                                                 remap_remote[remap_route_src_core[core][cluster]] &&
-                                                 !route_exit_absorb[core][cluster];
-            assign route_exit_absorb[core][cluster] =
-                waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].is_exit &&
-                waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].task_type != TaskDummy &&
-                ((waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].assigned_core_id !=
-                  bingo_hw_manager_assigned_core_id_t'(core)) ||
-                 (waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].assigned_cluster_id !=
-                  bingo_hw_manager_assigned_cluster_id_t'(cluster)) ||
-                 remap_remote[remap_route_src_core[core][cluster]]);
-            assign remap_route_fire[core][cluster] =
-                remap_route_valid[core][cluster] &&
-                !checkout_queue_full[core][cluster] &&
-                ready_queue_filter_inp_ready[core][cluster] &&
-                (!route_remote[core][cluster] || route_remote_grant[core][cluster]);
-            // Drop the dummy set tasks
-            // Drop from ready queue if:
-            // 1. Dummy set task (task_type==01, dep_set_en==1) — existing behavior
-            // 2. DARTS CERF: conditionally skipped task — skip execution but propagate deps
-            assign ready_queue_filter_drop[core][cluster] =
-                remap_route_valid[core][cluster] &&
-                (((waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].task_type == TaskDummy) &&
-                  (waiting_dep_check_task_desc[remap_route_src_core[core][cluster]].dep_set_info.dep_set_en == 1'b1)) ||
-                 cond_exec_skip[remap_route_src_core[core][cluster]] ||
-                 route_exit_absorb[core][cluster] ||
-                 route_remote[core][cluster]);
-            assign ready_queue_filter_oup_ready[core][cluster] = ~ready_queue_full[core][cluster];
             bingo_hw_manager_ready_queue #(
                 .InterfaceType ( READY_AND_DONE_QUEUE_INTERFACE_TYPE     ),
                 .Depth         ( ReadyQueueDepth                         ),
@@ -1399,7 +1338,7 @@ module bingo_hw_manager_top #(
                 .clk_i           ( clk_i                                                            ),
                 .rst_ni          ( rst_ni                                                           ),
                 .chip_id_i       ( chip_id_i                                                        ),
-                .route_push_i    ( ready_queue_filter_oup_valid[core][cluster]                      ),
+                .route_push_i    ( route_ready_push[core][cluster]                                  ),
                 .route_desc_i    ( waiting_dep_check_task_desc[remap_route_src_core[core][cluster]] ),
                 .replay_push_i   ( replay_push_ready[core][cluster]                                 ),
                 .replay_desc_i   ( replay_data                                                      ),
@@ -2043,86 +1982,56 @@ module bingo_hw_manager_top #(
     end
 
     //////////////////////////////////////////////////////////////////////
-    // Core Remapping
+    // Placement of new tasks
     //////////////////////////////////////////////////////////////////////
-    // A task only leaves its logical core once that core is retired (fenced and
-    // its outstanding tasks replayed) or PARKED (live, drained, see
-    // bingo_hw_manager_core_remap).
-    // Dummy-set and CERF-skipped tasks never execute on a core and must drain
-    // through their own core's checkout FIFO, which is what orders them after the
-    // core's earlier tasks, so they are never remapped.
-    for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin : gen_core_remap
-        logic                                  is_dummy_set;
-        bingo_hw_manager_assigned_cluster_id_t task_cluster;
-        logic                                  outstanding_clear;
-        logic                                  replay_hold;
-
-        assign is_dummy_set = (waiting_dep_check_task_desc[core].task_type == TaskDummy) &&
-                              waiting_dep_check_task_desc[core].dep_set_info.dep_set_en;
-        assign remap_remappable[core] = !is_dummy_set && !cond_exec_skip[core];
-
-        bingo_hw_manager_core_remap #(
-            .NumCores(NUM_CORES_PER_CLUSTER),
-            .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
-            .CoreIdWidth(cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)),
-            .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
-            .CoreTypeIdWidth(CoreTypeIdWidth),
-            .CoreTypeId(CoreTypeId),
-            .SubstituteLevelMask(SubstituteLevelMask)
-        ) i_core_remap (
-            .req_valid_i(!waiting_dep_check_queue_empty[core]),
-            .logical_core_i(bingo_hw_manager_assigned_core_id_t'(core)),
-            .logical_cluster_i(waiting_dep_check_task_desc[core].assigned_cluster_id),
-            .remappable_i(remap_remappable[core]),
-            .no_replay_i(waiting_dep_check_task_desc[core].task_type == TaskNoReplay),
-            .core_fenced_i(core_fenced),
-            .core_retired_i(core_retired),
-            .core_stuck_i(replay_stuck_slot),
-            .remote_type_en_i(remote_export_type_en),
-            .remote_rejected_i(remote_rejected_q),
-            .smt_found_i(smt_found),
-            .smt_core_i(smt_core),
-            .smt_cluster_i(smt_cluster),
-            .smt_update_i(smt_update),
-            .park_hold_i(park_block),
-            .park_parked_i(park_parked),
-            .select_valid_o(remap_select_valid_raw[core]),
-            .physical_core_o(remap_physical_core[core]),
-            .physical_cluster_o(remap_physical_cluster[core]),
-            .remote_o(remap_remote[core])
-        );
-
-        // A dummy-set / skipped task stays on its logical core, but earlier tasks of
-        // that core may have been remapped (or replayed) elsewhere. Hold it back
-        // until all of those have left their checkout queues, so that its dep_set
-        // still fires after every earlier task of its logical core.
-        // Healthy cores never have outstanding remapped tasks: no behaviour change.
-        //
-        // A fenced logical core is also held while any slot still waits to be
-        // replayed: its older tasks may sit in that slot (in any cluster, after a
-        // cross-cluster remap) and must reach their new core first. The same
-        // holds for a live logical core whose tasks sit on another core (parked,
-        // or back from a parked state after its substitute died): they may be
-        // on the slot being replayed.
-        assign task_cluster = waiting_dep_check_task_desc[core].assigned_cluster_id;
-        always_comb begin
-            outstanding_clear = 1'b1;
-            replay_hold       = 1'b0;
-            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                if (bingo_hw_manager_assigned_cluster_id_t'(cl) == task_cluster) begin
-                    if (remap_outstanding_q[core][cl] != '0) begin
-                        outstanding_clear = 1'b0;
-                    end
-                    if ((core_fenced[core][cl] || (remap_outstanding_q[core][cl] != '0)) && replay_pending) begin
-                        replay_hold = 1'b1;
-                    end
-                end
-            end
-        end
-        assign remap_select_valid[core] = remap_select_valid_raw[core] &&
-                                          (remap_remappable[core] || outstanding_clear) &&
-                                          !replay_hold;
-    end
+    // Each checked waiting queue head goes to its logical slot, to the
+    // substitute the control plane chose for it (retired or parked slot), or
+    // stays on its proxy slot and is exported (level 3); see
+    // bingo_hw_manager_router.
+    bingo_hw_manager_router #(
+        .NumCores            ( NUM_CORES_PER_CLUSTER                            ),
+        .NumClusters         ( NUM_CLUSTERS_PER_CHIPLET                         ),
+        .CoreIdWidth         ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
+        .ClusterIdWidth      ( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
+        .CoreTypeIdWidth     ( CoreTypeIdWidth                                  ),
+        .CoreTypeId          ( CoreTypeId                                       ),
+        .SubstituteLevelMask ( SubstituteLevelMask                              ),
+        .RemoteEn            ( RemoteEn                                         ),
+        .OutstandingWidth    ( RemapOutstandingWidth                            ),
+        .task_desc_t         ( bingo_hw_manager_task_desc_t                     )
+    ) i_router (
+        .waiting_desc_i        ( waiting_dep_check_task_desc              ),
+        .waiting_empty_i       ( waiting_dep_check_queue_empty            ),
+        .skip_i                ( cond_exec_skip                           ),
+        .offer_valid_i         ( demux_ready_and_checkout_queue_oup_valid ),
+        .offer_ready_o         ( demux_ready_and_checkout_queue_oup_ready ),
+        .fenced_i              ( core_fenced                              ),
+        .retired_i             ( core_retired                             ),
+        .stuck_i               ( replay_stuck_slot                        ),
+        .rejected_i            ( remote_rejected_q                        ),
+        .remote_type_en_i      ( remote_export_type_en                    ),
+        .smt_found_i           ( smt_found                                ),
+        .smt_core_i            ( smt_core                                 ),
+        .smt_cluster_i         ( smt_cluster                              ),
+        .smt_update_i          ( smt_update                               ),
+        .park_hold_i           ( park_block                               ),
+        .park_parked_i         ( park_parked                              ),
+        .outstanding_i         ( remap_outstanding_q                      ),
+        .replay_pending_i      ( replay_pending                           ),
+        .replay_move_cluster_i ( replay_move_cluster                      ),
+        .select_valid_o        ( remap_select_valid                       ),
+        .physical_core_o       ( remap_physical_core                      ),
+        .physical_cluster_o    ( remap_physical_cluster                   ),
+        .route_valid_o         ( remap_route_valid                        ),
+        .route_src_core_o      ( remap_route_src_core                     ),
+        .route_exit_absorb_o   ( route_exit_absorb                        ),
+        .route_export_o        ( route_remote                             ),
+        .checkout_full_i       ( checkout_queue_full                      ),
+        .ready_full_i          ( ready_queue_full                         ),
+        .export_grant_i        ( route_remote_grant                       ),
+        .route_fire_o          ( remap_route_fire                         ),
+        .ready_push_o          ( route_ready_push                         )
+    );
 
     // Tasks of each logical slot that sit in the checkout queue of another slot
     bingo_hw_manager_remap_count #(
@@ -2143,30 +2052,6 @@ module bingo_hw_manager_top #(
         .outstanding_o ( remap_outstanding_q     ),
         .moved_in_o    ( moved_in_q              )
     );
-
-    always_comb begin : compose_remap_route_signals
-        remap_route_valid = '0;
-        remap_route_src_core = '0;
-
-        for (int unsigned dst_core = 0; dst_core < NUM_CORES_PER_CLUSTER; dst_core++) begin
-            for (int unsigned dst_cluster = 0; dst_cluster < NUM_CLUSTERS_PER_CHIPLET; dst_cluster++) begin
-                for (int unsigned src_core = 0; src_core < NUM_CORES_PER_CLUSTER; src_core++) begin
-                    // Replay pushes have priority over routed tasks in their cluster.
-                    if (!remap_route_valid[dst_core][dst_cluster] &&
-                        !replay_move_cluster[dst_cluster] &&
-                        demux_ready_and_checkout_queue_oup_valid[src_core][dst_cluster] &&
-                        remap_select_valid[src_core] &&
-                        (remap_physical_core[src_core] == bingo_hw_manager_assigned_core_id_t'(dst_core)) &&
-                        (remap_physical_cluster[src_core] == bingo_hw_manager_assigned_cluster_id_t'(dst_cluster))) begin
-
-                        remap_route_valid[dst_core][dst_cluster] = 1'b1;
-                        remap_route_src_core[dst_core][dst_cluster] =
-                            bingo_hw_manager_assigned_core_id_t'(src_core);
-                    end
-                end
-            end
-        end
-    end
 
     //////////////////////////////////////////////////////////////////////
     // Level 3: remote dispatch (SubstituteLevelMask[2])
