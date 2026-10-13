@@ -14,15 +14,18 @@
 //
 // InterfaceType (bingo_hw_manager_top READY_AND_DONE_QUEUE_INTERFACE_TYPE):
 //   1: a FIFO the core reads through the CSR interface (pop_i). The watchdog
-//      class of each task travels next to it (class_o, never in the ready
-//      word), and a replay flushes the queue of a fenced core (flush_i).
-//   0: an AXI-Lite read mailbox at base_addr_i; empty_o / data_o / class_o
-//      are 0 and pop_i / flush_i are not used.
+//      class of each task and whether it runs away from its own logical slot
+//      travel next to it (class_o, moved_o, never in the ready word), and a
+//      replay flushes the queue of a fenced core (flush_i).
+//   0: an AXI-Lite read mailbox at base_addr_i; empty_o / data_o / class_o /
+//      moved_o are 0 and pop_i / flush_i are not used.
 module bingo_hw_manager_ready_queue #(
     parameter int unsigned InterfaceType = 1,
     parameter int unsigned Depth = 8,
     parameter int unsigned WdClassWidth = 3,
     parameter int unsigned ChipIdWidth = 8,
+    parameter int unsigned CoreIdWidth = 2,
+    parameter int unsigned ClusterIdWidth = 1,
     parameter int unsigned AxiAddrWidth = 48,
     parameter int unsigned AxiDataWidth = 32,
     parameter type         task_desc_t = logic,  // bingo_hw_manager_task_desc_t of the top
@@ -34,6 +37,9 @@ module bingo_hw_manager_ready_queue #(
     input  logic                    clk_i,
     input  logic                    rst_ni,
     input  logic [ChipIdWidth-1:0]  chip_id_i,
+    // This slot
+    input  logic [CoreIdWidth-1:0]    core_id_i,
+    input  logic [ClusterIdWidth-1:0] cluster_id_i,
     // Push
     input  logic                    route_push_i,
     input  task_desc_t              route_desc_i,
@@ -50,6 +56,7 @@ module bingo_hw_manager_ready_queue #(
     output logic                    empty_o,
     output ready_desc_t             data_o,
     output logic [WdClassWidth-1:0] class_o,
+    output logic                    moved_o,
     // Mailbox side (InterfaceType 0)
     input  addr_t                   base_addr_i,
     input  req_lite_t               axi_lite_req_i,
@@ -63,6 +70,12 @@ module bingo_hw_manager_ready_queue #(
     assign push_data_o.task_id       = source_desc.task_id;
     assign push_data_o.reserved_bits = '0;
     assign push_o = (route_push_i & ~full_o) | replay_push_i | import_push_i;
+    // The task does not run on its own logical slot: replayed or remapped onto
+    // a substitute, or imported from another chiplet.
+    logic moved;
+    assign moved = (import_push_i && !replay_push_i) ||
+                   (source_desc.assigned_core_id != core_id_i) ||
+                   (source_desc.assigned_cluster_id != cluster_id_i);
 
     if (InterfaceType == 0) begin : gen_ready_queue_axi_lite_mailbox
         bingo_hw_manager_read_mailbox #(
@@ -91,17 +104,21 @@ module bingo_hw_manager_ready_queue #(
         assign empty_o = 1'b0;
         assign data_o  = '0;
         assign class_o = '0;
+        assign moved_o = 1'b0;
     end else begin : gen_ready_queue_generic_fifo
         // Extra internal metadata never appears in the device's ready word.
         typedef struct packed {
+            logic                    moved;
             logic [WdClassWidth-1:0] wd_class;
             ready_desc_t             desc;
         } ready_entry_t;
         ready_entry_t entry_in, entry_out;
         assign entry_in.desc     = push_data_o;
         assign entry_in.wd_class = source_desc.wd_class;
+        assign entry_in.moved    = moved;
         assign data_o            = entry_out.desc;
         assign class_o           = entry_out.wd_class;
+        assign moved_o           = entry_out.moved;
         fifo_v3 #(
             .FALL_THROUGH ( 1'b0          ),
             .DEPTH        ( Depth         ),

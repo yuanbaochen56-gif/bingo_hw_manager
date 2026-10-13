@@ -92,7 +92,8 @@
 // and can be set for the normal level instead of the slowest one. The level is
 // the one the DFS path applied to the domain, or the one the host acknowledged
 // in DVFS mode (pm_mode_i[0]); without idle PM, or at or below the normal
-// level, the timer advances every cycle.
+// level, the timer advances every cycle. wd_fast_o marks a slot whose domain
+// runs at a known level below the normal one (a faster clock, e.g. boost).
 //
 // Recovery boost: a live slot that is the substitute of a fenced core in the
 // table does the work of two cores. While it is busy (not polling), pm_boost_o
@@ -224,6 +225,8 @@ module bingo_hw_manager_ctrl #(
     output logic [NumCores-1:0][NumClusters-1:0] load_clear_o,
     // Watchdog: the slot's timer advances this cycle
     output logic [NumCores-1:0][NumClusters-1:0] wd_tick_o,
+    // Adaptive bounds: the slot's domain runs faster than the normal level
+    output logic [NumCores-1:0][NumClusters-1:0] wd_fast_o,
     // Power manager: slots that run a dead core's tasks and are busy
     output logic [NumCores-1:0][NumClusters-1:0] pm_boost_o,
 
@@ -616,6 +619,8 @@ module bingo_hw_manager_ctrl #(
                 slot_level[c][cl] = pm_dvfs_i ? dvfs_level_i :
                                     (slot_domain_i[c][cl] < 32) ? domain_level_i[slot_domain_i[c][cl][4:0]] : 8'd0;
                 slot_slow[c][cl]  = pm_enable_i && (normal_level_i != '0) && (slot_level[c][cl] > normal_level_i);
+                wd_fast_o[c][cl]  = pm_enable_i && (normal_level_i != '0) && (slot_level[c][cl] != '0) &&
+                                    (slot_level[c][cl] < normal_level_i);
                 // Accumulate N per cycle, tick (and subtract L) once it reaches L
                 if (!slot_slow[c][cl]) begin
                     wd_tick_o[c][cl]  = 1'b1;

@@ -91,6 +91,11 @@ sources:
       - test/tb_bingo_hw_manager_wd_adapt_layout.sv
       - test/tb_bingo_hw_manager_wd_adapt_layout_ci.sv
       - test/tb_bingo_hw_manager_wd_adapt_unavailable.sv
+      - test/tb_bingo_hw_manager_wd_adapt_comparable.sv
+      - test/tb_bingo_hw_manager_wd_adapt_moved.sv
+      - test/tb_bingo_hw_manager_wd_adapt_moved_off.sv
+      - test/tb_bingo_hw_manager_wd_adapt_fast.sv
+      - test/tb_bingo_hw_manager_wd_adapt_fast_off.sv
       - test/tb_bingo_hw_manager_late_window.sv
       - test/tb_bingo_hw_manager_late_min.sv
       - test/tb_bingo_hw_manager_late_valid.sv

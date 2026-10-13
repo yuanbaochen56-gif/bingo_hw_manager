@@ -819,7 +819,7 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_status_waiting_task;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] exited_q;
     // Control plane (bingo_hw_manager_ctrl): power / load view of the slots
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_wd_tick;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_wd_tick, ctrl_wd_fast;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_boost;
     // At-risk slots whose domain runs at most at the derate level, and late beats
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_derate;
@@ -927,6 +927,7 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_late_ad_valid, wd_late_ad_use;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WatchdogCounterWidth-1:0] wd_late_slot;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WdClassWidth-1:0] wd_class_q, ready_class;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_moved_q, ready_moved;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_risk_confirm_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] risk;
     // --------Finish Type definitions and signal declarations--------------------//
@@ -1326,6 +1327,8 @@ module bingo_hw_manager_top #(
                 .Depth         ( ReadyQueueDepth                         ),
                 .WdClassWidth  ( WdClassWidth                            ),
                 .ChipIdWidth   ( ChipIdWidth                             ),
+                .CoreIdWidth   ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
+                .ClusterIdWidth( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
                 .AxiAddrWidth  ( DeviceAxiLiteAddrWidth                  ),
                 .AxiDataWidth  ( DeviceAxiLiteDataWidth                  ),
                 .task_desc_t   ( bingo_hw_manager_task_desc_t            ),
@@ -1337,6 +1340,8 @@ module bingo_hw_manager_top #(
                 .clk_i           ( clk_i                                                            ),
                 .rst_ni          ( rst_ni                                                           ),
                 .chip_id_i       ( chip_id_i                                                        ),
+                .core_id_i       ( bingo_hw_manager_assigned_core_id_t'(core)                       ),
+                .cluster_id_i    ( bingo_hw_manager_assigned_cluster_id_t'(cluster)                 ),
                 .route_push_i    ( route_ready_push[core][cluster]                                  ),
                 .route_desc_i    ( waiting_dep_check_task_desc[remap_route_src_core[core][cluster]] ),
                 .replay_push_i   ( replay_push_ready[core][cluster]                                 ),
@@ -1351,6 +1356,7 @@ module bingo_hw_manager_top #(
                 .empty_o         ( ready_queue_empty[core][cluster]                                 ),
                 .data_o          ( ready_queue_data_out[core][cluster]                              ),
                 .class_o         ( ready_class[core][cluster]                                       ),
+                .moved_o         ( ready_moved[core][cluster]                                       ),
                 .base_addr_i     ( ready_queue_base_addr_i +
                                    (core + cluster * NUM_CORES_PER_CLUSTER) * ReadyQueueAddrOffset  ),
                 .axi_lite_req_i  ( ready_queue_axi_lite_req_i[core][cluster]                        ),
@@ -1694,6 +1700,17 @@ module bingo_hw_manager_top #(
                         wd_class_q[c][cl] <= ready_class[c][cl];
         end
     end
+    // Whether the slot's current task runs away from its own logical slot,
+    // latched with its class
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) wd_moved_q <= '0;
+        else begin
+            for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
+                for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
+                    if (ready_queue_pop[c][cl] && !done_q_push[c][cl] && !core_fenced[c][cl])
+                        wd_moved_q[c][cl] <= ready_moved[c][cl];
+        end
+    end
     bingo_hw_manager_wd_adapt #(
         .NumCores(NUM_CORES_PER_CLUSTER), .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
         .CounterWidth(WatchdogCounterWidth), .WdAdaptTypeBits(WdAdaptTypeBits),
@@ -1704,7 +1721,8 @@ module bingo_hw_manager_top #(
         .late_ctrl_i(bingo_hw_manager_wd_late_i),
         .progress_i(wd_progress), .interval_i(wd_interval), .dispatch_i(ready_queue_pop),
         .done_i(done_q_push), .fenced_i(core_fenced), .busy_i(core_busy),
-        .class_i(wd_class_q), .h_eff_i(wd_h_eff), .c_eff_i(wd_c_eff),
+        .class_i(wd_class_q), .moved_i(wd_moved_q), .fast_i(ctrl_wd_fast),
+        .h_eff_i(wd_h_eff), .c_eff_i(wd_c_eff),
         .h_ad_o(wd_h_ad), .c_ad_o(wd_c_ad), .h_valid_o(wd_h_ad_valid),
         .c_valid_o(wd_c_ad_valid), .late_ad_o(wd_late_ad), .late_valid_o(wd_late_ad_valid)
     );
@@ -1849,6 +1867,7 @@ module bingo_hw_manager_top #(
         .boost_credit_i ( bingo_hw_manager_boost_policy_i[11:8]  ),
         .boost_load_min_i ( bingo_hw_manager_boost_policy_i[23:16] ),
         .wd_tick_o      ( ctrl_wd_tick     ),
+        .wd_fast_o      ( ctrl_wd_fast     ),
         .pm_boost_o     ( ctrl_pm_boost    ),
         .pm_idle_o      ( ctrl_pm_idle     ),
         .rec_hold_o     ( ctrl_rec_hold    ),
