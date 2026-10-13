@@ -505,6 +505,23 @@ module bingo_hw_manager_top #(
         return set_class(f, d.wd_class);
     endfunction
 
+    function automatic bingo_hw_manager_task_desc_t full_to_desc(input bingo_hw_manager_task_desc_full_t f);
+        bingo_hw_manager_task_desc_t d;
+        d.wd_class            = get_class(f);
+        d.is_exit             = f.is_exit;
+        d.dep_set_info        = f.dep_set_info;
+        d.dep_check_info      = f.dep_check_info;
+        d.assigned_core_id    = f.assigned_core_id;
+        d.assigned_cluster_id = f.assigned_cluster_id;
+        d.assigned_chiplet_id = f.assigned_chiplet_id;
+        d.task_id             = f.task_id;
+        d.task_type           = f.task_type;
+        d.cond_exec_en        = f.cond_exec_en;
+        d.cond_exec_group_id  = f.cond_exec_group_id;
+        d.cond_exec_invert    = f.cond_exec_invert;
+        return d;
+    endfunction
+
     // Done info struct
     typedef struct packed{
         bingo_hw_manager_assigned_cluster_id_t     assigned_cluster_id;
@@ -760,10 +777,8 @@ module bingo_hw_manager_top #(
     // Per core type: its export queue has room
     logic [2**CoreTypeIdWidth-1:0]         export_type_ready;
     // Level 3 import (executor side)
-    logic                                  import_home_found;
     bingo_hw_manager_assigned_core_id_t    import_home_core;
     bingo_hw_manager_assigned_cluster_id_t import_home_cluster;
-    logic                                  import_sub_found;
     bingo_hw_manager_assigned_core_id_t    import_core;
     bingo_hw_manager_assigned_cluster_id_t import_cluster;
     logic                                  import_fire;
@@ -779,8 +794,7 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    remote_done_push;
     // Level 3 rejects: executor side (one pending reject), origin side (sticky
     // per proxy slot)
-    logic                                                              reject_valid_q;
-    remote_done_t                                                      reject_q;
+    logic                                                              reject_pending;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    remote_rejected_q;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    remote_reject_in;
 
@@ -1011,19 +1025,7 @@ module bingo_hw_manager_top #(
 
     // Compose the current task descriptor from the muxed source
     assign cur_task_desc_full = bingo_hw_manager_task_desc_full_t'(muxed_task_data);
-    assign cur_task_desc.wd_class = get_class(cur_task_desc_full);
-    assign cur_task_desc.is_exit = cur_task_desc_full.is_exit;
-    assign cur_task_desc.task_id = cur_task_desc_full.task_id;
-    assign cur_task_desc.task_type = cur_task_desc_full.task_type;
-    assign cur_task_desc.assigned_chiplet_id = cur_task_desc_full.assigned_chiplet_id;
-    assign cur_task_desc.assigned_cluster_id = cur_task_desc_full.assigned_cluster_id;
-    assign cur_task_desc.assigned_core_id = cur_task_desc_full.assigned_core_id;
-    assign cur_task_desc.dep_check_info = cur_task_desc_full.dep_check_info;
-    assign cur_task_desc.dep_set_info = cur_task_desc_full.dep_set_info;
-    // DARTS Tier 1: CERF fields
-    assign cur_task_desc.cond_exec_en = cur_task_desc_full.cond_exec_en;
-    assign cur_task_desc.cond_exec_group_id = cur_task_desc_full.cond_exec_group_id;
-    assign cur_task_desc.cond_exec_invert = cur_task_desc_full.cond_exec_invert;
+    assign cur_task_desc = full_to_desc(cur_task_desc_full);
 
 
     /////////////////////////////////////////////////////////
@@ -1992,7 +1994,7 @@ module bingo_hw_manager_top #(
         .checkout_imported_i        ( checkout_head_imported      ),
         .export_type_ready_i        ( export_type_ready           ),
         .remote_type_en_i           ( remote_export_type_en       ),
-        .bounce_ready_i             ( !reject_valid_q             ),
+        .bounce_ready_i             ( !reject_pending             ),
         .smt_found_i                ( smt_found                   ),
         .smt_core_i                 ( smt_core                    ),
         .smt_cluster_i              ( smt_cluster                 ),
@@ -2305,158 +2307,62 @@ module bingo_hw_manager_top #(
         .mismatch_o                    ( remote_done_mismatch_o        )
     );
 
-    if (RemoteEn) begin : gen_remote_dispatch
-        // Import: home slot = lowest slot of the requested type
-        always_comb begin : find_import_home
-            import_home_found   = 1'b0;
-            import_home_core    = '0;
-            import_home_cluster = '0;
-            for (int cl = NUM_CLUSTERS_PER_CHIPLET - 1; cl >= 0; cl--) begin
-                for (int c = NUM_CORES_PER_CLUSTER - 1; c >= 0; c--) begin
-                    if ((remote_dispatch_core_type_i != '0) &&
-                        (CoreTypeId[c][cl] == remote_dispatch_core_type_i)) begin
-                        import_home_found   = 1'b1;
-                        import_home_core    = bingo_hw_manager_assigned_core_id_t'(c);
-                        import_home_cluster = bingo_hw_manager_assigned_cluster_id_t'(cl);
-                    end
-                end
-            end
-        end
-        // Its live stand-in on this chiplet (never re-exported)
-        bingo_hw_manager_substitute_sel #(
-            .NumCores(NUM_CORES_PER_CLUSTER),
-            .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
-            .CoreIdWidth(cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)),
-            .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
-            .CoreTypeIdWidth(CoreTypeIdWidth),
-            .CoreTypeId(CoreTypeId),
-            .LevelMask(ImportSubstituteLevelMask & 3'b011),
-            .L2TypeEn(SubstituteL2TypeEn)
-        ) i_import_sel (
-            .logical_core_i(import_home_core),
-            .logical_cluster_i(import_home_cluster),
-            .fenced_i(core_fenced),
-            .found_o(import_sub_found),
-            .core_o(import_core),
-            .cluster_o(import_cluster)
-        );
-        always_comb begin : compose_import_desc
-            automatic bingo_hw_manager_task_desc_full_t f;
-            f = bingo_hw_manager_task_desc_full_t'(remote_dispatch_desc_i);
-            import_desc.wd_class            = get_class(f);
-            import_desc.is_exit             = f.is_exit;
-            import_desc.task_id             = f.task_id;
-            import_desc.task_type           = f.task_type;
-            import_desc.assigned_chiplet_id = chip_id_i;
-            import_desc.assigned_cluster_id = import_home_cluster;
-            import_desc.assigned_core_id    = import_home_core;
-            import_desc.dep_check_info      = '0;
-            import_desc.dep_set_info        = '0;
-            import_desc.cond_exec_en        = 1'b0;
-            import_desc.cond_exec_group_id  = '0;
-            import_desc.cond_exec_invert    = 1'b0;
-        end
-        assign import_tag = '{exported:    1'b0,
-                              imported:    1'b1,
-                              origin_chip: remote_dispatch_origin_chip_i,
-                              proxy_slot:  remote_dispatch_proxy_slot_i};
-        assign import_fire = remote_dispatch_valid_i && import_home_found && import_sub_found &&
-                             !replay_pending && !(|replay_move) &&
-                             !remap_route_valid[import_core][import_cluster] &&
-                             !replay_push[import_core][import_cluster] &&
-                             !checkout_queue_full[import_core][import_cluster] &&
-                             !ready_queue_full[import_core][import_cluster];
-        always_comb begin
-            import_push = '0;
-            import_push[import_core][import_cluster] = import_fire;
-        end
-        // No live core here may run it, now or later (fenced is sticky): take it
-        // and reject it back to its origin instead of blocking the link. Waits
-        // for a local replay, which may first bounce older imports of the type.
-        assign import_reject = remote_dispatch_valid_i && !(import_home_found && import_sub_found) &&
-                               !replay_pending && !(|replay_move) && !reject_valid_q;
-        assign remote_dispatch_ready_o = import_fire || import_reject;
-
-        // One pending reject (import_reject or a bounced imported entry)
-        localparam int unsigned NumSlots = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET;
-        logic reject_arb_valid, reject_arb_ready, reject_raised_q;
-        always_ff @(posedge clk_i or negedge rst_ni) begin
-            if (!rst_ni) begin
-                reject_valid_q  <= 1'b0;
-                reject_q        <= '0;
-                reject_raised_q <= 1'b0;
-            end else begin
-                if (reject_arb_valid && reject_arb_ready) begin
-                    reject_valid_q  <= 1'b0;
-                    reject_raised_q <= 1'b0;
-                end else if (reject_arb_valid) begin
-                    reject_raised_q <= 1'b1;
-                end
-                if (import_reject) begin
-                    reject_valid_q <= 1'b1;
-                    reject_q       <= '{chip:       remote_dispatch_origin_chip_i,
-                                        proxy_slot: remote_dispatch_proxy_slot_i,
-                                        task_id:    import_desc.task_id,
-                                        reject:     1'b1};
-                end else if (replay_bounce) begin
-                    reject_valid_q <= 1'b1;
-                    reject_q       <= '{chip:       checkout_remote_tag_out[replay_src_core][replay_src_cluster].origin_chip,
-                                        proxy_slot: checkout_remote_tag_out[replay_src_core][replay_src_cluster].proxy_slot,
-                                        task_id:    replay_data.task_id,
-                                        reject:     1'b1};
-                end
-            end
-        end
-        // Below every retiring done: the dones of a proxy slot reach its origin
-        // before its reject (once raised, the request is held until taken)
-        assign reject_arb_valid = reject_valid_q && (reject_raised_q || !(|remote_done_arb_valid));
-
-        // Dones of imported tasks and rejects, back to their origin
-        remote_done_t [NumSlots:0] remote_done_all_data;
-        logic         [NumSlots:0] remote_done_all_valid, remote_done_all_ready;
-        assign remote_done_all_data  = {reject_q, remote_done_arb_data};
-        assign remote_done_all_valid = {reject_arb_valid, remote_done_arb_valid};
-        assign {reject_arb_ready, remote_done_arb_ready} = remote_done_all_ready;
-        stream_arbiter #(
-            .DATA_T(remote_done_t),
-            .N_INP (NumSlots + 1)
-        ) i_remote_done_arbiter (
-            .clk_i      ( clk_i                 ),
-            .rst_ni     ( rst_ni                ),
-            .inp_data_i ( remote_done_all_data  ),
-            .inp_valid_i( remote_done_all_valid ),
-            .inp_ready_o( remote_done_all_ready ),
-            .oup_data_o ( remote_done_out       ),
-            .oup_valid_o( remote_done_valid_o   ),
-            .oup_ready_i( remote_done_ready_i   )
-        );
-        assign remote_done_chip_o       = remote_done_out.chip;
-        assign remote_done_proxy_slot_o = remote_done_out.proxy_slot;
-        assign remote_done_task_id_o    = remote_done_out.task_id;
-        assign remote_done_reject_o     = remote_done_out.reject;
-    end else begin : gen_no_remote_dispatch
-        assign import_home_found             = 1'b0;
-        assign import_home_core              = '0;
-        assign import_home_cluster           = '0;
-        assign import_sub_found              = 1'b0;
-        assign import_core                   = '0;
-        assign import_cluster                = '0;
-        assign import_desc                   = '0;
-        assign import_tag                    = '0;
-        assign import_fire                   = 1'b0;
-        assign import_reject                 = 1'b0;
-        assign import_push                   = '0;
-        assign remote_dispatch_ready_o       = 1'b0;
-        assign reject_valid_q                = 1'b0;
-        assign reject_q                      = '0;
-        assign remote_done_arb_ready         = '0;
-        assign remote_done_out               = '0;
-        assign remote_done_valid_o           = 1'b0;
-        assign remote_done_chip_o            = '0;
-        assign remote_done_proxy_slot_o      = '0;
-        assign remote_done_task_id_o         = '0;
-        assign remote_done_reject_o          = 1'b0;
-    end
+    bingo_hw_manager_remote_import #(
+        .NumCores                  ( NUM_CORES_PER_CLUSTER        ),
+        .NumClusters               ( NUM_CLUSTERS_PER_CHIPLET     ),
+        .RemoteEn                  ( RemoteEn                     ),
+        .CoreTypeIdWidth           ( CoreTypeIdWidth              ),
+        .CoreTypeId                ( CoreTypeId                   ),
+        .ImportSubstituteLevelMask ( ImportSubstituteLevelMask    ),
+        .SubstituteL2TypeEn        ( SubstituteL2TypeEn           ),
+        .CoreIdWidth               ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
+        .ClusterIdWidth            ( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
+        .task_desc_t               ( bingo_hw_manager_task_desc_t ),
+        .remote_slot_t             ( remote_slot_t                ),
+        .remote_tag_t              ( remote_tag_t                 ),
+        .remote_done_t             ( remote_done_t                ),
+        .chip_id_t                 ( chip_id_t                    )
+    ) i_remote_import (
+        .clk_i                         ( clk_i                                                     ),
+        .rst_ni                        ( rst_ni                                                    ),
+        .chip_id_i                     ( chip_id_i                                                 ),
+        .remote_dispatch_valid_i       ( remote_dispatch_valid_i                                   ),
+        .remote_dispatch_ready_o       ( remote_dispatch_ready_o                                   ),
+        .remote_dispatch_desc_i        ( full_to_desc(bingo_hw_manager_task_desc_full_t'(remote_dispatch_desc_i)) ),
+        .remote_dispatch_core_type_i   ( remote_dispatch_core_type_i                               ),
+        .remote_dispatch_origin_chip_i ( remote_dispatch_origin_chip_i                             ),
+        .remote_dispatch_proxy_slot_i  ( remote_dispatch_proxy_slot_i                              ),
+        .fenced_i                      ( core_fenced                                               ),
+        .replay_pending_i              ( replay_pending                                            ),
+        .replay_moving_i               ( |replay_move                                              ),
+        .route_valid_i                 ( remap_route_valid                                         ),
+        .replay_push_i                 ( replay_push                                               ),
+        .checkout_full_i               ( checkout_queue_full                                       ),
+        .ready_full_i                  ( ready_queue_full                                          ),
+        .fire_o                        ( import_fire                                               ),
+        .reject_o                      ( import_reject                                             ),
+        .push_o                        ( import_push                                               ),
+        .desc_o                        ( import_desc                                               ),
+        .tag_o                         ( import_tag                                                ),
+        .home_core_o                   ( import_home_core                                          ),
+        .home_cluster_o                ( import_home_cluster                                       ),
+        .core_o                        ( import_core                                               ),
+        .cluster_o                     ( import_cluster                                            ),
+        .done_i                        ( remote_done_arb_data                                      ),
+        .done_valid_i                  ( remote_done_arb_valid                                     ),
+        .done_ready_o                  ( remote_done_arb_ready                                     ),
+        .bounce_i                      ( replay_bounce                                             ),
+        .bounce_tag_i                  ( checkout_remote_tag_out[replay_src_core][replay_src_cluster] ),
+        .bounce_desc_i                 ( replay_data                                               ),
+        .reject_pending_o              ( reject_pending                                            ),
+        .remote_done_valid_o           ( remote_done_valid_o                                       ),
+        .remote_done_ready_i           ( remote_done_ready_i                                       ),
+        .remote_done_o                 ( remote_done_out                                           )
+    );
+    assign remote_done_chip_o       = remote_done_out.chip;
+    assign remote_done_proxy_slot_o = remote_done_out.proxy_slot;
+    assign remote_done_task_id_o    = remote_done_out.task_id;
+    assign remote_done_reject_o     = remote_done_out.reject;
 
     if (EventLogDepth != 0) begin : gen_evlog
         localparam int Slots = NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET;
