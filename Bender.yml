@@ -41,6 +41,7 @@ sources:
   - src/bingo_hw_manager_done_queues.sv        # Done queue of every slot and what pushes into it
   - src/bingo_hw_manager_csr_port.sv           # CSR port of the cores: ready reads, done writes, heartbeats
   - src/bingo_hw_manager_checkout_queue.sv     # Checkout queue of a slot and the retire rule of its head
+  - src/bingo_hw_manager_remap_count.sv        # Tasks of a logical slot in other slots' checkout queues
   - src/bingo_hw_manager_remote_export.sv      # Level 3, origin side: export queues and proxy slots
   - src/bingo_hw_manager_remote_import.sv      # Level 3, executor side: imports, their dones and rejects
   # Level 2

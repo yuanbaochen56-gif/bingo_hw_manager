@@ -738,16 +738,6 @@ module bingo_hw_manager_top #(
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_queue_pop;
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_queue_full;
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_queue_empty;
-    // A checkout entry of physical slot (p, cl) that belongs to another logical
-    // slot of this chiplet (remapped or replayed; checkout entries keep the
-    // logical core and cluster)
-    function automatic logic foreign_entry(
-        input bingo_hw_manager_task_desc_t entry, input int unsigned p, input int unsigned cl);
-        return ((entry.assigned_core_id != bingo_hw_manager_assigned_core_id_t'(p)) ||
-                (entry.assigned_cluster_id != bingo_hw_manager_assigned_cluster_id_t'(cl))) &&
-               (int'(entry.assigned_core_id) < NUM_CORES_PER_CLUSTER) &&
-               (int'(entry.assigned_cluster_id) < NUM_CLUSTERS_PER_CHIPLET);
-    endfunction
     // Level 3: one spare entry lets a replay rotation (pop + push) run on a full queue
     localparam int unsigned CheckoutFifoDepth = CheckoutQueueDepth + (RemoteEn ? 1 : 0);
     localparam int unsigned CheckoutUsageWidth = (CheckoutFifoDepth > 1) ? $clog2(CheckoutFifoDepth) : 1;
@@ -918,11 +908,9 @@ module bingo_hw_manager_top #(
     // to another physical core and are still in that core's checkout queue.
     localparam int unsigned RemapOutstandingWidth =
         $clog2(NUM_CORES_PER_CLUSTER * CheckoutQueueDepth + 1);
-    logic [RemapOutstandingWidth-1:0] remap_outstanding_d [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
     logic [RemapOutstandingWidth-1:0] remap_outstanding_q [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
     // Of those, the ones in the checkout queue of physical slot [p][pcl]:
     // moved_in_q[p][pcl][core][cluster] (ForeignStuckDrain only)
-    logic [RemapOutstandingWidth-1:0] moved_in_d [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET][NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
     logic [RemapOutstandingWidth-1:0] moved_in_q [NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET][NUM_CORES_PER_CLUSTER][NUM_CLUSTERS_PER_CHIPLET];
 
     // Watchdog counter wide enough for the configured timeouts (saturating timer).
@@ -2136,75 +2124,25 @@ module bingo_hw_manager_top #(
                                           !replay_hold;
     end
 
-    // Track tasks per logical core that sit in the checkout queue of another
-    // physical core, in its own or another cluster.
-    always_comb begin : update_remap_outstanding
-        remap_outstanding_d = remap_outstanding_q;
-        for (int unsigned p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
-            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                if (checkout_queue_push[p][cl] && foreign_entry(checkout_queue_data_in[p][cl], p, cl)) begin
-                    remap_outstanding_d[checkout_queue_data_in[p][cl].assigned_core_id][checkout_queue_data_in[p][cl].assigned_cluster_id] =
-                        remap_outstanding_d[checkout_queue_data_in[p][cl].assigned_core_id][checkout_queue_data_in[p][cl].assigned_cluster_id] + 1'b1;
-                end
-                if (checkout_queue_pop[p][cl] && foreign_entry(checkout_queue_data_out[p][cl], p, cl)) begin
-                    remap_outstanding_d[checkout_queue_data_out[p][cl].assigned_core_id][checkout_queue_data_out[p][cl].assigned_cluster_id] =
-                        remap_outstanding_d[checkout_queue_data_out[p][cl].assigned_core_id][checkout_queue_data_out[p][cl].assigned_cluster_id] - 1'b1;
-                end
-            end
-        end
-    end
-
-    // Per (physical slot, logical core) split of the same counts
-    if (ForeignStuckDrain) begin : gen_moved_in
-        always_comb begin : update_moved_in
-            moved_in_d = moved_in_q;
-            for (int unsigned p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
-                for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                    if (checkout_queue_push[p][cl] && foreign_entry(checkout_queue_data_in[p][cl], p, cl)) begin
-                        moved_in_d[p][cl][checkout_queue_data_in[p][cl].assigned_core_id][checkout_queue_data_in[p][cl].assigned_cluster_id] =
-                            moved_in_d[p][cl][checkout_queue_data_in[p][cl].assigned_core_id][checkout_queue_data_in[p][cl].assigned_cluster_id] + 1'b1;
-                    end
-                    if (checkout_queue_pop[p][cl] && foreign_entry(checkout_queue_data_out[p][cl], p, cl)) begin
-                        moved_in_d[p][cl][checkout_queue_data_out[p][cl].assigned_core_id][checkout_queue_data_out[p][cl].assigned_cluster_id] =
-                            moved_in_d[p][cl][checkout_queue_data_out[p][cl].assigned_core_id][checkout_queue_data_out[p][cl].assigned_cluster_id] - 1'b1;
-                    end
-                end
-            end
-        end
-        always_ff @(posedge clk_i or negedge rst_ni) begin : moved_in_regs
-            if (!rst_ni) begin
-                for (int unsigned p = 0; p < NUM_CORES_PER_CLUSTER; p++)
-                    for (int unsigned pcl = 0; pcl < NUM_CLUSTERS_PER_CHIPLET; pcl++)
-                        for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++)
-                            for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
-                                moved_in_q[p][pcl][c][cl] <= '0;
-            end else begin
-                moved_in_q <= moved_in_d;
-            end
-        end
-    end else begin : gen_no_moved_in
-        always_comb begin
-            for (int unsigned p = 0; p < NUM_CORES_PER_CLUSTER; p++)
-                for (int unsigned pcl = 0; pcl < NUM_CLUSTERS_PER_CHIPLET; pcl++)
-                    for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++)
-                        for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                            moved_in_d[p][pcl][c][cl] = '0;
-                            moved_in_q[p][pcl][c][cl] = '0;
-                        end
-        end
-    end
-
-    always_ff @(posedge clk_i or negedge rst_ni) begin : remap_outstanding_regs
-        if (!rst_ni) begin
-            for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
-                for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                    remap_outstanding_q[c][cl] <= '0;
-                end
-            end
-        end else begin
-            remap_outstanding_q <= remap_outstanding_d;
-        end
-    end
+    // Tasks of each logical slot that sit in the checkout queue of another slot
+    bingo_hw_manager_remap_count #(
+        .NumCores          ( NUM_CORES_PER_CLUSTER                            ),
+        .NumClusters       ( NUM_CLUSTERS_PER_CHIPLET                         ),
+        .CoreIdWidth       ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
+        .ClusterIdWidth    ( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
+        .Width             ( RemapOutstandingWidth                            ),
+        .ForeignStuckDrain ( ForeignStuckDrain                                ),
+        .task_desc_t       ( bingo_hw_manager_task_desc_t                     )
+    ) i_remap_count (
+        .clk_i         ( clk_i                   ),
+        .rst_ni        ( rst_ni                  ),
+        .push_i        ( checkout_queue_push     ),
+        .push_desc_i   ( checkout_queue_data_in  ),
+        .pop_i         ( checkout_queue_pop      ),
+        .head_i        ( checkout_queue_data_out ),
+        .outstanding_o ( remap_outstanding_q     ),
+        .moved_in_o    ( moved_in_q              )
+    );
 
     always_comb begin : compose_remap_route_signals
         remap_route_valid = '0;
