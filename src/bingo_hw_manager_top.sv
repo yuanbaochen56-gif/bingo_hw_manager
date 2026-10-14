@@ -832,6 +832,18 @@ module bingo_hw_manager_top #(
         cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER), cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
     `BINGO_HW_MANAGER_TYPEDEF_ROUTE_T(route_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET,
         cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER))
+    `BINGO_HW_MANAGER_TYPEDEF_DONE_T(done_t, bingo_hw_manager_done_info_full_t,
+        NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    // ... and of one slot's queues
+    `BINGO_HW_MANAGER_TYPEDEF_TASK_PUSH_T(task_push_t, bingo_hw_manager_task_desc_t)
+    `BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_ROUTE_T(checkout_route_t, bingo_hw_manager_task_desc_t)
+    `BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_REPLAY_T(checkout_replay_t, bingo_hw_manager_task_desc_t, remote_tag_t)
+    `BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_IMPORT_T(checkout_import_t, bingo_hw_manager_task_desc_t, remote_tag_t)
+    `BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_ENTRY_T(checkout_entry_t, bingo_hw_manager_task_desc_t, remote_tag_t)
+    `BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_OCC_T(checkout_occ_t, CheckoutUsageWidth)
+    `BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_HEAD_T(checkout_head_t, bingo_hw_manager_task_desc_t, remote_tag_t)
+    `BINGO_HW_MANAGER_TYPEDEF_READY_PUSH_T(ready_push_t, bingo_hw_manager_ready_task_desc_full_t)
+    `BINGO_HW_MANAGER_TYPEDEF_READY_HEAD_T(ready_head_t, bingo_hw_manager_ready_task_desc_full_t, WdClassWidth)
     // Control plane (bingo_hw_manager_ctrl): what it reads of every slot, and
     // its view of every slot (PM idle, boost, derate, watchdog tick, risk, ...)
     slot_state_t                                                    slot_state;
@@ -933,6 +945,39 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WdClassWidth-1:0] wd_class_q, ready_class;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_moved_q, ready_moved;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_risk_confirm_valid;
+    // The waiting queue heads, and the checkout, ready and done queues of every slot
+    waiting_t  waiting_heads;
+    checkout_t checkout_queue;
+    ready_t    ready_queue;
+    done_t     done_queue;
+    assign waiting_heads  = '{desc:  waiting_dep_check_task_desc,
+                              empty: waiting_dep_check_queue_empty,
+                              skip:  cond_exec_skip};
+    assign checkout_queue = '{push:          checkout_queue_push,
+                              push_desc:     checkout_queue_data_in,
+                              push_tag:      checkout_remote_tag_in,
+                              pop:           checkout_queue_pop,
+                              full:          checkout_queue_full,
+                              full_raw:      checkout_queue_full_raw,
+                              usage:         checkout_queue_usage,
+                              empty:         checkout_queue_empty,
+                              head:          checkout_queue_data_out,
+                              head_tag:      checkout_remote_tag_out,
+                              head_imported: checkout_head_imported,
+                              head_exec:     checkout_head_exec};
+    assign ready_queue    = '{push:      ready_queue_push,
+                              push_data: ready_queue_data_in,
+                              full:      ready_queue_full,
+                              empty:     ready_queue_empty,
+                              pop:       ready_queue_pop,
+                              data:      ready_queue_data_out,
+                              wd_class:  ready_class,
+                              moved:     ready_moved};
+    assign done_queue     = '{push:      done_q_push,
+                              push_data: done_q_data_in,
+                              head:      done_q_info,
+                              empty:     done_q_empty,
+                              pop:       done_q_pop};
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//
@@ -1325,6 +1370,13 @@ module bingo_hw_manager_top #(
     // (bingo_hw_manager_ready_queue), where the core reads its id.
     for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin: gen_ready_queue_per_core
         for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin: gen_ready_queue_per_core_per_cluster
+            task_push_t  route_in, replay_in, import_in;
+            ready_push_t push;
+            ready_head_t head;
+            assign route_in  = '{valid: route.ready_push[core][cluster],
+                                 desc:  waiting_dep_check_task_desc[route.src_core[core][cluster]]};
+            assign replay_in = '{valid: replay_push_ready[core][cluster], desc: replay_data};
+            assign import_in = '{valid: import_push[core][cluster], desc: import_desc};
             bingo_hw_manager_ready_queue #(
                 .InterfaceType ( READY_AND_DONE_QUEUE_INTERFACE_TYPE     ),
                 .Depth         ( ReadyQueueDepth                         ),
@@ -1338,33 +1390,35 @@ module bingo_hw_manager_top #(
                 .ready_desc_t  ( bingo_hw_manager_ready_task_desc_full_t ),
                 .req_lite_t    ( device_axi_lite_req_t                   ),
                 .resp_lite_t   ( device_axi_lite_resp_t                  ),
-                .addr_t        ( device_axi_lite_addr_t                  )
+                .addr_t        ( device_axi_lite_addr_t                  ),
+                .task_push_t   ( task_push_t                             ),
+                .ready_push_t  ( ready_push_t                            ),
+                .ready_head_t  ( ready_head_t                            )
             ) i_ready (
-                .clk_i           ( clk_i                                                            ),
-                .rst_ni          ( rst_ni                                                           ),
-                .chip_id_i       ( chip_id_i                                                        ),
-                .core_id_i       ( bingo_hw_manager_assigned_core_id_t'(core)                       ),
-                .cluster_id_i    ( bingo_hw_manager_assigned_cluster_id_t'(cluster)                 ),
-                .route_push_i    ( route.ready_push[core][cluster]                                  ),
-                .route_desc_i    ( waiting_dep_check_task_desc[route.src_core[core][cluster]] ),
-                .replay_push_i   ( replay_push_ready[core][cluster]                                 ),
-                .replay_desc_i   ( replay_data                                                      ),
-                .import_push_i   ( import_push[core][cluster]                                       ),
-                .import_desc_i   ( import_desc                                                      ),
-                .push_o          ( ready_queue_push[core][cluster]                                  ),
-                .push_data_o     ( ready_queue_data_in[core][cluster]                               ),
-                .full_o          ( ready_queue_full[core][cluster]                                  ),
-                .flush_i         ( replay_ready_flush[core][cluster]                                ),
-                .pop_i           ( ready_queue_pop[core][cluster]                                   ),
-                .empty_o         ( ready_queue_empty[core][cluster]                                 ),
-                .data_o          ( ready_queue_data_out[core][cluster]                              ),
-                .class_o         ( ready_class[core][cluster]                                       ),
-                .moved_o         ( ready_moved[core][cluster]                                       ),
+                .clk_i           ( clk_i                                                           ),
+                .rst_ni          ( rst_ni                                                          ),
+                .chip_id_i       ( chip_id_i                                                       ),
+                .core_id_i       ( bingo_hw_manager_assigned_core_id_t'(core)                      ),
+                .cluster_id_i    ( bingo_hw_manager_assigned_cluster_id_t'(cluster)                ),
+                .route_i         ( route_in                                                        ),
+                .replay_i        ( replay_in                                                       ),
+                .import_i        ( import_in                                                       ),
+                .push_o          ( push                                                            ),
+                .full_o          ( ready_queue_full[core][cluster]                                 ),
+                .flush_i         ( replay_ready_flush[core][cluster]                               ),
+                .pop_i           ( ready_queue_pop[core][cluster]                                  ),
+                .head_o          ( head                                                            ),
                 .base_addr_i     ( ready_queue_base_addr_i +
-                                   (core + cluster * NUM_CORES_PER_CLUSTER) * ReadyQueueAddrOffset  ),
-                .axi_lite_req_i  ( ready_queue_axi_lite_req_i[core][cluster]                        ),
-                .axi_lite_resp_o ( ready_queue_axi_lite_resp_o[core][cluster]                       )
+                                   (core + cluster * NUM_CORES_PER_CLUSTER) * ReadyQueueAddrOffset ),
+                .axi_lite_req_i  ( ready_queue_axi_lite_req_i[core][cluster]                       ),
+                .axi_lite_resp_o ( ready_queue_axi_lite_resp_o[core][cluster]                      )
             );
+            assign ready_queue_push[core][cluster]     = push.valid;
+            assign ready_queue_data_in[core][cluster]  = push.data;
+            assign ready_queue_empty[core][cluster]    = head.empty;
+            assign ready_queue_data_out[core][cluster] = head.data;
+            assign ready_class[core][cluster]          = head.wd_class;
+            assign ready_moved[core][cluster]          = head.moved;
         end
     end
 
@@ -1380,6 +1434,30 @@ module bingo_hw_manager_top #(
     for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin: gen_checkout_queue_per_core
         for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin: gen_checkout_queue_per_core_per_cluster
             localparam int unsigned Slot = core + cluster * NUM_CORES_PER_CLUSTER;
+            checkout_route_t  route_in;
+            checkout_replay_t replay_in;
+            checkout_import_t import_in;
+            checkout_entry_t  push;
+            checkout_occ_t    occ;
+            checkout_head_t   head;
+            retire_req_t      retire;
+            retire_rsp_t      retire_rsp;
+            assign route_in  = '{valid:       route.fire[core][cluster],
+                                 desc:        waiting_dep_check_task_desc[route.src_core[core][cluster]],
+                                 skip:        cond_exec_skip[route.src_core[core][cluster]],
+                                 exit_absorb: route.exit_absorb[core][cluster],
+                                 remote:      route.remote[core][cluster]};
+            assign replay_in = '{push:        replay_push[core][cluster],
+                                 desc:        replay_data,
+                                 tag:         checkout_remote_tag_out[replay_src_core][replay_src_cluster],
+                                 rotate:      replay_rotate,
+                                 exit_absorb: replay_exit_absorb,
+                                 pop:         replay_pop[core][cluster],
+                                 hold:        replay_hold_slot[core][cluster]};
+            assign import_in = '{valid: import_push[core][cluster], desc: import_desc, tag: import_tag};
+            assign retire_rsp = '{local_set:   stream_arbiter_dep_matrix_set_inp_ready[Slot],
+                                  chiplet_set: stream_arbiter_chiplet_dep_set_inp_ready[Slot],
+                                  remote_done: remote_done_arb_ready[Slot]};
             bingo_hw_manager_checkout_queue #(
                 .NumCores          ( NUM_CORES_PER_CLUSTER                            ),
                 .NumClusters       ( NUM_CLUSTERS_PER_CHIPLET                         ),
@@ -1394,60 +1472,54 @@ module bingo_hw_manager_top #(
                 .OutstandingWidth  ( RemapOutstandingWidth                            ),
                 .task_desc_t       ( bingo_hw_manager_task_desc_t                     ),
                 .remote_tag_t      ( remote_tag_t                                     ),
-                .chip_id_t         ( chip_id_t                                        )
+                .chip_id_t         ( chip_id_t                                        ),
+                .checkout_route_t  ( checkout_route_t                                 ),
+                .checkout_replay_t ( checkout_replay_t                                ),
+                .checkout_import_t ( checkout_import_t                                ),
+                .checkout_entry_t  ( checkout_entry_t                                 ),
+                .checkout_occ_t    ( checkout_occ_t                                   ),
+                .checkout_head_t   ( checkout_head_t                                  ),
+                .slot_state_t      ( slot_state_t                                     ),
+                .done_t            ( done_t                                           )
             ) i_checkout (
-                .clk_i                ( clk_i                                                            ),
-                .rst_ni               ( rst_ni                                                           ),
-                .chip_id_i            ( chip_id_i                                                        ),
-                .route_push_i         ( route.fire[core][cluster]                                  ),
-                .route_desc_i         ( waiting_dep_check_task_desc[route.src_core[core][cluster]] ),
-                .route_skip_i         ( cond_exec_skip[route.src_core[core][cluster]]              ),
-                .route_exit_absorb_i  ( route.exit_absorb[core][cluster]                                 ),
-                .route_export_i       ( route.remote[core][cluster]                                      ),
-                .replay_push_i        ( replay_push[core][cluster]                                       ),
-                .replay_desc_i        ( replay_data                                                      ),
-                .replay_tag_i         ( checkout_remote_tag_out[replay_src_core][replay_src_cluster]     ),
-                .replay_rotate_i      ( replay_rotate                                                    ),
-                .replay_exit_absorb_i ( replay_exit_absorb                                               ),
-                .replay_pop_i         ( replay_pop[core][cluster]                                        ),
-                .replay_hold_i        ( replay_hold_slot[core][cluster]                                  ),
-                .import_push_i        ( import_push[core][cluster]                                       ),
-                .import_desc_i        ( import_desc                                                      ),
-                .import_tag_i         ( import_tag                                                       ),
-                .push_o               ( checkout_queue_push[core][cluster]                               ),
-                .push_desc_o          ( checkout_queue_data_in[core][cluster]                            ),
-                .push_tag_o           ( checkout_remote_tag_in[core][cluster]                            ),
-                .exit_absorb_o        ( exit_absorb[core][cluster]                                       ),
-                .pop_o                ( checkout_queue_pop[core][cluster]                                ),
-                .full_o               ( checkout_queue_full[core][cluster]                               ),
-                .full_raw_o           ( checkout_queue_full_raw[core][cluster]                           ),
-                .empty_o              ( checkout_queue_empty[core][cluster]                              ),
-                .usage_o              ( checkout_queue_usage[core][cluster]                              ),
-                .head_o               ( checkout_queue_data_out[core][cluster]                           ),
-                .head_tag_o           ( checkout_remote_tag_out[core][cluster]                           ),
-                .head_imported_o      ( checkout_head_imported[core][cluster]                            ),
-                .head_exec_o          ( checkout_head_exec[core][cluster]                                ),
-                .stuck_i              ( replay_stuck_slot[core][cluster]                                 ),
-                .rejected_i           ( remote_rejected_q[core][cluster]                                 ),
-                .cerf_state_i         ( cerf_state                                                       ),
-                .retired_i            ( core_retired                                                     ),
-                .outstanding_i        ( remap_outstanding_q                                              ),
-                .moved_in_i           ( moved_in_q[core][cluster]                                        ),
-                .stuck_drain_o        ( stuck_drain[core][cluster]                                       ),
-                .stuck_head_skip_o    ( stuck_head_skip[core][cluster]                                   ),
-                .done_empty_i         ( done_q_empty[core][cluster]                                      ),
-                .done_task_id_i       ( done_q_info[core][cluster].task_id                               ),
-                .done_pop_o           ( done_q_pop[core][cluster]                                        ),
-                .remote_mismatch_o    ( remote_head_mismatch[core][cluster]                              ),
-                .retire_valid_o       ( checkout_retire_valid[core][cluster]                             ),
-                .retire_fire_o        ( /* pops the queue */                                             ),
-                .local_set_valid_o    ( checkout_local_set_valid[core][cluster]                          ),
-                .local_set_ready_i    ( stream_arbiter_dep_matrix_set_inp_ready[Slot]                    ),
-                .chiplet_set_valid_o  ( checkout_chiplet_set_valid[core][cluster]                        ),
-                .chiplet_set_ready_i  ( stream_arbiter_chiplet_dep_set_inp_ready[Slot]                   ),
-                .remote_done_valid_o  ( remote_done_arb_valid[Slot]                                      ),
-                .remote_done_ready_i  ( remote_done_arb_ready[Slot]                                      )
+                .clk_i             ( clk_i                                          ),
+                .rst_ni            ( rst_ni                                         ),
+                .chip_id_i         ( chip_id_i                                      ),
+                .replay_i          ( replay_in                                      ),
+                .import_i          ( import_in                                      ),
+                .route_i           ( route_in                                       ),
+                .push_o            ( push                                           ),
+                .pop_o             ( checkout_queue_pop[core][cluster]              ),
+                .occ_o             ( occ                                            ),
+                .head_o            ( head                                           ),
+                .slot_i            ( slot_state                                     ),
+                .cerf_state_i      ( cerf_state                                     ),
+                .outstanding_i     ( remap_outstanding_q                            ),
+                .moved_in_i        ( moved_in_q[core][cluster]                      ),
+                .stuck_drain_o     ( stuck_drain[core][cluster]                     ),
+                .stuck_head_skip_o ( stuck_head_skip[core][cluster]                 ),
+                .done_i            ( done_queue                                     ),
+                .done_pop_o        ( done_q_pop[core][cluster]                      ),
+                .remote_mismatch_o ( remote_head_mismatch[core][cluster]            ),
+                .retire_o          ( retire                                         ),
+                .retire_i          ( retire_rsp                                     )
             );
+            assign checkout_queue_push[core][cluster]         = push.valid;
+            assign checkout_queue_data_in[core][cluster]      = push.desc;
+            assign checkout_remote_tag_in[core][cluster]      = push.tag;
+            assign exit_absorb[core][cluster]                 = push.exit_absorb;
+            assign checkout_queue_full[core][cluster]         = occ.full;
+            assign checkout_queue_full_raw[core][cluster]     = occ.full_raw;
+            assign checkout_queue_empty[core][cluster]        = occ.empty;
+            assign checkout_queue_usage[core][cluster]        = occ.usage;
+            assign checkout_queue_data_out[core][cluster]     = head.desc;
+            assign checkout_remote_tag_out[core][cluster]     = head.tag;
+            assign checkout_head_imported[core][cluster]      = head.imported;
+            assign checkout_head_exec[core][cluster]          = head.exec;
+            assign checkout_retire_valid[core][cluster]       = retire.valid;
+            assign checkout_local_set_valid[core][cluster]    = retire.local_set;
+            assign checkout_chiplet_set_valid[core][cluster]  = retire.chiplet_set;
+            assign remote_done_arb_valid[Slot]                = retire.remote_done;
             assign remote_done_arb_data[Slot] = '{
                 chip:       checkout_remote_tag_out[core][cluster].origin_chip,
                 proxy_slot: checkout_remote_tag_out[core][cluster].proxy_slot,
@@ -1988,33 +2060,6 @@ module bingo_hw_manager_top #(
     // substitute the control plane chose for it (retired or parked slot), or
     // stays on its proxy slot and is exported (level 3); see
     // bingo_hw_manager_router.
-    // The waiting queue heads, and the checkout and ready queues of every slot
-    waiting_t  waiting_heads;
-    checkout_t checkout_queue;
-    ready_t    ready_queue;
-    assign waiting_heads  = '{desc:  waiting_dep_check_task_desc,
-                              empty: waiting_dep_check_queue_empty,
-                              skip:  cond_exec_skip};
-    assign checkout_queue = '{push:          checkout_queue_push,
-                              push_desc:     checkout_queue_data_in,
-                              push_tag:      checkout_remote_tag_in,
-                              pop:           checkout_queue_pop,
-                              full:          checkout_queue_full,
-                              full_raw:      checkout_queue_full_raw,
-                              usage:         checkout_queue_usage,
-                              empty:         checkout_queue_empty,
-                              head:          checkout_queue_data_out,
-                              head_tag:      checkout_remote_tag_out,
-                              head_imported: checkout_head_imported,
-                              head_exec:     checkout_head_exec};
-    assign ready_queue    = '{push:      ready_queue_push,
-                              push_data: ready_queue_data_in,
-                              full:      ready_queue_full,
-                              empty:     ready_queue_empty,
-                              pop:       ready_queue_pop,
-                              data:      ready_queue_data_out,
-                              wd_class:  ready_class,
-                              moved:     ready_moved};
     bingo_hw_manager_router #(
         .NumCores            ( NUM_CORES_PER_CLUSTER                            ),
         .NumClusters         ( NUM_CLUSTERS_PER_CHIPLET                         ),

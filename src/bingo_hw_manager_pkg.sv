@@ -45,6 +45,21 @@ package bingo_hw_manager_pkg;
         logic [31:0][7:0] domain_level; // DFS: the level last applied to each domain
     } pm_view_t;
 
+    // Retirement of the head of one slot's checkout queue
+    // (bingo_hw_manager_checkout_queue): the head may leave (valid), and the
+    // path it is offered to; the ready of that path
+    typedef struct packed {
+        logic valid;       // the head may retire this cycle
+        logic local_set;   // its dep_set, into the local dependency matrix
+        logic chiplet_set; // its dep_set, to another chiplet
+        logic remote_done; // imported: its done, back to the origin chiplet
+    } retire_req_t;
+    typedef struct packed {
+        logic local_set;
+        logic chiplet_set;
+        logic remote_done;
+    } retire_rsp_t;
+
     // Event log (bingo_hw_manager_evlog). The top raises one pulse per (group,
     // slot) and one per core type for a CERF fallback; the log turns the pulse
     // into a record with the group's code. The host decodes the codes, so they

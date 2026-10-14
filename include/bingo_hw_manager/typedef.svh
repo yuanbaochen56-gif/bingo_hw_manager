@@ -205,6 +205,116 @@
     logic [(NumCores)-1:0][(NumClusters)-1:0]                    ready_push;          \
   } route_t;
 
+// The done queues of every slot (bingo_hw_manager_done_queues):
+//   push, push_data  a done is pushed this cycle (done_info_t: bingo_hw_manager_done_info_full_t of the top)
+//   head, empty      the head of each queue
+//   pop              the checkout queue retires the head together with it
+`define BINGO_HW_MANAGER_TYPEDEF_DONE_T(done_t, done_info_t, NumCores, NumClusters) \
+  typedef struct packed {                                                           \
+    logic       [(NumCores)-1:0][(NumClusters)-1:0] push;                           \
+    done_info_t [(NumCores)-1:0][(NumClusters)-1:0] push_data;                      \
+    done_info_t [(NumCores)-1:0][(NumClusters)-1:0] head;                           \
+    logic       [(NumCores)-1:0][(NumClusters)-1:0] empty;                          \
+    logic       [(NumCores)-1:0][(NumClusters)-1:0] pop;                            \
+  } done_t;
+
+// One task pushed into the queue of one slot by one source (the router, the
+// replay, a level 3 import): valid, and the task
+`define BINGO_HW_MANAGER_TYPEDEF_TASK_PUSH_T(task_push_t, task_desc_t) \
+  typedef struct packed {                                              \
+    logic       valid;                                                 \
+    task_desc_t desc;                                                  \
+  } task_push_t;
+
+// What the router pushes into the checkout queue of one slot:
+//   valid, desc   the routed waiting queue head
+//   skip          the CERF skips it at dispatch: it enters as a dummy
+//   exit_absorb   an exit absorbed here (see bingo_hw_manager_router): it enters as a dummy
+//   remote        level 3: it is exported, the slot is its proxy
+`define BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_ROUTE_T(checkout_route_t, task_desc_t) \
+  typedef struct packed {                                                        \
+    logic       valid;                                                           \
+    task_desc_t desc;                                                            \
+    logic       skip;                                                            \
+    logic       exit_absorb;                                                     \
+    logic       remote;                                                          \
+  } checkout_route_t;
+
+// What the replay (bingo_hw_manager_replay_path) does to the checkout queue of one slot:
+//   push, desc, tag  push a moved entry, with its side tag on the source slot
+//   rotate           level 3: the entry goes back to its own slot, exported
+//   exit_absorb      the moved entry is an exit absorbed into a dummy
+//   pop              take the head (it moves to another slot)
+//   hold             hold the head while a MOVE drains the queue
+`define BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_REPLAY_T(checkout_replay_t, task_desc_t, remote_tag_t) \
+  typedef struct packed {                                                                        \
+    logic        push;                                                                           \
+    task_desc_t  desc;                                                                           \
+    remote_tag_t tag;                                                                            \
+    logic        rotate;                                                                         \
+    logic        exit_absorb;                                                                    \
+    logic        pop;                                                                            \
+    logic        hold;                                                                           \
+  } checkout_replay_t;
+
+// A task of another chiplet pushed into the checkout queue of one slot (level
+// 3): valid, the task and its side tag (origin chiplet and proxy slot)
+`define BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_IMPORT_T(checkout_import_t, task_desc_t, remote_tag_t) \
+  typedef struct packed {                                                                        \
+    logic        valid;                                                                          \
+    task_desc_t  desc;                                                                           \
+    remote_tag_t tag;                                                                            \
+  } checkout_import_t;
+
+// The entry pushed into the checkout queue of one slot this cycle (valid,
+// desc, side tag); exit_absorb: an exit that enters it as a dummy
+`define BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_ENTRY_T(checkout_entry_t, task_desc_t, remote_tag_t) \
+  typedef struct packed {                                                                      \
+    logic        valid;                                                                        \
+    task_desc_t  desc;                                                                         \
+    remote_tag_t tag;                                                                          \
+    logic        exit_absorb;                                                                  \
+  } checkout_entry_t;
+
+// Occupancy of the checkout queue of one slot: full (level 3 keeps a spare
+// entry for replay rotations), full_raw, empty and usage of the FIFO
+`define BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_OCC_T(checkout_occ_t, UsageWidth) \
+  typedef struct packed {                                                   \
+    logic                    full;                                          \
+    logic                    full_raw;                                      \
+    logic                    empty;                                         \
+    logic [(UsageWidth)-1:0] usage;                                         \
+  } checkout_occ_t;
+
+// The head of the checkout queue of one slot: the task and its side tag;
+// imported: it runs here for another chiplet; exec: it runs on a core, so it
+// retires with its done
+`define BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_HEAD_T(checkout_head_t, task_desc_t, remote_tag_t) \
+  typedef struct packed {                                                                    \
+    task_desc_t  desc;                                                                       \
+    remote_tag_t tag;                                                                        \
+    logic        imported;                                                                   \
+    logic        exec;                                                                       \
+  } checkout_head_t;
+
+// The entry pushed into the ready queue of one slot: valid, and the word the
+// core reads (ready_desc_t: bingo_hw_manager_ready_task_desc_full_t of the top)
+`define BINGO_HW_MANAGER_TYPEDEF_READY_PUSH_T(ready_push_t, ready_desc_t) \
+  typedef struct packed {                                                 \
+    logic        valid;                                                   \
+    ready_desc_t data;                                                    \
+  } ready_push_t;
+
+// The head of the ready queue of one slot (CSR interface): empty, the word
+// the core reads, the class of the task and whether it left its logical slot
+`define BINGO_HW_MANAGER_TYPEDEF_READY_HEAD_T(ready_head_t, ready_desc_t, WdClassWidth) \
+  typedef struct packed {                                                               \
+    logic                      empty;                                                   \
+    ready_desc_t               data;                                                    \
+    logic [(WdClassWidth)-1:0] wd_class;                                                \
+    logic                      moved;                                                   \
+  } ready_head_t;
+
 // All port types of the control plane (bingo_hw_manager_ctrl), named as its
 // type parameters, for a module or testbench that instantiates it
 `define BINGO_HW_MANAGER_TYPEDEF_CTRL_ALL(NumCores, NumClusters, CoreIdWidth, ClusterIdWidth, CoreTypeIdWidth, LoadWidth) \
