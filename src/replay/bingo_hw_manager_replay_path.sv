@@ -28,109 +28,108 @@ module bingo_hw_manager_replay_path #(
         {(NumCores * NumClusters){CoreTypeIdWidth'(1)}},
     parameter bit          RemoteEn = 1'b0,
     parameter type         task_desc_t = logic,   // bingo_hw_manager_task_desc_t of the top
-    parameter type         remote_tag_t = logic
+    // Port types (bingo_hw_manager/typedef.svh)
+    parameter type         checkout_t = logic,
+    parameter type         smt_t = logic,
+    parameter type         slot_state_t = logic,
+    parameter type         replay_head_t = logic,
+    parameter type         replay_step_t = logic,
+    parameter type         replay_op_t = logic
 ) (
-    // Checkout heads
-    input  task_desc_t  [NumCores-1:0][NumClusters-1:0] head_i,
-    input  remote_tag_t [NumCores-1:0][NumClusters-1:0] head_tag_i,
-    input  logic        [NumCores-1:0][NumClusters-1:0] head_imported_i,
-    // Substitute of each logical slot (bingo_hw_manager_slot_table), and the core
-    // types level 3 may export
-    input  logic [NumCores-1:0][NumClusters-1:0]                     smt_found_i,
-    input  logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    smt_core_i,
-    input  logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] smt_cluster_i,
-    input  logic [2**CoreTypeIdWidth-1:0]                            remote_type_en_i,
+    // Checkout heads (the head, its side tag, imported)
+    input  checkout_t                     checkout_i,
+    // Substitute of each logical slot (bingo_hw_manager_slot_table), and the
+    // core types level 3 may export
+    input  smt_t                          smt_i,
+    input  logic [2**CoreTypeIdWidth-1:0] remote_type_en_i,
     // The heads as the replay controller sees them
-    output logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    head_logical_core_o,
-    output logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] head_logical_cluster_o,
-    output logic [NumCores-1:0][NumClusters-1:0]                     head_no_exec_o,
-    output logic [NumCores-1:0][NumClusters-1:0]                     head_no_replay_o,
-    output logic [NumCores-1:0][NumClusters-1:0]                     head_exported_o,
+    output replay_head_t                  head_o,
     // Slot state, for the pending replay
-    input  logic [NumCores-1:0][NumClusters-1:0]                     fenced_i,
-    input  logic [NumCores-1:0][NumClusters-1:0]                     retired_i,
-    input  logic [NumCores-1:0][NumClusters-1:0]                     stuck_i,
+    input  slot_state_t                   slot_i,
     // A MOVE step of the replay controller
-    input  logic [NumCores-1:0][NumClusters-1:0]                     move_i,
-    input  logic                                                     move_fire_i,
-    input  logic                                                     push_ready_i,
-    input  logic                                                     bounce_i,
-    input  logic [CoreIdWidth-1:0]                                   src_core_i,
-    input  logic [ClusterIdWidth-1:0]                                src_cluster_i,
-    input  logic [CoreIdWidth-1:0]                                   dst_core_i,
-    input  logic [ClusterIdWidth-1:0]                                dst_cluster_i,
+    input  replay_step_t                  step_i,
     // ... the entry it moves, and what it does to the queues
-    output task_desc_t                                               data_o,
-    output logic                                                     exit_absorb_o,
-    output logic [NumCores-1:0][NumClusters-1:0]                     pop_o,
-    output logic [NumCores-1:0][NumClusters-1:0]                     push_o,
-    output logic [NumCores-1:0][NumClusters-1:0]                     push_ready_o,
+    output replay_op_t                    op_o,
     // A slot is fenced, neither retired nor stuck; a MOVE may push into a cluster
-    output logic                                                     pending_o,
-    output logic [NumClusters-1:0]                                   move_cluster_o
+    output logic                          pending_o,
+    output logic [NumClusters-1:0]        move_cluster_o
 );
     import bingo_hw_manager_pkg::*;
+
+    // The heads as the replay controller sees them (head_o), and what the MOVE does (op_o)
+    logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    head_logical_core;
+    logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] head_logical_cluster;
+    logic [NumCores-1:0][NumClusters-1:0]                     head_no_exec, head_no_replay, head_exported;
+    task_desc_t                                               data;
+    logic                                                     exit_absorb;
+    logic [NumCores-1:0][NumClusters-1:0]                     pop, push, push_ready;
+    assign head_o = '{logical_core:    head_logical_core,
+                      logical_cluster: head_logical_cluster,
+                      no_exec:         head_no_exec,
+                      no_replay:       head_no_replay,
+                      exported:        head_exported};
+    assign op_o   = '{data: data, exit_absorb: exit_absorb, pop: pop, push: push, push_ready: push_ready};
 
     logic [NumCores-1:0][NumClusters-1:0] head_exit_absorb;
     always_comb begin : compose_replay_inputs
         for (int unsigned c = 0; c < NumCores; c++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                automatic int logical_core = int'(head_i[c][cl].assigned_core_id);
-                automatic int logical_cluster = int'(head_i[c][cl].assigned_cluster_id);
-                head_exported_o[c][cl]        = head_tag_i[c][cl].exported;
-                head_logical_core_o[c][cl]    = head_i[c][cl].assigned_core_id;
-                head_logical_cluster_o[c][cl] = head_i[c][cl].assigned_cluster_id;
+                automatic int logical_core = int'(checkout_i.head[c][cl].assigned_core_id);
+                automatic int logical_cluster = int'(checkout_i.head[c][cl].assigned_cluster_id);
+                head_exported[c][cl]        = checkout_i.head_tag[c][cl].exported;
+                head_logical_core[c][cl]    = checkout_i.head[c][cl].assigned_core_id;
+                head_logical_cluster[c][cl] = checkout_i.head[c][cl].assigned_cluster_id;
                 head_exit_absorb[c][cl] = 1'b0;
                 if (logical_core < NumCores && logical_cluster < NumClusters) begin
                     head_exit_absorb[c][cl] =
-                        head_i[c][cl].is_exit &&
-                        head_i[c][cl].task_type != TaskDummy &&
-                        ((smt_found_i[logical_core][logical_cluster] &&
-                          ((smt_core_i[logical_core][logical_cluster] != logical_core) ||
-                           (smt_cluster_i[logical_core][logical_cluster] != logical_cluster))) ||
-                         (RemoteEn && !smt_found_i[logical_core][logical_cluster] &&
-                          !head_imported_i[c][cl] &&
+                        checkout_i.head[c][cl].is_exit &&
+                        checkout_i.head[c][cl].task_type != TaskDummy &&
+                        ((smt_i.found[logical_core][logical_cluster] &&
+                          ((smt_i.core[logical_core][logical_cluster] != logical_core) ||
+                           (smt_i.cluster[logical_core][logical_cluster] != logical_cluster))) ||
+                         (RemoteEn && !smt_i.found[logical_core][logical_cluster] &&
+                          !checkout_i.head_imported[c][cl] &&
                           CoreTypeId[logical_core][logical_cluster] != '0 &&
                           remote_type_en_i[CoreTypeId[logical_core][logical_cluster]]));
                 end
-                head_no_exec_o[c][cl] = (head_i[c][cl].task_type == TaskDummy) ||
-                                        head_exit_absorb[c][cl];
-                head_no_replay_o[c][cl] = (head_i[c][cl].task_type == TaskNoReplay);
+                head_no_exec[c][cl] = (checkout_i.head[c][cl].task_type == TaskDummy) ||
+                                      head_exit_absorb[c][cl];
+                head_no_replay[c][cl] = (checkout_i.head[c][cl].task_type == TaskNoReplay);
             end
         end
     end
 
-    assign exit_absorb_o = head_exit_absorb[src_core_i][src_cluster_i];
+    assign exit_absorb = head_exit_absorb[step_i.src_core][step_i.src_cluster];
     always_comb begin
-        data_o = head_i[src_core_i][src_cluster_i];
-        if (exit_absorb_o) data_o.task_type = TaskDummy;
+        data = checkout_i.head[step_i.src_core][step_i.src_cluster];
+        if (exit_absorb) data.task_type = TaskDummy;
     end
 
     always_comb begin : compose_replay_signals
-        pop_o          = '0;
-        push_o         = '0;
-        push_ready_o   = '0;
+        pop            = '0;
+        push           = '0;
+        push_ready     = '0;
         pending_o      = 1'b0;
         move_cluster_o = '0;
-        if (move_fire_i) begin
-            pop_o[src_core_i][src_cluster_i] = 1'b1;
+        if (step_i.fire) begin
+            pop[step_i.src_core][step_i.src_cluster] = 1'b1;
             // Level 3: a bounced (rejected) imported entry is only dropped
-            if (!bounce_i) begin
-                push_o[dst_core_i][dst_cluster_i]       = 1'b1;
-                push_ready_o[dst_core_i][dst_cluster_i] = push_ready_i;
+            if (!step_i.bounce) begin
+                push[step_i.dst_core][step_i.dst_cluster]       = 1'b1;
+                push_ready[step_i.dst_core][step_i.dst_cluster] = step_i.push_ready;
             end
         end
         // Nothing is routed into the slot being moved (fenced, not retired), only
         // into its current destination, which may be in another cluster.
-        if (|move_i) begin
-            move_cluster_o[dst_cluster_i] = 1'b1;
+        if (|step_i.move) begin
+            move_cluster_o[step_i.dst_cluster] = 1'b1;
         end
         for (int unsigned cl = 0; cl < NumClusters; cl++) begin
             for (int unsigned c = 0; c < NumCores; c++) begin
                 // A stuck slot is never migrated, so a retired core's new tasks
                 // need not wait for it (its entries could only go to a core of
                 // its own type, and none is live).
-                if (fenced_i[c][cl] && !retired_i[c][cl] && !stuck_i[c][cl]) begin
+                if (slot_i.fenced[c][cl] && !slot_i.retired[c][cl] && !slot_i.stuck[c][cl]) begin
                     pending_o = 1'b1;
                 end
             end

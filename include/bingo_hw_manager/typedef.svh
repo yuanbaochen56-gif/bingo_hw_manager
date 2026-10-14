@@ -343,6 +343,56 @@
     logic                      moved;                                                   \
   } ready_head_t;
 
+// The checkout heads as the replay controller (bingo_hw_manager_replay_ctrl)
+// sees them (bingo_hw_manager_replay_path):
+//   logical_core, logical_cluster  the logical slot of the head
+//   no_exec                        it runs on no core (a dummy, or an exit absorbed when it moves)
+//   no_replay                      it must not be replayed (task_type 11)
+//   exported                       level 3: it was exported by this slot
+`define BINGO_HW_MANAGER_TYPEDEF_REPLAY_HEAD_T(replay_head_t, NumCores, NumClusters, CoreIdWidth, ClusterIdWidth) \
+  typedef struct packed {                                                                                         \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][(CoreIdWidth)-1:0]    logical_core;                                 \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][(ClusterIdWidth)-1:0] logical_cluster;                              \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                       no_exec;                                      \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                       no_replay;                                    \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                       exported;                                     \
+  } replay_head_t;
+
+// One MOVE step of the replay controller (bingo_hw_manager_replay_ctrl):
+//   move                    the slots being moved (fenced, not retired)
+//   fire                    the step moves the head of slot (src_core, src_cluster)
+//                           to slot (dst_core, dst_cluster) this cycle
+//   push_ready              ... and into the ready queue of the destination
+//   bounce                  level 3: the head is an imported entry no live core may run: it is dropped
+//   rotate, exported        level 3: the head goes back to its own slot, and is exported
+`define BINGO_HW_MANAGER_TYPEDEF_REPLAY_STEP_T(replay_step_t, NumCores, NumClusters, CoreIdWidth, ClusterIdWidth) \
+  typedef struct packed {                                                                                         \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] move;                                                               \
+    logic                                     fire;                                                               \
+    logic                                     push_ready;                                                         \
+    logic                                     bounce;                                                             \
+    logic                                     rotate;                                                             \
+    logic                                     exported;                                                           \
+    logic [(CoreIdWidth)-1:0]                 src_core;                                                           \
+    logic [(ClusterIdWidth)-1:0]              src_cluster;                                                        \
+    logic [(CoreIdWidth)-1:0]                 dst_core;                                                           \
+    logic [(ClusterIdWidth)-1:0]              dst_cluster;                                                        \
+  } replay_step_t;
+
+// What a MOVE step does to the queues (bingo_hw_manager_replay_path):
+//   data                the entry it moves (an absorbed exit rewritten as a dummy)
+//   exit_absorb         the entry is an exit absorbed into a dummy
+//   pop                 the source slot gives up its checkout head
+//   push, push_ready    the destination takes it into its checkout and ready queue
+`define BINGO_HW_MANAGER_TYPEDEF_REPLAY_OP_T(replay_op_t, task_desc_t, NumCores, NumClusters) \
+  typedef struct packed {                                                                     \
+    task_desc_t                               data;                                           \
+    logic                                     exit_absorb;                                    \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] pop;                                            \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] push;                                           \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] push_ready;                                     \
+  } replay_op_t;
+
 // All port types of the control plane (bingo_hw_manager_ctrl), named as its
 // type parameters, for a module or testbench that instantiates it
 `define BINGO_HW_MANAGER_TYPEDEF_CTRL_ALL(NumCores, NumClusters, CoreIdWidth, ClusterIdWidth, CoreTypeIdWidth, LoadWidth) \
