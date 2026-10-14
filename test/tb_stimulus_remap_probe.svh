@@ -47,9 +47,9 @@ initial begin : remap_probe_test
     task_queue_master[0].write(task_queue_base[0], '0, probe_hang_task, '1, resp);
     repeat (10) @(posedge clk_i);
     #1;
-    if (gen_dut[0].i_dut.remap_physical_core[0] !== bingo_hw_manager_assigned_core_id_t'(0)) begin
+    if (gen_dut[0].i_dut.remap_select.core[0] !== bingo_hw_manager_assigned_core_id_t'(0)) begin
         $fatal(1, "healthy logical core 0 must not be remapped, got physical core %0d",
-               gen_dut[0].i_dut.remap_physical_core[0]);
+               gen_dut[0].i_dut.remap_select.core[0]);
     end
     if (gen_dut[0].i_dut.ready_queue_empty[0][0] !== 1'b0) begin
         $fatal(1, "task 1 should wait in core 0's ready queue even though core 0 is not polling");
@@ -68,23 +68,23 @@ initial begin : remap_probe_test
     if (gen_dut[0].i_dut.core_dead_suspect[0][0] !== 1'b0) begin
         $fatal(1, "core 0 should not be dead_suspect yet");
     end
-    if (gen_dut[0].i_dut.remap_physical_core[0] !== bingo_hw_manager_assigned_core_id_t'(0)) begin
+    if (gen_dut[0].i_dut.remap_select.core[0] !== bingo_hw_manager_assigned_core_id_t'(0)) begin
         $fatal(1, "busy but not yet dead core 0 must keep its tasks, got physical core %0d",
-               gen_dut[0].i_dut.remap_physical_core[0]);
+               gen_dut[0].i_dut.remap_select.core[0]);
     end
 
     wait (gen_dut[0].i_dut.core_dead_suspect[0][0] === 1'b1);
     @(posedge clk_i);
     #1;
-    if (gen_dut[0].i_dut.remap_physical_core[0] !== bingo_hw_manager_assigned_core_id_t'(0)) begin
+    if (gen_dut[0].i_dut.remap_select.core[0] !== bingo_hw_manager_assigned_core_id_t'(0)) begin
         $fatal(1, "dead_suspect (not fenced) core 0 must keep its tasks, got physical core %0d",
-               gen_dut[0].i_dut.remap_physical_core[0]);
+               gen_dut[0].i_dut.remap_select.core[0]);
     end
 
     wait (gen_dut[0].i_dut.core_fenced[0][0] === 1'b1);
     #1;
     if (gen_dut[0].i_dut.core_retired[0][0] === 1'b0 &&
-        gen_dut[0].i_dut.remap_select_valid[0] !== 1'b0) begin
+        gen_dut[0].i_dut.remap_select.valid[0] !== 1'b0) begin
         $fatal(1, "fenced core 0 must be held until its outstanding tasks are replayed");
     end
 
@@ -92,16 +92,16 @@ initial begin : remap_probe_test
     @(posedge clk_i);
     #1;
 
-    if (gen_dut[0].i_dut.remap_select_valid[0] !== 1'b1) begin
+    if (gen_dut[0].i_dut.remap_select.valid[0] !== 1'b1) begin
         $fatal(1, "logical core 0 remap_select_valid should assert");
     end
 
-    if (gen_dut[0].i_dut.remap_physical_core[0] !== bingo_hw_manager_assigned_core_id_t'(1)) begin
+    if (gen_dut[0].i_dut.remap_select.core[0] !== bingo_hw_manager_assigned_core_id_t'(1)) begin
         $fatal(1, "retired logical core 0 should fall back to physical core 1, got %0d",
-               gen_dut[0].i_dut.remap_physical_core[0]);
+               gen_dut[0].i_dut.remap_select.core[0]);
     end
 
-    if (gen_dut[0].i_dut.remap_physical_cluster[0] !== bingo_hw_manager_assigned_cluster_id_t'(0)) begin
+    if (gen_dut[0].i_dut.remap_select.cluster[0] !== bingo_hw_manager_assigned_cluster_id_t'(0)) begin
         $fatal(1, "logical core 0 should stay in cluster 0");
     end
 

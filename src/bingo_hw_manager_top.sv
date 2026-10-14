@@ -656,12 +656,6 @@ module bingo_hw_manager_top #(
     ready_and_checkout_queue_demux_oup_t           [NUM_CORES_PER_CLUSTER-1:0] demux_ready_and_checkout_queue_oup_valid;
     ready_and_checkout_queue_demux_oup_t           [NUM_CORES_PER_CLUSTER-1:0] demux_ready_and_checkout_queue_oup_ready;
 
-    ////////////////////////////////
-    // Ready Queue Filter Signals
-    ////////////////////////////////
-    // The routed task runs on a core: it also enters the slot's ready queue
-    logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] route_ready_push;
-
     //////////////////////
     // Dep matrix signals
     //////////////////////
@@ -753,7 +747,6 @@ module bingo_hw_manager_top #(
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_local_set_valid;
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_chiplet_set_valid;
     // Level 3 export (origin side)
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]         route_remote;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]         route_remote_grant;
     logic                                  replay_rotate;
     logic                                  replay_export;
@@ -830,6 +823,15 @@ module bingo_hw_manager_top #(
     `BINGO_HW_MANAGER_TYPEDEF_CTRL_VIEW_T(ctrl_view_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
     `BINGO_HW_MANAGER_TYPEDEF_TYPE_CFG_T(type_cfg_t, 2**CoreTypeIdWidth)
     `BINGO_HW_MANAGER_TYPEDEF_CERF_FB_T(cerf_fb_t, CoreTypeIdWidth)
+    `BINGO_HW_MANAGER_TYPEDEF_WAITING_T(waiting_t, bingo_hw_manager_task_desc_t, NUM_CORES_PER_CLUSTER)
+    `BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_T(checkout_t, bingo_hw_manager_task_desc_t, remote_tag_t,
+        NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET, CheckoutUsageWidth)
+    `BINGO_HW_MANAGER_TYPEDEF_READY_T(ready_t, bingo_hw_manager_ready_task_desc_full_t,
+        NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET, WdClassWidth)
+    `BINGO_HW_MANAGER_TYPEDEF_SELECT_T(select_t, NUM_CORES_PER_CLUSTER,
+        cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER), cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
+    `BINGO_HW_MANAGER_TYPEDEF_ROUTE_T(route_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET,
+        cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER))
     // Control plane (bingo_hw_manager_ctrl): what it reads of every slot, and
     // its view of every slot (PM idle, boost, derate, watchdog tick, risk, ...)
     slot_state_t                                                    slot_state;
@@ -881,7 +883,6 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_head_no_exec;
     logic                                  replay_exit_absorb;
     smt_t                                  smt;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] route_exit_absorb;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] exit_absorb;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_head_no_replay;
     logic                                  replay_move_fire;
@@ -897,12 +898,8 @@ module bingo_hw_manager_top #(
 
     // Placement of the waiting queue heads (bingo_hw_manager_router): per
     // logical core its physical slot, per physical slot the routed task
-    logic [NUM_CORES_PER_CLUSTER-1:0] remap_select_valid;
-    bingo_hw_manager_assigned_core_id_t    [NUM_CORES_PER_CLUSTER-1:0] remap_physical_core;
-    bingo_hw_manager_assigned_cluster_id_t [NUM_CORES_PER_CLUSTER-1:0] remap_physical_cluster;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remap_route_valid;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remap_route_fire;
-    bingo_hw_manager_assigned_core_id_t    [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remap_route_src_core;
+    select_t                               remap_select;
+    route_t                                route;
 
     // Number of tasks of logical core [core] (cluster [cluster]) that were remapped
     // to another physical core and are still in that core's checkout queue.
@@ -1195,7 +1192,7 @@ module bingo_hw_manager_top #(
             .inp_valid_i ( demux_ready_and_checkout_queue_inp_valid[core]    ),
             .inp_ready_o ( demux_ready_and_checkout_queue_inp_ready[core]    ),
             // Physical cluster: the logical one unless the task goes to a substitute
-            .oup_sel_i   ( remap_physical_cluster[core]                          ),
+            .oup_sel_i   ( remap_select.cluster[core]                          ),
             .oup_valid_o ( demux_ready_and_checkout_queue_oup_valid[core]    ),
             .oup_ready_i ( demux_ready_and_checkout_queue_oup_ready[core]    )
         );
@@ -1324,7 +1321,7 @@ module bingo_hw_manager_top #(
     // Ready Queue
     //////////////////////////////////////////////////////////////////////
     // A task routed to a slot enters its checkout queue and, if it runs on a
-    // core (route_ready_push, see bingo_hw_manager_router), its ready queue
+    // core (route.ready_push, see bingo_hw_manager_router), its ready queue
     // (bingo_hw_manager_ready_queue), where the core reads its id.
     for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin: gen_ready_queue_per_core
         for (genvar cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin: gen_ready_queue_per_core_per_cluster
@@ -1348,8 +1345,8 @@ module bingo_hw_manager_top #(
                 .chip_id_i       ( chip_id_i                                                        ),
                 .core_id_i       ( bingo_hw_manager_assigned_core_id_t'(core)                       ),
                 .cluster_id_i    ( bingo_hw_manager_assigned_cluster_id_t'(cluster)                 ),
-                .route_push_i    ( route_ready_push[core][cluster]                                  ),
-                .route_desc_i    ( waiting_dep_check_task_desc[remap_route_src_core[core][cluster]] ),
+                .route_push_i    ( route.ready_push[core][cluster]                                  ),
+                .route_desc_i    ( waiting_dep_check_task_desc[route.src_core[core][cluster]] ),
                 .replay_push_i   ( replay_push_ready[core][cluster]                                 ),
                 .replay_desc_i   ( replay_data                                                      ),
                 .import_push_i   ( import_push[core][cluster]                                       ),
@@ -1402,11 +1399,11 @@ module bingo_hw_manager_top #(
                 .clk_i                ( clk_i                                                            ),
                 .rst_ni               ( rst_ni                                                           ),
                 .chip_id_i            ( chip_id_i                                                        ),
-                .route_push_i         ( remap_route_fire[core][cluster]                                  ),
-                .route_desc_i         ( waiting_dep_check_task_desc[remap_route_src_core[core][cluster]] ),
-                .route_skip_i         ( cond_exec_skip[remap_route_src_core[core][cluster]]              ),
-                .route_exit_absorb_i  ( route_exit_absorb[core][cluster]                                 ),
-                .route_export_i       ( route_remote[core][cluster]                                      ),
+                .route_push_i         ( route.fire[core][cluster]                                  ),
+                .route_desc_i         ( waiting_dep_check_task_desc[route.src_core[core][cluster]] ),
+                .route_skip_i         ( cond_exec_skip[route.src_core[core][cluster]]              ),
+                .route_exit_absorb_i  ( route.exit_absorb[core][cluster]                                 ),
+                .route_export_i       ( route.remote[core][cluster]                                      ),
                 .replay_push_i        ( replay_push[core][cluster]                                       ),
                 .replay_desc_i        ( replay_data                                                      ),
                 .replay_tag_i         ( checkout_remote_tag_out[replay_src_core][replay_src_cluster]     ),
@@ -1991,6 +1988,33 @@ module bingo_hw_manager_top #(
     // substitute the control plane chose for it (retired or parked slot), or
     // stays on its proxy slot and is exported (level 3); see
     // bingo_hw_manager_router.
+    // The waiting queue heads, and the checkout and ready queues of every slot
+    waiting_t  waiting_heads;
+    checkout_t checkout_queue;
+    ready_t    ready_queue;
+    assign waiting_heads  = '{desc:  waiting_dep_check_task_desc,
+                              empty: waiting_dep_check_queue_empty,
+                              skip:  cond_exec_skip};
+    assign checkout_queue = '{push:          checkout_queue_push,
+                              push_desc:     checkout_queue_data_in,
+                              push_tag:      checkout_remote_tag_in,
+                              pop:           checkout_queue_pop,
+                              full:          checkout_queue_full,
+                              full_raw:      checkout_queue_full_raw,
+                              usage:         checkout_queue_usage,
+                              empty:         checkout_queue_empty,
+                              head:          checkout_queue_data_out,
+                              head_tag:      checkout_remote_tag_out,
+                              head_imported: checkout_head_imported,
+                              head_exec:     checkout_head_exec};
+    assign ready_queue    = '{push:      ready_queue_push,
+                              push_data: ready_queue_data_in,
+                              full:      ready_queue_full,
+                              empty:     ready_queue_empty,
+                              pop:       ready_queue_pop,
+                              data:      ready_queue_data_out,
+                              wd_class:  ready_class,
+                              moved:     ready_moved};
     bingo_hw_manager_router #(
         .NumCores            ( NUM_CORES_PER_CLUSTER                            ),
         .NumClusters         ( NUM_CLUSTERS_PER_CHIPLET                         ),
@@ -2001,39 +2025,31 @@ module bingo_hw_manager_top #(
         .SubstituteLevelMask ( SubstituteLevelMask                              ),
         .RemoteEn            ( RemoteEn                                         ),
         .OutstandingWidth    ( RemapOutstandingWidth                            ),
-        .task_desc_t         ( bingo_hw_manager_task_desc_t                     )
+        .waiting_t           ( waiting_t                                        ),
+        .slot_state_t        ( slot_state_t                                     ),
+        .smt_t               ( smt_t                                            ),
+        .park_t              ( park_t                                           ),
+        .checkout_t          ( checkout_t                                       ),
+        .ready_t             ( ready_t                                          ),
+        .select_t            ( select_t                                         ),
+        .route_t             ( route_t                                          )
     ) i_router (
-        .waiting_desc_i        ( waiting_dep_check_task_desc              ),
-        .waiting_empty_i       ( waiting_dep_check_queue_empty            ),
-        .skip_i                ( cond_exec_skip                           ),
+        .waiting_i             ( waiting_heads                            ),
         .offer_valid_i         ( demux_ready_and_checkout_queue_oup_valid ),
         .offer_ready_o         ( demux_ready_and_checkout_queue_oup_ready ),
-        .fenced_i              ( core_fenced                              ),
-        .retired_i             ( core_retired                             ),
-        .stuck_i               ( replay_stuck_slot                        ),
-        .rejected_i            ( remote_rejected_q                        ),
+        .slot_i                ( slot_state                               ),
         .remote_type_en_i      ( remote_export_type_en                    ),
-        .smt_found_i           ( smt.found                                ),
-        .smt_core_i            ( smt.core                                 ),
-        .smt_cluster_i         ( smt.cluster                              ),
+        .smt_i                 ( smt                                      ),
         .smt_update_i          ( smt_update                               ),
-        .park_hold_i           ( park_block                               ),
-        .park_parked_i         ( park.parked                              ),
+        .park_i                ( park                                     ),
         .outstanding_i         ( remap_outstanding_q                      ),
         .replay_pending_i      ( replay_pending                           ),
         .replay_move_cluster_i ( replay_move_cluster                      ),
-        .select_valid_o        ( remap_select_valid                       ),
-        .physical_core_o       ( remap_physical_core                      ),
-        .physical_cluster_o    ( remap_physical_cluster                   ),
-        .route_valid_o         ( remap_route_valid                        ),
-        .route_src_core_o      ( remap_route_src_core                     ),
-        .route_exit_absorb_o   ( route_exit_absorb                        ),
-        .route_export_o        ( route_remote                             ),
-        .checkout_full_i       ( checkout_queue_full                      ),
-        .ready_full_i          ( ready_queue_full                         ),
+        .checkout_i            ( checkout_queue                           ),
+        .ready_i               ( ready_queue                              ),
         .export_grant_i        ( route_remote_grant                       ),
-        .route_fire_o          ( remap_route_fire                         ),
-        .ready_push_o          ( route_ready_push                         )
+        .select_o              ( remap_select                             ),
+        .route_o               ( route                                    )
     );
 
     // Tasks of each logical slot that sit in the checkout queue of another slot
@@ -2044,16 +2060,14 @@ module bingo_hw_manager_top #(
         .ClusterIdWidth    ( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
         .Width             ( RemapOutstandingWidth                            ),
         .ForeignStuckDrain ( ForeignStuckDrain                                ),
-        .task_desc_t       ( bingo_hw_manager_task_desc_t                     )
+        .task_desc_t       ( bingo_hw_manager_task_desc_t                     ),
+        .checkout_t        ( checkout_t                                       )
     ) i_remap_count (
-        .clk_i         ( clk_i                   ),
-        .rst_ni        ( rst_ni                  ),
-        .push_i        ( checkout_queue_push     ),
-        .push_desc_i   ( checkout_queue_data_in  ),
-        .pop_i         ( checkout_queue_pop      ),
-        .head_i        ( checkout_queue_data_out ),
-        .outstanding_o ( remap_outstanding_q     ),
-        .moved_in_o    ( moved_in_q              )
+        .clk_i         ( clk_i               ),
+        .rst_ni        ( rst_ni              ),
+        .checkout_i    ( checkout_queue      ),
+        .outstanding_o ( remap_outstanding_q ),
+        .moved_in_o    ( moved_in_q          )
     );
 
     //////////////////////////////////////////////////////////////////////
@@ -2074,7 +2088,7 @@ module bingo_hw_manager_top #(
     always_comb begin
         for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++)
             for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
-                route_desc_full[c][cl] = desc_to_full(waiting_dep_check_task_desc[remap_route_src_core[c][cl]]);
+                route_desc_full[c][cl] = desc_to_full(waiting_dep_check_task_desc[route.src_core[c][cl]]);
     end
     bingo_hw_manager_remote_export #(
         .NumCores         ( NUM_CORES_PER_CLUSTER             ),
@@ -2101,9 +2115,9 @@ module bingo_hw_manager_top #(
         .replay_desc_i                 ( desc_to_full(replay_data)     ),
         .replay_src_core_i             ( replay_src_core               ),
         .replay_src_cluster_i          ( replay_src_cluster            ),
-        .route_export_i                ( route_remote                  ),
+        .route_export_i                ( route.remote                  ),
         .route_desc_i                  ( route_desc_full               ),
-        .route_fire_i                  ( remap_route_fire              ),
+        .route_fire_i                  ( route.fire              ),
         .checkout_full_i               ( checkout_queue_full           ),
         .route_grant_o                 ( route_remote_grant            ),
         .type_ready_o                  ( export_type_ready             ),
@@ -2161,7 +2175,7 @@ module bingo_hw_manager_top #(
         .fenced_i                      ( core_fenced                                               ),
         .replay_pending_i              ( replay_pending                                            ),
         .replay_moving_i               ( |replay_move                                              ),
-        .route_valid_i                 ( remap_route_valid                                         ),
+        .route_valid_i                 ( route.valid                                         ),
         .replay_push_i                 ( replay_push                                               ),
         .checkout_full_i               ( checkout_queue_full                                       ),
         .ready_full_i                  ( ready_queue_full                                          ),
@@ -2361,15 +2375,15 @@ module bingo_hw_manager_top #(
                         $display("[BINGO_REPLAY_BLOCKED] %0t chip=%0d core=%0d cluster=%0d task=%0d",
                                  $time, chip_id_i, c, cl, checkout_queue_data_out[c][cl].task_id);
                     end
-                    if (remap_route_fire[c][cl] &&
-                        ((remap_route_src_core[c][cl] != bingo_hw_manager_assigned_core_id_t'(c)) ||
-                         (waiting_dep_check_task_desc[remap_route_src_core[c][cl]].assigned_cluster_id !=
+                    if (route.fire[c][cl] &&
+                        ((route.src_core[c][cl] != bingo_hw_manager_assigned_core_id_t'(c)) ||
+                         (waiting_dep_check_task_desc[route.src_core[c][cl]].assigned_cluster_id !=
                           bingo_hw_manager_assigned_cluster_id_t'(cl)))) begin
                         $display("[BINGO_REMAP] %0t chip=%0d task=%0d logical_core=%0d -> physical_core=%0d cluster=%0d logical_cluster=%0d",
                                  $time, chip_id_i,
-                                 waiting_dep_check_task_desc[remap_route_src_core[c][cl]].task_id,
-                                 remap_route_src_core[c][cl], c, cl,
-                                 waiting_dep_check_task_desc[remap_route_src_core[c][cl]].assigned_cluster_id);
+                                 waiting_dep_check_task_desc[route.src_core[c][cl]].task_id,
+                                 route.src_core[c][cl], c, cl,
+                                 waiting_dep_check_task_desc[route.src_core[c][cl]].assigned_cluster_id);
                     end
                 end
             end
@@ -2444,7 +2458,9 @@ module bingo_hw_manager_top #(
         .remote_export_t    ( remote_export_t                                  )
     ) i_top_assert (
         .*,
-        .exec_moved_q ( i_replay_ctrl.exec_moved_q )
+        .remap_route_fire     ( route.fire                 ),
+        .remap_route_src_core ( route.src_core             ),
+        .exec_moved_q         ( i_replay_ctrl.exec_moved_q )
     );
 `endif
 

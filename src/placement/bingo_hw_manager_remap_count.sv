@@ -21,15 +21,13 @@ module bingo_hw_manager_remap_count #(
     parameter int unsigned ClusterIdWidth = 1,
     parameter int unsigned Width = 6,
     parameter bit          ForeignStuckDrain = 1'b1,
-    parameter type         task_desc_t = logic   // bingo_hw_manager_task_desc_t of the top
+    parameter type         task_desc_t = logic,  // bingo_hw_manager_task_desc_t of the top
+    parameter type         checkout_t = logic    // bingo_hw_manager/typedef.svh
 ) (
-    input  logic                                      clk_i,
-    input  logic                                      rst_ni,
+    input  logic             clk_i,
+    input  logic             rst_ni,
     // Checkout queue of every physical slot: the entry pushed, the head popped
-    input  logic       [NumCores-1:0][NumClusters-1:0] push_i,
-    input  task_desc_t [NumCores-1:0][NumClusters-1:0] push_desc_i,
-    input  logic       [NumCores-1:0][NumClusters-1:0] pop_i,
-    input  task_desc_t [NumCores-1:0][NumClusters-1:0] head_i,
+    input  checkout_t        checkout_i,
     output logic [Width-1:0] outstanding_o [NumCores][NumClusters],
     output logic [Width-1:0] moved_in_o [NumCores][NumClusters][NumCores][NumClusters]
 );
@@ -55,13 +53,13 @@ module bingo_hw_manager_remap_count #(
         remap_outstanding_d = remap_outstanding_q;
         for (int unsigned p = 0; p < NumCores; p++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                if (push_i[p][cl] && foreign_entry(push_desc_i[p][cl], p, cl)) begin
-                    remap_outstanding_d[push_desc_i[p][cl].assigned_core_id][push_desc_i[p][cl].assigned_cluster_id] =
-                        remap_outstanding_d[push_desc_i[p][cl].assigned_core_id][push_desc_i[p][cl].assigned_cluster_id] + 1'b1;
+                if (checkout_i.push[p][cl] && foreign_entry(checkout_i.push_desc[p][cl], p, cl)) begin
+                    remap_outstanding_d[checkout_i.push_desc[p][cl].assigned_core_id][checkout_i.push_desc[p][cl].assigned_cluster_id] =
+                        remap_outstanding_d[checkout_i.push_desc[p][cl].assigned_core_id][checkout_i.push_desc[p][cl].assigned_cluster_id] + 1'b1;
                 end
-                if (pop_i[p][cl] && foreign_entry(head_i[p][cl], p, cl)) begin
-                    remap_outstanding_d[head_i[p][cl].assigned_core_id][head_i[p][cl].assigned_cluster_id] =
-                        remap_outstanding_d[head_i[p][cl].assigned_core_id][head_i[p][cl].assigned_cluster_id] - 1'b1;
+                if (checkout_i.pop[p][cl] && foreign_entry(checkout_i.head[p][cl], p, cl)) begin
+                    remap_outstanding_d[checkout_i.head[p][cl].assigned_core_id][checkout_i.head[p][cl].assigned_cluster_id] =
+                        remap_outstanding_d[checkout_i.head[p][cl].assigned_core_id][checkout_i.head[p][cl].assigned_cluster_id] - 1'b1;
                 end
             end
         end
@@ -73,13 +71,13 @@ module bingo_hw_manager_remap_count #(
             moved_in_d = moved_in_q;
             for (int unsigned p = 0; p < NumCores; p++) begin
                 for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                    if (push_i[p][cl] && foreign_entry(push_desc_i[p][cl], p, cl)) begin
-                        moved_in_d[p][cl][push_desc_i[p][cl].assigned_core_id][push_desc_i[p][cl].assigned_cluster_id] =
-                            moved_in_d[p][cl][push_desc_i[p][cl].assigned_core_id][push_desc_i[p][cl].assigned_cluster_id] + 1'b1;
+                    if (checkout_i.push[p][cl] && foreign_entry(checkout_i.push_desc[p][cl], p, cl)) begin
+                        moved_in_d[p][cl][checkout_i.push_desc[p][cl].assigned_core_id][checkout_i.push_desc[p][cl].assigned_cluster_id] =
+                            moved_in_d[p][cl][checkout_i.push_desc[p][cl].assigned_core_id][checkout_i.push_desc[p][cl].assigned_cluster_id] + 1'b1;
                     end
-                    if (pop_i[p][cl] && foreign_entry(head_i[p][cl], p, cl)) begin
-                        moved_in_d[p][cl][head_i[p][cl].assigned_core_id][head_i[p][cl].assigned_cluster_id] =
-                            moved_in_d[p][cl][head_i[p][cl].assigned_core_id][head_i[p][cl].assigned_cluster_id] - 1'b1;
+                    if (checkout_i.pop[p][cl] && foreign_entry(checkout_i.head[p][cl], p, cl)) begin
+                        moved_in_d[p][cl][checkout_i.head[p][cl].assigned_core_id][checkout_i.head[p][cl].assigned_cluster_id] =
+                            moved_in_d[p][cl][checkout_i.head[p][cl].assigned_core_id][checkout_i.head[p][cl].assigned_cluster_id] - 1'b1;
                     end
                 end
             end

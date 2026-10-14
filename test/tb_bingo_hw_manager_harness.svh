@@ -1209,8 +1209,8 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_remap_monitor
         if (rst_ni) begin
             for (int p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                    if (gen_dut[gi].i_dut.remap_route_fire[p][cl]) begin
-                        automatic int src    = gen_dut[gi].i_dut.remap_route_src_core[p][cl];
+                    if (gen_dut[gi].i_dut.route.fire[p][cl]) begin
+                        automatic int src    = gen_dut[gi].i_dut.route.src_core[p][cl];
                         automatic int src_cl = gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].assigned_cluster_id;
                         if ((src != p) || (src_cl != cl)) begin
                             if ((gen_dut[gi].i_dut.core_retired[src][src_cl] !== 1'b1) &&
@@ -1313,9 +1313,9 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_counters
             if (|gen_dut[gi].i_dut.core_dead_suspect) dead_suspect_seen[gi] = 1'b1;
             for (int p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                    if (gen_dut[gi].i_dut.remap_route_fire[p][cl] &&
-                        ((gen_dut[gi].i_dut.remap_route_src_core[p][cl] != p) ||
-                         (gen_dut[gi].i_dut.waiting_dep_check_task_desc[gen_dut[gi].i_dut.remap_route_src_core[p][cl]].assigned_cluster_id != cl))) begin
+                    if (gen_dut[gi].i_dut.route.fire[p][cl] &&
+                        ((gen_dut[gi].i_dut.route.src_core[p][cl] != p) ||
+                         (gen_dut[gi].i_dut.waiting_dep_check_task_desc[gen_dut[gi].i_dut.route.src_core[p][cl]].assigned_cluster_id != cl))) begin
                         remap_count[gi]++;
                     end
                 end
@@ -1427,7 +1427,7 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_sva
         ((stuck | gen_dut[gi].i_dut.remote_rejected_q) & ~stuck_skip_ok &
          gen_dut[gi].i_dut.checkout_queue_pop & ~gen_dut[gi].i_dut.replay_pop) == '0);
     // Replay pushes and routed pushes never meet in one queue
-    a_push_excl: assert property ((gen_dut[gi].i_dut.replay_push & gen_dut[gi].i_dut.remap_route_fire) == '0);
+    a_push_excl: assert property ((gen_dut[gi].i_dut.replay_push & gen_dut[gi].i_dut.route.fire) == '0);
     // A fenced slot gets no ready push (it would never run the task)
     a_no_ready_push_fenced: assert property ((fenced & gen_dut[gi].i_dut.ready_queue_push) == '0);
 

@@ -62,8 +62,8 @@ always @(posedge clk_i) begin
         end
         for (int p = 0; p < 3; p++) begin
             for (int cl = 0; cl < 2; cl++) begin
-                if (gen_dut[0].i_dut.remap_route_fire[p][cl]) begin
-                    automatic int src    = gen_dut[0].i_dut.remap_route_src_core[p][cl];
+                if (gen_dut[0].i_dut.route.fire[p][cl]) begin
+                    automatic int src    = gen_dut[0].i_dut.route.src_core[p][cl];
                     automatic int src_cl = gen_dut[0].i_dut.waiting_dep_check_task_desc[src].assigned_cluster_id;
                     if ((src == 0) && (src_cl == 0) && ((p != 0) || (cl != 0)) &&
                         (gen_dut[0].i_dut.waiting_dep_check_task_desc[src].task_type != 2'b01)) begin
