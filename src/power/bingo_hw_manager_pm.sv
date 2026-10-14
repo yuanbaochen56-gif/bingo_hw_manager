@@ -72,7 +72,13 @@ module bingo_hw_manager_pm #(
     output logic [31:0][7:0] domain_level_o,
     // AXI Lite Master Interface to Configure PMIC
     output req_lite_t              pm_axi_lite_req_o,
-    input  resp_lite_t             pm_axi_lite_resp_i
+    input  resp_lite_t             pm_axi_lite_resp_i,
+    // Sticky bus errors of that master (SLVERR or DECERR, e.g. a wrong base
+    // address): [0] a write was answered with an error, so the level it set may
+    // not apply (domain_level_o still shows it); [1] the DVFS read of the CLINT
+    // word was answered with an error, so the doorbell write that follows may
+    // change the other bits of that word. Report only: the PM goes on as before.
+    output logic [1:0]             bus_error_o
 );
 
     // Constants
@@ -514,6 +520,19 @@ module bingo_hw_manager_pm #(
         pm_axi_lite_req_o.r_ready  = bus_r_ready;
     end
 
+    logic [1:0] bus_error_q;
+    always_ff @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            bus_error_q <= '0;
+        end else begin
+            if (pm_axi_lite_resp_i.b_valid && pm_axi_lite_resp_i.b.resp[1])
+                bus_error_q[0] <= 1'b1;
+            if ((state_q == READ_MSIP_R) && pm_axi_lite_resp_i.r_valid && pm_axi_lite_resp_i.r.resp[1])
+                bus_error_q[1] <= 1'b1;
+        end
+    end
+    assign bus_error_o = bus_error_q;
+
     // -------------------------------------------------------------------------
     // DVFS voltage-safety assertion
     // -------------------------------------------------------------------------
@@ -546,6 +565,11 @@ module bingo_hw_manager_pm #(
             if ((state_q == WRITE_MSIP_W) && pm_axi_lite_req_o.w_valid && pm_axi_lite_resp_i.w_ready) begin
                 $display("[BINGO_PM] %0t dvfs_doorbell level=%0d busy=%0b", $time, desired_chip_level, chip_busy);
             end
+            if (pm_axi_lite_resp_i.b_valid && pm_axi_lite_resp_i.b.resp[1])
+                $display("[BINGO_BUS_ERROR] %0t PM write answered with resp %0d", $time, pm_axi_lite_resp_i.b.resp);
+            if ((state_q == READ_MSIP_R) && pm_axi_lite_resp_i.r_valid && pm_axi_lite_resp_i.r.resp[1])
+                $display("[BINGO_BUS_ERROR] %0t PM read of the CLINT word answered with resp %0d", $time,
+                         pm_axi_lite_resp_i.r.resp);
         end
     end
 `endif

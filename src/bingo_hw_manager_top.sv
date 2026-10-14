@@ -333,7 +333,13 @@ module bingo_hw_manager_top #(
     // belong to its exported head task (the slot then stops retiring), or a
     // remote done / reject arrived for a slot that is no proxy (not fenced, or
     // out of range; dropped)
-    output logic                                remote_done_mismatch_o
+    output logic                                remote_done_mismatch_o,
+    // Sticky bus errors (SLVERR / DECERR) of the manager's AXI-Lite masters:
+    // [0] a task descriptor read (the descriptor is dropped and the fetch
+    // stops, bingo_hw_manager_task_queue_master), [1] a write of the PM, [2] the
+    // DVFS read of the PM (bingo_hw_manager_pm). The chiplet dep-set master
+    // gets its B response from the D2D link, which answers every write.
+    output logic [2:0]                          bus_error_o
 );
     import bingo_hw_manager_pkg::*;
     // --------Type definitions and signal declarations--------------------//
@@ -584,6 +590,8 @@ module bingo_hw_manager_top #(
     logic [HostAxiLiteDataWidth-1:0]   task_queue_mbox_data;
     logic                              task_queue_mbox_empty;
     logic                              task_queue_mbox_pop;
+    logic                              fetch_bus_error;   // master mode: a descriptor read failed
+    logic [1:0]                        pm_bus_error;
 
 
     /////////////////////////////////////////////////////////
@@ -1044,6 +1052,7 @@ module bingo_hw_manager_top #(
         assign task_queue_axi_lite_req_o = '0;
         assign bingo_hw_manager_reset_start_o    = '0;
         assign bingo_hw_manager_reset_start_en_o = 1'b0;
+        assign fetch_bus_error                   = 1'b0;
     end
     else begin : gen_bingo_hw_manager_task_queue_master
         // AXI Lite Master Task Queue
@@ -1068,7 +1077,8 @@ module bingo_hw_manager_top #(
             .task_queue_axi_lite_resp_i(task_queue_axi_lite_resp_i           ),
             .task_queue_data_o         (task_queue_mbox_data                 ),
             .task_queue_pop_i          (task_queue_mbox_pop                  ),
-            .task_queue_empty_o        (task_queue_mbox_empty                )
+            .task_queue_empty_o        (task_queue_mbox_empty                ),
+            .bus_error_o               (fetch_bus_error                      )
         );
         // Tie off the unused slave interface signals
         assign task_queue_axi_lite_resp_o = '0;
@@ -1703,8 +1713,10 @@ module bingo_hw_manager_top #(
         .domain_level_o        ( pm_domain_level                        ),
         // Interface to Host AXI Lite
         .pm_axi_lite_req_o     (pm_axi_lite_req_o                      ),
-        .pm_axi_lite_resp_i    (pm_axi_lite_resp_i                     )
+        .pm_axi_lite_resp_i    (pm_axi_lite_resp_i                     ),
+        .bus_error_o           (pm_bus_error                           )
     );
+    assign bus_error_o = {pm_bus_error, fetch_bus_error};
     // Power-domain counters (observation only): cycles of each counted domain
     // per clock level the PM applied, and cycles with an active slot (one that
     // is neither waiting for a task, nor exited, nor fenced: the PM's idle

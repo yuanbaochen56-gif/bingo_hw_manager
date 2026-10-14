@@ -9,6 +9,11 @@
 
 
 // This module issues the ar/r requests to read the task decriptor from the task_list_base_addr_i with num_task_i
+//
+// A read answered with an error (SLVERR or DECERR, e.g. a wrong list base) is
+// not a descriptor: it is dropped, the fetch stops there as at the last task
+// (start is cleared), and bus_error_o stays set until reset, so the host can
+// tell a failed fetch from a finished one.
 
 module bingo_hw_manager_task_queue_master #(
     parameter int unsigned TaskQueueDepth = 16,
@@ -33,7 +38,9 @@ module bingo_hw_manager_task_queue_master #(
     // Standard FIFO Interface
     output data_t                  task_queue_data_o,
     input  logic                   task_queue_pop_i,
-    output logic                   task_queue_empty_o
+    output logic                   task_queue_empty_o,
+    // Sticky: a descriptor read was answered with an error
+    output logic                   bus_error_o
 );
 
     typedef enum logic [1:0]{
@@ -102,6 +109,9 @@ module bingo_hw_manager_task_queue_master #(
     // fetch would not stop). A count of 0 fetches nothing.
     logic last_task;
     assign last_task = (task_counter_q == (num_task_i - 1)) || (&task_counter_q);
+    // The descriptor read is answered with an error
+    logic r_error;
+    assign r_error = task_queue_axi_lite_resp_i.r.resp[1];
 
     // State Update
     always_ff @(posedge clk_i, negedge rst_ni) begin
@@ -129,7 +139,7 @@ module bingo_hw_manager_task_queue_master #(
             end
             WAIT_R: begin
                 if (task_queue_axi_lite_resp_i.r_valid && task_queue_axi_lite_req_o.r_ready) begin
-                    if (last_task) begin
+                    if (last_task || r_error) begin
                         next_state = FINISH;
                     end else begin
                         next_state = SEND_AR;
@@ -185,8 +195,18 @@ module bingo_hw_manager_task_queue_master #(
     end
     // Compose the R channel to the task queue fifo
     assign task_queue_axi_lite_req_o.r_ready = ~task_queue_full;
-    assign task_queue_push = task_queue_axi_lite_resp_i.r_valid && ~task_queue_full;
+    assign task_queue_push = task_queue_axi_lite_resp_i.r_valid && ~task_queue_full && !r_error;
     assign task_queue_data_in = task_queue_axi_lite_resp_i.r.data;
+
+    logic bus_error_q;
+    always_ff @(posedge clk_i, negedge rst_ni) begin
+        if (!rst_ni) begin
+            bus_error_q <= 1'b0;
+        end else if (task_queue_axi_lite_resp_i.r_valid && task_queue_axi_lite_req_o.r_ready && r_error) begin
+            bus_error_q <= 1'b1;
+        end
+    end
+    assign bus_error_o = bus_error_q;
 
 `ifndef SYNTHESIS
     // A count beyond the task ids is a software error: report what is fetched
@@ -194,6 +214,10 @@ module bingo_hw_manager_task_queue_master #(
         if (rst_ni && (cur_state == IDLE) && start_i && (num_task_i > (1 << TaskIdWidth)))
             $warning("[BINGO_TASK_QUEUE] %0t task count %0d exceeds the %0d task ids: fetching %0d descriptors",
                      $time, num_task_i, 1 << TaskIdWidth, 1 << TaskIdWidth);
+        if (rst_ni && (cur_state == WAIT_R) && task_queue_axi_lite_resp_i.r_valid &&
+            task_queue_axi_lite_req_o.r_ready && r_error)
+            $display("[BINGO_BUS_ERROR] %0t descriptor read %0d answered with resp %0d: dropped, fetch stopped",
+                     $time, task_counter_q, task_queue_axi_lite_resp_i.r.resp);
     end
 `endif
 endmodule
