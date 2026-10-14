@@ -18,7 +18,7 @@ initial begin : unpark_cancel_test
     repeat (20) @(posedge clk_i);
     park_req[0] = 32'd1;
     repeat (10) @(posedge clk_i);
-    if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b1) $fatal(1, "core 0 not parked");
+    if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b1) $fatal(1, "core 0 not parked");
     task_queue_master[0].write(task_queue_base[0], '0,
         pack_normal_task(2'b00, 1, 0, 0, 0, 1'b0, '0, 1'b0, 1'b0, 0, 0, '0), '1, resp);
     csr_read(0, 0, 1, CSR_READY, id);
@@ -26,13 +26,13 @@ initial begin : unpark_cancel_test
     @(negedge clk_i);
     park_req[0] = 32'd0;
     repeat (5) @(posedge clk_i);
-    if (gen_dut[0].i_dut.park_unpark[0][0] !== 1'b1) $error("[UNPARK_CANCEL] no UNPARK");
+    if (gen_dut[0].i_dut.park.unpark[0][0] !== 1'b1) $error("[UNPARK_CANCEL] no UNPARK");
     @(negedge clk_i);
     park_req[0] = 32'd1;
     repeat (3) @(posedge clk_i);
-    if (gen_dut[0].i_dut.park_unpark[0][0] !== 1'b0 || gen_dut[0].i_dut.park_parked[0][0] !== 1'b1)
+    if (gen_dut[0].i_dut.park.unpark[0][0] !== 1'b0 || gen_dut[0].i_dut.park.parked[0][0] !== 1'b1)
         $error("[UNPARK_CANCEL] asked again: expected PARKED (unpark %0b parked %0b)",
-               gen_dut[0].i_dut.park_unpark[0][0], gen_dut[0].i_dut.park_parked[0][0]);
+               gen_dut[0].i_dut.park.unpark[0][0], gen_dut[0].i_dut.park.parked[0][0]);
     task_queue_master[0].write(task_queue_base[0], '0,
         pack_normal_task(2'b00, 2, 0, 0, 0, 1'b0, '0, 1'b0, 1'b0, 0, 0, '0), '1, resp);
     csr_done(0, 0, 1, 1);
@@ -43,7 +43,7 @@ initial begin : unpark_cancel_test
     @(negedge clk_i);
     park_req[0] = 32'd0;
     repeat (5) @(posedge clk_i);
-    if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b0) $error("[UNPARK_CANCEL] nothing left on core 1, still parked");
+    if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b0) $error("[UNPARK_CANCEL] nothing left on core 1, still parked");
     task_queue_master[0].write(task_queue_base[0], '0,
         pack_normal_task(2'b00, 3, 0, 0, 0, 1'b0, '0, 1'b0, 1'b0, 0, 0, '0), '1, resp);
     csr_read(0, 0, 0, CSR_READY, id);

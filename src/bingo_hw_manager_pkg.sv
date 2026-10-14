@@ -4,7 +4,8 @@
 
 // Constants that more than one bingo_hw_manager module, or the host software,
 // relies on: the task types of a descriptor, the device CSRs of the ready and
-// done queues, and the number of power domains.
+// done queues, the number of power domains, and the port structs of fixed
+// width.
 package bingo_hw_manager_pkg;
     // Task type of a descriptor (two bits, written by the host compiler bingo_dfg.py)
     localparam logic [1:0] TaskNormal   = 2'b00; // runs on its core
@@ -18,6 +19,31 @@ package bingo_hw_manager_pkg;
     // Power domains 0 .. PmMaxDomains-1. A slot configured with a larger domain
     // (the host writes 99 for the host and tied-off slots) belongs to none.
     localparam int unsigned PmMaxDomains = 32;
+
+    // Port structs of fixed width. The ones whose width depends on the
+    // parameters of the top are macros in bingo_hw_manager/typedef.svh.
+
+    // Host configuration of the control plane (bingo_hw_manager_ctrl)
+    typedef struct packed {
+        logic [31:0] idle_delay;     // cycles a slot must be idle before the PM may count it as idle (0: at once)
+        logic [31:0] access_hold;    // cycles a cluster's slots stay awake after an external access (0: off)
+        logic [31:0] recovery_hold;  // cycles the substitute of a fenced slot stays awake (0: off)
+        logic [3:0]  risk_thresh;    // late beats that make a slot at risk (0: off)
+        logic [1:0]  risk_action;    // what an at-risk slot does: [0] park, [1] derate its domain
+        logic [31:0] risk_epoch;     // cycles between two halvings of the late-beat counts (0: never)
+        logic        boost_policy;   // 0: boost the substitutes of fenced cores, 1: capacity
+        logic [3:0]  boost_credit;   // boosted domains per lost slot (0: no limit)
+        logic [7:0]  boost_load_min; // minimum load of a capacity boost candidate
+    } ctrl_cfg_t;
+
+    // Power state as the control plane reads it (bingo_hw_manager_pm)
+    typedef struct packed {
+        logic             enable;       // idle PM on
+        logic             dvfs;         // DVFS mode: one chip level, acknowledged by the host
+        logic [7:0]       normal_level; // clock divider of the normal level
+        logic [7:0]       dvfs_level;   // DVFS: the level the host acknowledged
+        logic [31:0][7:0] domain_level; // DFS: the level last applied to each domain
+    } pm_view_t;
 
     // Event log (bingo_hw_manager_evlog). The top raises one pulse per (group,
     // slot) and one per core type for a CERF fallback; the log turns the pulse

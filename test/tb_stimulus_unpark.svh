@@ -23,7 +23,7 @@ initial begin : unpark_test
     repeat (20) @(posedge clk_i);
     park_req[0] = 32'd1;
     repeat (10) @(posedge clk_i);
-    if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b1 || gen_dut[0].i_dut.smt_core[0][0] !== 1)
+    if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b1 || gen_dut[0].i_dut.smt.core[0][0] !== 1)
         $fatal(1, "core 0 not parked onto core 1");
     for (int i = 1; i <= 2; i++) begin
         task_queue_master[0].write(task_queue_base[0], '0,
@@ -49,9 +49,9 @@ initial begin : unpark_test
     @(negedge clk_i);
     park_req[0] = 32'd0;
     repeat (3) @(posedge clk_i);
-    if (gen_dut[0].i_dut.park_unpark[0][0] !== 1'b1 || gen_dut[0].i_dut.park_parked[0][0] !== 1'b1)
+    if (gen_dut[0].i_dut.park.unpark[0][0] !== 1'b1 || gen_dut[0].i_dut.park.parked[0][0] !== 1'b1)
         $error("[UNPARK] expected UNPARK (unpark %0b parked %0b)",
-               gen_dut[0].i_dut.park_unpark[0][0], gen_dut[0].i_dut.park_parked[0][0]);
+               gen_dut[0].i_dut.park.unpark[0][0], gen_dut[0].i_dut.park.parked[0][0]);
     task_queue_master[0].write(task_queue_base[0], '0,
         pack_normal_task(2'b00, 3, 0, 0, 0, 1'b0, '0, 1'b0, 1'b0, 0, 0, '0), '1, resp);
     task_queue_master[0].write(task_queue_base[0], '0,
@@ -67,7 +67,7 @@ initial begin : unpark_test
     if (id[TaskIdWidth-1:0] != 2) $error("[UNPARK] core 1 read task %0d, expected 2", id);
     repeat (20) @(posedge clk_i);
     if (up_core0_got) $error("[UNPARK] core 0 got task %0d while task 2 was still on core 1", up_core0_id);
-    if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b1) $error("[UNPARK] left PARKED with a task still on core 1");
+    if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b1) $error("[UNPARK] left PARKED with a task still on core 1");
     csr_done(0, 0, 1, 2);
     fork : wait_core0
         wait (up_core0_got);
@@ -78,7 +78,7 @@ initial begin : unpark_test
     join_any
     disable wait_core0;
     if (up_core0_id[TaskIdWidth-1:0] != 3) $error("[UNPARK] core 0 read task %0d, expected 3", up_core0_id);
-    if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b0 || gen_dut[0].i_dut.park_unpark[0][0] !== 1'b0)
+    if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b0 || gen_dut[0].i_dut.park.unpark[0][0] !== 1'b0)
         $error("[UNPARK] still parked after the move back");
     csr_done(0, 0, 0, 3);
     csr_read(0, 0, 1, CSR_READY, id);

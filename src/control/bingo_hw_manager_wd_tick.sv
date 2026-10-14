@@ -10,23 +10,21 @@
 // so the timeouts count cycles of the normal clock and can be set for the
 // normal level instead of the slowest one. The level is the one the DFS path
 // applied to the domain, or the one the host acknowledged in DVFS mode
-// (pm_dvfs_i); without idle PM, or at or below the normal level, the timer
+// (pm_i.dvfs); without idle PM, or at or below the normal level, the timer
 // advances every cycle. wd_fast_o marks a slot whose domain runs at a known
 // level below the normal one (a faster clock, e.g. boost).
-module bingo_hw_manager_wd_tick #(
+module bingo_hw_manager_wd_tick
+    import bingo_hw_manager_pkg::*;
+#(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2
 ) (
     input  logic clk_i,
     input  logic rst_ni,
 
-    // Power state (bingo_hw_manager_pm): enable, mode, levels, slot -> domain
-    input  logic                                      pm_enable_i,
-    input  logic                                      pm_dvfs_i,
-    input  logic [7:0]                                normal_level_i,
-    input  logic [7:0]                                dvfs_level_i,
-    input  logic [31:0][7:0]                          domain_level_i,
-    input  logic [NumCores-1:0][NumClusters-1:0][5:0] slot_domain_i,  // >= 32: no domain
+    // Power state (bingo_hw_manager_pm), and the domain of every slot (>= 32: none)
+    input  pm_view_t                                  pm_i,
+    input  logic [NumCores-1:0][NumClusters-1:0][5:0] slot_domain_i,
 
     // Watchdog: the slot's timer advances this cycle
     output logic [NumCores-1:0][NumClusters-1:0]      wd_tick_o,
@@ -40,21 +38,21 @@ module bingo_hw_manager_wd_tick #(
     always_comb begin
         for (int unsigned c = 0; c < NumCores; c++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                slot_level[c][cl] = pm_dvfs_i ? dvfs_level_i :
-                                    (slot_domain_i[c][cl] < 32) ? domain_level_i[slot_domain_i[c][cl][4:0]] : 8'd0;
-                slot_slow[c][cl]  = pm_enable_i && (normal_level_i != '0) && (slot_level[c][cl] > normal_level_i);
-                wd_fast_o[c][cl]  = pm_enable_i && (normal_level_i != '0) && (slot_level[c][cl] != '0) &&
-                                    (slot_level[c][cl] < normal_level_i);
+                slot_level[c][cl] = pm_i.dvfs ? pm_i.dvfs_level :
+                                    (slot_domain_i[c][cl] < 32) ? pm_i.domain_level[slot_domain_i[c][cl][4:0]] : 8'd0;
+                slot_slow[c][cl]  = pm_i.enable && (pm_i.normal_level != '0) && (slot_level[c][cl] > pm_i.normal_level);
+                wd_fast_o[c][cl]  = pm_i.enable && (pm_i.normal_level != '0) && (slot_level[c][cl] != '0) &&
+                                    (slot_level[c][cl] < pm_i.normal_level);
                 // Accumulate N per cycle, tick (and subtract L) once it reaches L
                 if (!slot_slow[c][cl]) begin
                     wd_tick_o[c][cl]  = 1'b1;
                     tick_acc_d[c][cl] = '0;
-                end else if ((tick_acc_q[c][cl] + 9'(normal_level_i)) >= 9'(slot_level[c][cl])) begin
+                end else if ((tick_acc_q[c][cl] + 9'(pm_i.normal_level)) >= 9'(slot_level[c][cl])) begin
                     wd_tick_o[c][cl]  = 1'b1;
-                    tick_acc_d[c][cl] = tick_acc_q[c][cl] + 9'(normal_level_i) - 9'(slot_level[c][cl]);
+                    tick_acc_d[c][cl] = tick_acc_q[c][cl] + 9'(pm_i.normal_level) - 9'(slot_level[c][cl]);
                 end else begin
                     wd_tick_o[c][cl]  = 1'b0;
-                    tick_acc_d[c][cl] = tick_acc_q[c][cl] + 9'(normal_level_i);
+                    tick_acc_d[c][cl] = tick_acc_q[c][cl] + 9'(pm_i.normal_level);
                 end
             end
         end

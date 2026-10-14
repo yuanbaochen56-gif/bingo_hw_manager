@@ -15,21 +15,21 @@ module tb_bingo_hw_manager_recovery_hold_cold;
     bus_resp_t resp;
     assign resp = '{aw_ready:1'b1, w_ready:1'b1, b_valid:1'b1,
                     b:'0, ar_ready:1'b1, r_valid:1'b1, r:'0};
+    `include "bingo_hw_manager/typedef.svh" // port structs of the control plane under test
+    `BINGO_HW_MANAGER_TYPEDEF_CTRL_ALL(1, 2, 1, 1, 1, 4)
+    ctrl_view_t view;
+    assign {idle, rec, access_only} = {view.idle, view.rec_hold, view.access_only};
     bingo_hw_manager_ctrl #(
         .NumCores(1), .NumClusters(2), .CoreIdWidth(1), .ClusterIdWidth(1),
-        .CoreTypeIdWidth(1), .CoreTypeId(2'b11), .SubstituteLevelMask(3'b011)
+        .CoreTypeIdWidth(1), .CoreTypeId(2'b11), .SubstituteLevelMask(3'b011),
+        .slot_state_t(slot_state_t), .ctrl_queue_t(ctrl_queue_t), .ctrl_host_t(ctrl_host_t), .ctrl_view_t(ctrl_view_t),
+        .type_cfg_t(type_cfg_t), .smt_t(smt_t), .park_t(park_t), .cerf_fb_t(cerf_fb_t)
     ) ctrl (
-        .clk_i(clk), .rst_ni(rst), .fenced_i(fenced), .waiting_i('1), .load_i('0),
-        .pm_enable_i(1'b1), .pm_dvfs_i(1'b0), .normal_level_i(8'd6),
-        .dvfs_level_i(8'd6), .domain_level_i(level), .slot_domain_i(ctrl_domains),
-        .idle_delay_i(32'd0), .cluster_access_i(2'b00), .access_hold_i(32'd0),
-        .recovery_hold_i(32'd32), .retired_i('0),
-        .pm_idle_o(idle), .rec_hold_o(rec), .access_only_o(access_only),
-        .load_clear_o(), .wd_tick_o(), .pm_boost_o(),
-        .smt_found_o(), .smt_core_o(), .smt_cluster_o(), .smt_update_o(),
-        .park_hold_o(), .park_parked_o(), .park_unpark_o(), .park_fail_o(),
-        .cerf_fb_req_o(), .cerf_fb_type_o(), .cerf_fb_clear_o(), .cerf_fb_set_o(),
-        .cerf_fb_evt_o(), .risk_o(), .pm_derate_o()
+        .clk_i(clk), .rst_ni(rst), .slot_i('{fenced: fenced, default: '0}), .late_i('0),
+        .queue_i('{waiting: '1, checkout_empty: '1, ready_empty: '1, default: '0}), .host_i('{domain: ctrl_domains, default: '0}),
+        .type_cfg_i('0), .cfg_i('{recovery_hold: 32'd32, default: '0}), .cluster_access_i(2'b00), .cerf_fb_done_i(1'b0),
+        .pm_i('{enable: 1'b1, dvfs: 1'b0, normal_level: 8'd6, dvfs_level: 8'd6, domain_level: level}),
+        .view_o(view), .smt_o(), .smt_update_o(), .park_o(), .cerf_fb_o(), .cerf_fb_evt_o()
     );
     bingo_hw_manager_pm #(
         .NUM_CLUSTERS_PER_CHIPLET(2), .NUM_CORES_PER_CLUSTER(1),

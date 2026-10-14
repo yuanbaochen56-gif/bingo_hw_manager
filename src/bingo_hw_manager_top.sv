@@ -6,7 +6,7 @@
 // - Fanchen Kong <fanchen.kong@kuleuven.be>
 // - Xiaoling Yi  <xiaoling.yi@kuleuven.be>
 // - Yunhao Deng  <yunhao.deng@kuleuven.be>
-
+`include "bingo_hw_manager/typedef.svh"
 module bingo_hw_manager_top #(
     // Top-level parameters can be defined here
     parameter int unsigned READY_AND_DONE_QUEUE_INTERFACE_TYPE = 1, // 1: CSR Req/Resp 0: Default AXi Lite Slave
@@ -818,11 +818,23 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] heartbeat_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_status_waiting_task;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] exited_q;
-    // Control plane (bingo_hw_manager_ctrl): power / load view of the slots
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_wd_tick, ctrl_wd_fast;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_boost;
-    // At-risk slots whose domain runs at most at the derate level, and late beats
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_derate;
+    // Port structs of slot vectors (bingo_hw_manager/typedef.svh), indexed
+    // [core][cluster] like the nets of this module
+    `BINGO_HW_MANAGER_TYPEDEF_SLOT_STATE_T(slot_state_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    `BINGO_HW_MANAGER_TYPEDEF_SMT_T(smt_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET,
+        cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER), cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
+    `BINGO_HW_MANAGER_TYPEDEF_PARK_T(park_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    `BINGO_HW_MANAGER_TYPEDEF_CTRL_QUEUE_T(ctrl_queue_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET,
+        CheckoutUsageWidth + 1)
+    `BINGO_HW_MANAGER_TYPEDEF_CTRL_HOST_T(ctrl_host_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    `BINGO_HW_MANAGER_TYPEDEF_CTRL_VIEW_T(ctrl_view_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    `BINGO_HW_MANAGER_TYPEDEF_TYPE_CFG_T(type_cfg_t, 2**CoreTypeIdWidth)
+    `BINGO_HW_MANAGER_TYPEDEF_CERF_FB_T(cerf_fb_t, CoreTypeIdWidth)
+    // Control plane (bingo_hw_manager_ctrl): what it reads of every slot, and
+    // its view of every slot (PM idle, boost, derate, watchdog tick, risk, ...)
+    slot_state_t                                                    slot_state;
+    ctrl_view_t                                                     ctrl_view;
+    // Late beats (bingo_hw_manager_watchdog)
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_late;
     logic [31:0][7:0]                                               pm_domain_level;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][5:0] ctrl_slot_domain;
@@ -833,15 +845,12 @@ module bingo_hw_manager_top #(
                 6'(bingo_hw_manager_core_power_domain_i[c][cl]) : 6'(PmMaxDomains);
         end
     end
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_pm_idle;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_rec_hold, ctrl_access_only;
     logic [31:0] pm_access_level;
     // Validate all 32 bits before the PM narrows the divider to eight bits.
     assign pm_access_level =
         (bingo_hw_manager_pm_access_level_i > 32'(bingo_hw_manager_normal_power_level_i[7:0]) &&
          bingo_hw_manager_pm_access_level_i < 32'(bingo_hw_manager_idle_power_level_i[7:0])) ?
         bingo_hw_manager_pm_access_level_i : 32'd0;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ctrl_load_clear;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect;
@@ -871,9 +880,7 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0] replay_head_logical_cluster;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_head_no_exec;
     logic                                  replay_exit_absorb;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] smt_found;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)-1:0]    smt_core;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)-1:0] smt_cluster;
+    smt_t                                  smt;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] route_exit_absorb;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] exit_absorb;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_head_no_replay;
@@ -929,7 +936,6 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WdClassWidth-1:0] wd_class_q, ready_class;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_moved_q, ready_moved;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_risk_confirm_valid;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] risk;
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//
@@ -1583,16 +1589,16 @@ module bingo_hw_manager_top #(
         .idle_power_level_i    ( bingo_hw_manager_idle_power_level_i    ),
         .normal_power_level_i  ( bingo_hw_manager_normal_power_level_i  ),
         .boost_power_level_i   ( bingo_hw_manager_boost_power_level_i   ),
-        .core_boost_i          ( ctrl_pm_boost                          ),
+        .core_boost_i          ( ctrl_view.boost                        ),
         .derate_power_level_i  ( device_axi_lite_data_t'(bingo_hw_manager_risk_policy_i[15:8]) ),
-        .core_derate_i         ( ctrl_pm_derate                         ),
+        .core_derate_i         ( ctrl_view.derate                       ),
         .pm_base_addr_i        ( bingo_hw_manager_pm_base_addr_i        ),
         .core_power_domain_i   ( bingo_hw_manager_core_power_domain_i   ),
         // Internal Core status: polling or fenced (bingo_hw_manager_power_view), so a
         // dead core does not keep its domain at the normal level
-        .core_status_waiting_task_i ( ctrl_pm_idle                     ),
+        .core_status_waiting_task_i ( ctrl_view.idle                   ),
         .access_power_level_i  ( device_axi_lite_data_t'(pm_access_level) ),
-        .core_access_only_i    ( ctrl_access_only                       ),
+        .core_access_only_i    ( ctrl_view.access_only                  ),
         // DVFS mode: monitor + notify host
         .pm_mode_i             ( bingo_hw_manager_pm_mode_i             ),
         .dvfs_clint_msip_addr_i( bingo_hw_manager_dvfs_clint_msip_addr_i),
@@ -1625,10 +1631,10 @@ module bingo_hw_manager_top #(
         .task_done_i           ( done_q_push                     ), // done reached the done FIFO: idle
         .heartbeat_i           ( heartbeat_valid                 ), // clears the timer (ignored once fenced)
         .waiting_task_i        ( core_status_waiting_task        ), // only feeds core_available
-        .tick_i                ( ctrl_wd_tick                    ), // slowed down in a slow power domain
+        .tick_i                ( ctrl_view.wd_tick               ), // slowed down in a slow power domain
         .late_cycles_i         ( wd_late_cycles                  ), // fault precursor threshold
         .late_thr_i            ( wd_late_slot                    ),
-        .risk_i                ( risk                            ), // registered ctrl risk bitmap
+        .risk_i                ( ctrl_view.risk                  ), // registered ctrl risk bitmap
         .risk_confirm_i        ( WatchdogCounterWidth'(bingo_hw_manager_risk_confirm_i) ),
         .risk_confirm_valid_i  ( wd_risk_use                     ),
         .suspect_thr_i         ( wd_suspect_thr                  ),
@@ -1681,7 +1687,7 @@ module bingo_hw_manager_top #(
                                                   bingo_hw_manager_risk_confirm_i < c_eff);
             // R keeps its A5 validity rule; C_ad wins only if strictly shorter.
             assign wd_adapt_confirm[c][cl] = wd_c_ad_valid[c][cl] &&
-                wd_c_ad[c][cl] < ((risk[c][cl] && wd_risk_confirm_valid[c][cl]) ?
+                wd_c_ad[c][cl] < ((ctrl_view.risk[c][cl] && wd_risk_confirm_valid[c][cl]) ?
                                   bingo_hw_manager_risk_confirm_i : c_eff);
             assign wd_risk_use[c][cl] = wd_risk_confirm_valid[c][cl] &&
                                         !wd_adapt_confirm[c][cl];
@@ -1721,7 +1727,7 @@ module bingo_hw_manager_top #(
         .late_ctrl_i(bingo_hw_manager_wd_late_i),
         .progress_i(wd_progress), .interval_i(wd_interval), .dispatch_i(ready_queue_pop),
         .done_i(done_q_push), .fenced_i(core_fenced), .busy_i(core_busy),
-        .class_i(wd_class_q), .moved_i(wd_moved_q), .fast_i(ctrl_wd_fast),
+        .class_i(wd_class_q), .moved_i(wd_moved_q), .fast_i(ctrl_view.wd_fast),
         .h_eff_i(wd_h_eff), .c_eff_i(wd_c_eff),
         .h_ad_o(wd_h_ad), .c_ad_o(wd_c_ad), .h_valid_o(wd_h_ad_valid),
         .c_valid_o(wd_c_ad_valid), .late_ad_o(wd_late_ad), .late_valid_o(wd_late_ad_valid)
@@ -1764,9 +1770,7 @@ module bingo_hw_manager_top #(
     // Parking. The request mask is bit (core + cluster * NUM_CORES).
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_req;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] risk_clear;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_hold;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_parked;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_unpark;
+    park_t                                                          park;
     // Logical slots with tasks in another core's checkout queue
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_moved;
     // HOLD or UNPARK: no new task of the slot may be placed
@@ -1778,14 +1782,10 @@ module bingo_hw_manager_top #(
             end
         end
     end
-    assign park_block = park_hold | park_unpark;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_fail;
+    assign park_block = park.hold | park.unpark;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_slot_push;
     // CERF degradation request (ctrl) and the cycle the register file commits it
-    logic                        cerf_fb_req;
-    logic [CoreTypeIdWidth-1:0]  cerf_fb_type;
-    logic [4:0]                  cerf_fb_clear;
-    logic [4:0]                  cerf_fb_set;
+    cerf_fb_t                    cerf_fb;
     logic                        cerf_fb_done;
     always_comb begin
         bingo_hw_manager_park_fail_o = '0;
@@ -1802,9 +1802,9 @@ module bingo_hw_manager_top #(
                 park_slot_push[c][cl] = checkout_queue_push[c][cl] || ready_queue_push[c][cl];
                 risk_clear[c][cl] = (idx < $bits(bingo_hw_manager_risk_clear_i)) &&
                                     bingo_hw_manager_risk_clear_i[idx];
-                if (idx < $bits(bingo_hw_manager_risk_o)) bingo_hw_manager_risk_o[idx] = risk[c][cl];
+                if (idx < $bits(bingo_hw_manager_risk_o)) bingo_hw_manager_risk_o[idx] = ctrl_view.risk[c][cl];
                 if (idx < $bits(bingo_hw_manager_park_fail_o)) begin
-                    bingo_hw_manager_park_fail_o[idx] = park_fail[c][cl] ||
+                    bingo_hw_manager_park_fail_o[idx] = park.fail[c][cl] ||
                         ((READY_AND_DONE_QUEUE_INTERFACE_TYPE != 1) && bingo_hw_manager_park_req_i[idx]);
                 end
             end
@@ -1817,6 +1817,43 @@ module bingo_hw_manager_top #(
             assign ctrl_load[c][cl] = {checkout_queue_full_raw[c][cl], checkout_queue_usage[c][cl]};
         end
     end
+    // Inputs of the control plane: slot state, queues, host settings, power state
+    ctrl_queue_t ctrl_queue;
+    ctrl_host_t  ctrl_host;
+    type_cfg_t   type_cfg;
+    ctrl_cfg_t   ctrl_cfg;
+    pm_view_t    ctrl_pm;
+    assign slot_state = '{fenced:   core_fenced,
+                          retired:  core_retired,
+                          stuck:    replay_stuck_slot,
+                          rejected: remote_rejected_q};
+    assign ctrl_queue = '{waiting:        core_status_waiting_task | exited_q,
+                          checkout_empty: checkout_queue_empty,
+                          ready_empty:    ready_queue_empty,
+                          push:           park_slot_push,
+                          moved:          park_moved,
+                          load:           ctrl_load};
+    assign ctrl_host  = '{park_req:   park_req,
+                          risk_clear: risk_clear,
+                          domain:     ctrl_slot_domain};
+    assign type_cfg   = '{cerf_fb_en:    cerf_fb_en_i,
+                          cerf_fb_clear: cerf_fb_clear_i,
+                          cerf_fb_set:   cerf_fb_set_i,
+                          fence_fb:      bingo_hw_manager_fence_fb_i};
+    assign ctrl_cfg   = '{idle_delay:     32'(bingo_hw_manager_idle_entry_delay_i),
+                          access_hold:    32'(bingo_hw_manager_access_wake_hold_i),
+                          recovery_hold:  bingo_hw_manager_recovery_hold_i,
+                          risk_thresh:    bingo_hw_manager_risk_policy_i[3:0],
+                          risk_action:    bingo_hw_manager_risk_policy_i[5:4],
+                          risk_epoch:     32'(bingo_hw_manager_risk_epoch_i),
+                          boost_policy:   bingo_hw_manager_boost_policy_i[0],
+                          boost_credit:   bingo_hw_manager_boost_policy_i[11:8],
+                          boost_load_min: bingo_hw_manager_boost_policy_i[23:16]};
+    assign ctrl_pm    = '{enable:       bingo_hw_manager_enable_idle_pm_i[0],
+                          dvfs:         bingo_hw_manager_pm_mode_i[0],
+                          normal_level: bingo_hw_manager_normal_power_level_i[7:0],
+                          dvfs_level:   bingo_hw_manager_dvfs_ack_i[7:0],
+                          domain_level: pm_domain_level};
     bingo_hw_manager_ctrl #(
         .NumCores(NUM_CORES_PER_CLUSTER),
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
@@ -1828,66 +1865,33 @@ module bingo_hw_manager_top #(
         .SubstituteL2TypeEn(SubstituteL2TypeEn),
         .SubstitutePolicy(SubstitutePolicy),
         .LoadWidth(CheckoutUsageWidth + 1),
-        .ParkSupported(READY_AND_DONE_QUEUE_INTERFACE_TYPE == 1)
+        .ParkSupported(READY_AND_DONE_QUEUE_INTERFACE_TYPE == 1),
+        .slot_state_t(slot_state_t),
+        .ctrl_queue_t(ctrl_queue_t),
+        .ctrl_host_t(ctrl_host_t),
+        .ctrl_view_t(ctrl_view_t),
+        .type_cfg_t(type_cfg_t),
+        .smt_t(smt_t),
+        .park_t(park_t),
+        .cerf_fb_t(cerf_fb_t)
     ) i_ctrl (
-        .clk_i          ( clk_i        ),
-        .rst_ni         ( rst_ni       ),
-        .fenced_i       ( core_fenced  ),
-        .waiting_i      ( core_status_waiting_task | exited_q ),
-        .load_i         ( ctrl_load        ),
-        .pm_enable_i    ( bingo_hw_manager_enable_idle_pm_i[0] ),
-        .pm_dvfs_i      ( bingo_hw_manager_pm_mode_i[0]        ),
-        .normal_level_i ( bingo_hw_manager_normal_power_level_i[7:0] ),
-        .dvfs_level_i   ( bingo_hw_manager_dvfs_ack_i[7:0]     ),
-        .domain_level_i ( pm_domain_level  ),
-        .slot_domain_i  ( ctrl_slot_domain ),
-        .idle_delay_i   ( 32'(bingo_hw_manager_idle_entry_delay_i) ),
+        .clk_i            ( clk_i                             ),
+        .rst_ni           ( rst_ni                            ),
+        .slot_i           ( slot_state                        ),
+        .late_i           ( wd_late                           ),
+        .queue_i          ( ctrl_queue                        ),
+        .host_i           ( ctrl_host                         ),
+        .type_cfg_i       ( type_cfg                          ),
+        .cfg_i            ( ctrl_cfg                          ),
+        .pm_i             ( ctrl_pm                           ),
         .cluster_access_i ( bingo_hw_manager_cluster_access_i ),
-        .access_hold_i  ( 32'(bingo_hw_manager_access_wake_hold_i) ),
-        .recovery_hold_i ( bingo_hw_manager_recovery_hold_i ),
-        .retired_i      ( core_retired ),
-        .park_req_i     ( park_req         ),
-        .checkout_empty_i ( checkout_queue_empty ),
-        .ready_empty_i  ( ready_queue_empty ),
-        .slot_push_i    ( park_slot_push   ),
-        .moved_i        ( park_moved       ),
-        .stuck_i        ( replay_stuck_slot ),
-        .rejected_i     ( remote_rejected_q ),
-        .cerf_fb_en_i   ( cerf_fb_en_i     ),
-        .fence_fb_i     ( bingo_hw_manager_fence_fb_i ),
-        .cerf_fb_clear_i( cerf_fb_clear_i  ),
-        .cerf_fb_set_i  ( cerf_fb_set_i    ),
-        .cerf_fb_done_i ( cerf_fb_done     ),
-        .late_i         ( wd_late          ),
-        .risk_thresh_i  ( bingo_hw_manager_risk_policy_i[3:0] ),
-        .risk_action_i  ( bingo_hw_manager_risk_policy_i[5:4] ),
-        .risk_epoch_i   ( 32'(bingo_hw_manager_risk_epoch_i) ),
-        .risk_clear_i   ( risk_clear       ),
-        .boost_policy_i ( bingo_hw_manager_boost_policy_i[0]     ),
-        .boost_credit_i ( bingo_hw_manager_boost_policy_i[11:8]  ),
-        .boost_load_min_i ( bingo_hw_manager_boost_policy_i[23:16] ),
-        .wd_tick_o      ( ctrl_wd_tick     ),
-        .wd_fast_o      ( ctrl_wd_fast     ),
-        .pm_boost_o     ( ctrl_pm_boost    ),
-        .pm_idle_o      ( ctrl_pm_idle     ),
-        .rec_hold_o     ( ctrl_rec_hold    ),
-        .access_only_o  ( ctrl_access_only ),
-        .load_clear_o   ( ctrl_load_clear  ),
-        .smt_found_o    ( smt_found    ),
-        .smt_core_o     ( smt_core     ),
-        .smt_cluster_o  ( smt_cluster  ),
-        .smt_update_o   ( smt_update   ),
-        .park_hold_o    ( park_hold    ),
-        .park_parked_o  ( park_parked  ),
-        .park_unpark_o  ( park_unpark  ),
-        .park_fail_o    ( park_fail    ),
-        .cerf_fb_req_o  ( cerf_fb_req  ),
-        .cerf_fb_type_o ( cerf_fb_type ),
-        .cerf_fb_clear_o( cerf_fb_clear ),
-        .cerf_fb_set_o  ( cerf_fb_set  ),
-        .cerf_fb_evt_o  ( cerf_fb_evt_o ),
-        .risk_o         ( risk         ),
-        .pm_derate_o    ( ctrl_pm_derate )
+        .cerf_fb_done_i   ( cerf_fb_done                      ),
+        .view_o           ( ctrl_view                         ),
+        .smt_o            ( smt                               ),
+        .smt_update_o     ( smt_update                        ),
+        .park_o           ( park                              ),
+        .cerf_fb_o        ( cerf_fb                           ),
+        .cerf_fb_evt_o    ( cerf_fb_evt_o                     )
     );
 
     bingo_hw_manager_replay_ctrl #(
@@ -1915,9 +1919,9 @@ module bingo_hw_manager_top #(
         .export_type_ready_i        ( export_type_ready           ),
         .remote_type_en_i           ( remote_export_type_en       ),
         .bounce_ready_i             ( !reject_pending             ),
-        .smt_found_i                ( smt_found                   ),
-        .smt_core_i                 ( smt_core                    ),
-        .smt_cluster_i              ( smt_cluster                 ),
+        .smt_found_i                ( smt.found                   ),
+        .smt_core_i                 ( smt.core                    ),
+        .smt_cluster_i              ( smt.cluster                 ),
         .smt_update_i               ( smt_update                  ),
         .retired_o               ( core_retired           ),
         .ready_flush_o           ( replay_ready_flush     ),
@@ -1951,9 +1955,9 @@ module bingo_hw_manager_top #(
         .head_i                 ( checkout_queue_data_out     ),
         .head_tag_i             ( checkout_remote_tag_out     ),
         .head_imported_i        ( checkout_head_imported      ),
-        .smt_found_i            ( smt_found                   ),
-        .smt_core_i             ( smt_core                    ),
-        .smt_cluster_i          ( smt_cluster                 ),
+        .smt_found_i            ( smt.found                   ),
+        .smt_core_i             ( smt.core                    ),
+        .smt_cluster_i          ( smt.cluster                 ),
         .remote_type_en_i       ( remote_export_type_en       ),
         .head_logical_core_o    ( replay_head_logical         ),
         .head_logical_cluster_o ( replay_head_logical_cluster ),
@@ -2009,12 +2013,12 @@ module bingo_hw_manager_top #(
         .stuck_i               ( replay_stuck_slot                        ),
         .rejected_i            ( remote_rejected_q                        ),
         .remote_type_en_i      ( remote_export_type_en                    ),
-        .smt_found_i           ( smt_found                                ),
-        .smt_core_i            ( smt_core                                 ),
-        .smt_cluster_i         ( smt_cluster                              ),
+        .smt_found_i           ( smt.found                                ),
+        .smt_core_i            ( smt.core                                 ),
+        .smt_cluster_i         ( smt.cluster                              ),
         .smt_update_i          ( smt_update                               ),
         .park_hold_i           ( park_block                               ),
-        .park_parked_i         ( park_parked                              ),
+        .park_parked_i         ( park.parked                              ),
         .outstanding_i         ( remap_outstanding_q                      ),
         .replay_pending_i      ( replay_pending                           ),
         .replay_move_cluster_i ( replay_move_cluster                      ),
@@ -2204,7 +2208,7 @@ module bingo_hw_manager_top #(
             for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
                     fence_reason[c][cl] = wd_adapt_confirm[c][cl] ? 2'd3 :
-                        (risk[c][cl] && wd_risk_confirm_valid[c][cl] &&
+                        (ctrl_view.risk[c][cl] && wd_risk_confirm_valid[c][cl] &&
                         bingo_hw_manager_risk_confirm_i != 0) ? 2'd1 :
                         ((wd_confirm_thr[c][cl] != 0) ? 2'd2 : 2'd0);
         end
@@ -2222,16 +2226,16 @@ module bingo_hw_manager_top #(
             .fenced_i           ( core_fenced            ),
             .stuck_i            ( replay_stuck_slot      ),
             .blocked_i          ( replay_blocked_o       ),
-            .risk_i             ( risk                   ),
-            .parked_i           ( park_parked            ),
-            .park_fail_i        ( park_fail              ),
+            .risk_i             ( ctrl_view.risk         ),
+            .parked_i           ( park.parked            ),
+            .park_fail_i        ( park.fail              ),
             .retired_i          ( core_retired           ),
-            .rec_hold_i         ( ctrl_rec_hold          ),
+            .rec_hold_i         ( ctrl_view.rec_hold     ),
             .fence_reason_i     ( fence_reason           ),
             .exit_absorb_i      ( exit_absorb            ),
             .exit_desc_i        ( checkout_queue_data_in ),
-            .cerf_fb_req_i      ( cerf_fb_req            ),
-            .cerf_fb_type_i     ( cerf_fb_type           ),
+            .cerf_fb_req_i      ( cerf_fb.req            ),
+            .cerf_fb_type_i     ( cerf_fb.core_type      ),
             .cerf_fb_done_i     ( cerf_fb_done           ),
             .cerf_fb_en_i       ( cerf_fb_en_i           ),
             .cerf_fb_evt_i      ( cerf_fb_evt_o          ),
@@ -2296,10 +2300,10 @@ module bingo_hw_manager_top #(
             park_unpark_log_q       <= '0;
         end else begin
             core_dead_suspect_log_q <= core_dead_suspect;
-            park_hold_log_q         <= park_hold;
-            park_parked_log_q       <= park_parked;
-            park_fail_log_q         <= park_fail;
-            park_unpark_log_q       <= park_unpark;
+            park_hold_log_q         <= park.hold;
+            park_parked_log_q       <= park.parked;
+            park_fail_log_q         <= park.fail;
+            park_unpark_log_q       <= park.unpark;
             core_fenced_log_q       <= core_fenced;
             core_retired_log_q      <= core_retired;
             replay_stuck_log_q      <= replay_stuck_slot;
@@ -2317,29 +2321,29 @@ module bingo_hw_manager_top #(
                         $display("[BINGO_WD] %0t chip=%0d core=%0d cluster=%0d dead_suspect=%0b fenced=%0b",
                                  $time, chip_id_i, c, cl, core_dead_suspect[c][cl], core_fenced[c][cl]);
                     end
-                    if (park_hold[c][cl] && !park_hold_log_q[c][cl]) begin
+                    if (park.hold[c][cl] && !park_hold_log_q[c][cl]) begin
                         $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d HOLD",
                                  $time, chip_id_i, c, cl);
                     end
-                    if (park_parked[c][cl] && !park_parked_log_q[c][cl]) begin
+                    if (park.parked[c][cl] && !park_parked_log_q[c][cl]) begin
                         $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d PARKED -> core=%0d cluster=%0d",
-                                 $time, chip_id_i, c, cl, smt_core[c][cl], smt_cluster[c][cl]);
+                                 $time, chip_id_i, c, cl, smt.core[c][cl], smt.cluster[c][cl]);
                     end
-                    if (park_fail[c][cl] && !park_fail_log_q[c][cl]) begin
+                    if (park.fail[c][cl] && !park_fail_log_q[c][cl]) begin
                         $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d FAIL",
                                  $time, chip_id_i, c, cl);
                     end
-                    if (park_unpark[c][cl] && !park_unpark_log_q[c][cl]) begin
+                    if (park.unpark[c][cl] && !park_unpark_log_q[c][cl]) begin
                         $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d UNPARK (%0d tasks left elsewhere)",
                                  $time, chip_id_i, c, cl, remap_outstanding_q[c][cl]);
                     end
-                    if (park_parked_log_q[c][cl] && !park_parked[c][cl] && park_unpark_log_q[c][cl] &&
-                        !core_fenced[c][cl] && !park_fail[c][cl]) begin
+                    if (park_parked_log_q[c][cl] && !park.parked[c][cl] && park_unpark_log_q[c][cl] &&
+                        !core_fenced[c][cl] && !park.fail[c][cl]) begin
                         $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d UNPARKED",
                                  $time, chip_id_i, c, cl);
                     end
                     if ((park_hold_log_q[c][cl] || park_parked_log_q[c][cl]) &&
-                        !park_hold[c][cl] && !park_parked[c][cl] && core_fenced[c][cl]) begin
+                        !park.hold[c][cl] && !park.parked[c][cl] && core_fenced[c][cl]) begin
                         $display("[BINGO_PARK] %0t chip=%0d core=%0d cluster=%0d dropped, fenced",
                                  $time, chip_id_i, c, cl);
                     end
@@ -2456,7 +2460,7 @@ module bingo_hw_manager_top #(
         .rst_ni             (rst_ni),
         .task_dispatched_i  (ready_queue_pop),
         .task_done_i        (done_q_push),
-        .clear_i            (ctrl_load_clear),
+        .clear_i            (ctrl_view.load_clear),
         .pending_per_core_o (/* CSR readable — connect when needed */),
         .total_pending_o    (load_total_pending_o)
     );
@@ -2473,9 +2477,9 @@ module bingo_hw_manager_top #(
         .cerf_state_o     ( cerf_state             ),
         .cerf_write_data_i( cerf_write_data_i      ),
         .cerf_write_en_i  ( cerf_write_en_i        ),
-        .policy_req_i     ( cerf_fb_req            ),
-        .policy_clear_i   ( cerf_fb_clear          ),
-        .policy_set_i     ( cerf_fb_set            ),
+        .policy_req_i     ( cerf_fb.req            ),
+        .policy_clear_i   ( cerf_fb.clear          ),
+        .policy_set_i     ( cerf_fb.set            ),
         .policy_done_o    ( cerf_fb_done           )
     );
 

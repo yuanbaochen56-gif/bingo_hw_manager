@@ -41,33 +41,33 @@ initial begin : park_test
     @(negedge clk_i);
     park_req[0] = 32'd1;
     fork : wait_hold
-        wait (gen_dut[0].i_dut.park_hold[0][0] === 1'b1);
+        wait (gen_dut[0].i_dut.park.hold[0][0] === 1'b1);
         begin
             repeat (50) @(posedge clk_i);
             $fatal(1, "core 0 did not enter HOLD");
         end
     join_any
     disable wait_hold;
-    if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b0) $fatal(1, "PARKED before the in-flight task drained");
+    if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b0) $fatal(1, "PARKED before the in-flight task drained");
 
     task_queue_master[0].write(task_queue_base[0], '0, park_task_2, '1, resp);
     busy_with_heartbeat(0, 0, 0, 80, 20);
     if (core1_got) $fatal(1, "task %0d reached core 1 while core 0 still held task 1", core1_id);
     if (gen_dut[0].i_dut.core_fenced[0][0] !== 1'b0) $fatal(1, "core 0 was fenced during the park");
-    if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b0) $fatal(1, "PARKED while task 1 was still in flight");
+    if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b0) $fatal(1, "PARKED while task 1 was still in flight");
 
     csr_done(0, 0, 0, 1);
     fork : wait_parked
-        wait (gen_dut[0].i_dut.park_parked[0][0] === 1'b1);
+        wait (gen_dut[0].i_dut.park.parked[0][0] === 1'b1);
         begin
             repeat (500) @(posedge clk_i);
             $fatal(1, "core 0 did not become PARKED (hold %0b fail %0b)",
-                   gen_dut[0].i_dut.park_hold[0][0], gen_dut[0].i_dut.park_fail[0][0]);
+                   gen_dut[0].i_dut.park.hold[0][0], gen_dut[0].i_dut.park.fail[0][0]);
         end
     join_any
     disable wait_parked;
     if (park_fail[0][0] !== 1'b0) $fatal(1, "park failed with a live substitute");
-    if (gen_dut[0].i_dut.smt_core[0][0] !== 1) $fatal(1, "SMT sent core 0 to core %0d", gen_dut[0].i_dut.smt_core[0][0]);
+    if (gen_dut[0].i_dut.smt.core[0][0] !== 1) $fatal(1, "SMT sent core 0 to core %0d", gen_dut[0].i_dut.smt.core[0][0]);
 
     fork : wait_task2
         wait (core1_got);

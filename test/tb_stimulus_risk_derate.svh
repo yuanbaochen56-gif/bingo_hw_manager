@@ -46,7 +46,7 @@ initial begin : risk_derate_test
             repeat (50) @(posedge clk_i);
             if (risk[0][0] !== 1'b1) $fatal(1, "[DERATE] core 0 not at risk after a late beat");
             if (park_fail[0][0] !== 1'b1) $fatal(1, "[DERATE] park did not fail without a substitute");
-            if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b0) $fatal(1, "[DERATE] parked without a substitute");
+            if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b0) $fatal(1, "[DERATE] parked without a substitute");
             if (rd_level() != RD_DERATE_LEVEL) $fatal(1, "[DERATE] level %0d while core 0 is at risk, expected %0d", rd_level(), RD_DERATE_LEVEL);
             // Task 2 still runs on core 0
             task_queue_master[0].write(task_queue_base[0], '0, t2, '1, resp);

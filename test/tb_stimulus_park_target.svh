@@ -29,7 +29,7 @@ initial begin : park_target_test
     @(negedge clk_i);
     park_req[0] = 32'd1;
     repeat (5) @(posedge clk_i);
-    if (gen_dut[0].i_dut.park_hold[0][0] !== 1'b1) $fatal(1, "core 0 did not enter HOLD");
+    if (gen_dut[0].i_dut.park.hold[0][0] !== 1'b1) $fatal(1, "core 0 did not enter HOLD");
     // core 0 keeps working on task 1 (heartbeats) until core 1 is fenced
     fork : wait_fence
         wait (gen_dut[0].i_dut.core_fenced[1][0] === 1'b1);
@@ -41,11 +41,11 @@ initial begin : park_target_test
     join_any
     disable wait_fence;
     repeat (5) @(posedge clk_i);
-    if (gen_dut[0].i_dut.smt_core[1][0] !== 0) $fatal(1, "fenced core 1 goes to core %0d, expected 0", gen_dut[0].i_dut.smt_core[1][0]);
-    if (gen_dut[0].i_dut.park_hold[0][0] !== 1'b0 || park_fail[0][0] !== 1'b1)
+    if (gen_dut[0].i_dut.smt.core[1][0] !== 0) $fatal(1, "fenced core 1 goes to core %0d, expected 0", gen_dut[0].i_dut.smt.core[1][0]);
+    if (gen_dut[0].i_dut.park.hold[0][0] !== 1'b0 || park_fail[0][0] !== 1'b1)
         $error("[PARK_TARGET] core 0 runs core 1's tasks but kept its park (hold %0b fail %0b)",
-               gen_dut[0].i_dut.park_hold[0][0], park_fail[0][0]);
-    if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b0) $error("[PARK_TARGET] core 0 parked");
+               gen_dut[0].i_dut.park.hold[0][0], park_fail[0][0]);
+    if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b0) $error("[PARK_TARGET] core 0 parked");
     csr_done(0, 0, 0, 1);
     csr_read(0, 0, 0, CSR_READY, id0);                    // the replayed task 11
     if (id0[TaskIdWidth-1:0] != 11) $error("[PARK_TARGET] core 0 read task %0d, expected the replayed 11", id0);
@@ -59,7 +59,7 @@ initial begin : park_target_test
     park_req[0] = 32'd1;
     for (int t = 0; t < 20; t++) begin
         @(posedge clk_i);
-        if (gen_dut[0].i_dut.park_hold[0][0] !== 1'b0) $error("[PARK_TARGET] HOLD entered by the target of a fenced core");
+        if (gen_dut[0].i_dut.park.hold[0][0] !== 1'b0) $error("[PARK_TARGET] HOLD entered by the target of a fenced core");
     end
     if (park_fail[0][0] !== 1'b1) $error("[PARK_TARGET] second request did not fail");
     $display("Park target test passed");

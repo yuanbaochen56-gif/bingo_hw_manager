@@ -29,18 +29,18 @@ always @(posedge clk_i) begin
                         expect_event(3, slot, 16'(fence_reason[c][cl]));
                     if (i_dut.replay_stuck_slot[c][cl] && !old[3][c][cl]) expect_event(5, slot, 0);
                     if (i_dut.replay_blocked_o[c][cl] && !old[4][c][cl]) expect_event(6, slot, 0);
-                    if (i_dut.risk[c][cl] && !old[5][c][cl]) expect_event(7, slot, 0);
-                    if (i_dut.park_parked[c][cl] && !old[6][c][cl]) expect_event(8, slot, 0);
-                    if (i_dut.park_fail[c][cl] && !old[7][c][cl]) expect_event(9, slot, 0);
+                    if (i_dut.ctrl_view.risk[c][cl] && !old[5][c][cl]) expect_event(7, slot, 0);
+                    if (i_dut.park.parked[c][cl] && !old[6][c][cl]) expect_event(8, slot, 0);
+                    if (i_dut.park.fail[c][cl] && !old[7][c][cl]) expect_event(9, slot, 0);
                     if (i_dut.core_retired[c][cl] && !old[8][c][cl]) expect_event(11, slot, 0);
-                    fence_reason[c][cl] = (i_dut.risk[c][cl] && i_dut.wd_risk_confirm_valid[c][cl] &&
+                    fence_reason[c][cl] = (i_dut.ctrl_view.risk[c][cl] && i_dut.wd_risk_confirm_valid[c][cl] &&
                         risk_confirm[chiplet_idx] != 0) ? 1 :
                         ((i_dut.wd_confirm_thr[c][cl] != 0) ? 2 : 0);
                 end
             end
-            if (i_dut.cerf_fb_done && i_dut.cerf_fb_req)
-                expect_event(10, 8'(i_dut.cerf_fb_type),
-                    {6'b0, i_dut.cerf_fb_set, i_dut.cerf_fb_clear});
+            if (i_dut.cerf_fb_done && i_dut.cerf_fb.req)
+                expect_event(10, 8'(i_dut.cerf_fb.core_type),
+                    {6'b0, i_dut.cerf_fb.set, i_dut.cerf_fb.clear});
             if (i_dut.replay_move_fire && !i_dut.replay_bounce) begin
                 automatic logic [7:0] code = i_dut.replay_data.task_type == 1 ? 13 : 4;
                 expect_event(code, {4'(i_dut.replay_src_cluster), 4'(i_dut.replay_src_core)},
@@ -70,9 +70,9 @@ always @(posedge clk_i) begin
         old[2] = i_dut.core_fenced;
         old[3] = i_dut.replay_stuck_slot;
         old[4] = i_dut.replay_blocked_o;
-        old[5] = i_dut.risk;
-        old[6] = i_dut.park_parked;
-        old[7] = i_dut.park_fail;
+        old[5] = i_dut.ctrl_view.risk;
+        old[6] = i_dut.park.parked;
+        old[7] = i_dut.park.fail;
         old[8] = i_dut.core_retired;
         cycle++;
     end

@@ -49,7 +49,7 @@ initial begin : risk_decay_test
     end
     if (risk[0][0] !== 1'b1) $fatal(1, "[DECAY] not at risk after a burst of three late beats");
     fork : wait_parked
-        wait (gen_dut[0].i_dut.park_parked[0][0] === 1'b1);
+        wait (gen_dut[0].i_dut.park.parked[0][0] === 1'b1);
         begin
             repeat (200) @(posedge clk_i);
             $fatal(1, "[DECAY] at-risk core 0 not parked");

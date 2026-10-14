@@ -40,23 +40,23 @@ module tb_bingo_hw_manager_recovery_hold;
         .dvfs_request_o(), .domain_level_o(level),
         .pm_axi_lite_req_o(req), .pm_axi_lite_resp_i(resp)
     );
+    // The control plane under test; its port structs (bingo_hw_manager/typedef.svh)
+    `include "bingo_hw_manager/typedef.svh"
+    `BINGO_HW_MANAGER_TYPEDEF_CTRL_ALL(4, 1, 2, 1, 1, 4)
+    ctrl_view_t view; smt_t smt;
+    assign {idle, active, access_only} = {view.idle, view.rec_hold, view.access_only};
+    assign {load_clear, tick_wd, boost} = {view.load_clear, view.wd_tick, view.boost};
+    assign {found, smt_core, smt_cluster} = {smt.found, smt.core, smt.cluster};
     bingo_hw_manager_ctrl #(
-        .NumCores(4), .NumClusters(1), .CoreIdWidth(2), .ClusterIdWidth(1),
-        .CoreTypeIdWidth(1), .CoreTypeId(4'b0111)
+        .NumCores(4), .NumClusters(1), .CoreIdWidth(2), .ClusterIdWidth(1), .CoreTypeIdWidth(1), .CoreTypeId(4'b0111),
+        .slot_state_t(slot_state_t), .ctrl_queue_t(ctrl_queue_t), .ctrl_host_t(ctrl_host_t), .ctrl_view_t(ctrl_view_t),
+        .type_cfg_t(type_cfg_t), .smt_t(smt_t), .park_t(park_t), .cerf_fb_t(cerf_fb_t)
     ) dut (
-        .clk_i(clk), .rst_ni(rst), .fenced_i(fenced), .waiting_i(waiting),
-        .load_i('0), .pm_enable_i(1'b1), .pm_dvfs_i(1'b0),
-        .normal_level_i(8'd6), .dvfs_level_i(8'd6), .domain_level_i('0),
-        .slot_domain_i(domains), .idle_delay_i(32'd0),
-        .cluster_access_i(access), .access_hold_i(32'd4),
-        .recovery_hold_i(hold_cycles), .retired_i(retired),
-        .pm_idle_o(idle), .rec_hold_o(active), .access_only_o(access_only),
-        .load_clear_o(load_clear), .wd_tick_o(tick_wd), .pm_boost_o(boost),
-        .smt_found_o(found), .smt_core_o(smt_core), .smt_cluster_o(smt_cluster),
-        .smt_update_o(update), .park_hold_o(), .park_parked_o(),
-        .park_unpark_o(), .park_fail_o(), .cerf_fb_req_o(), .cerf_fb_type_o(),
-        .cerf_fb_clear_o(), .cerf_fb_set_o(), .cerf_fb_evt_o(), .risk_o(),
-        .pm_derate_o()
+        .clk_i(clk), .rst_ni(rst), .slot_i('{fenced: fenced, retired: retired, default: '0}), .late_i('0),
+        .queue_i('{waiting: waiting, checkout_empty: '1, ready_empty: '1, default: '0}), .host_i('{domain: domains, default: '0}),
+        .type_cfg_i('0), .cfg_i('{access_hold: 32'd4, recovery_hold: hold_cycles, default: '0}), .cluster_access_i(access),
+        .pm_i('{enable: 1'b1, dvfs: 1'b0, normal_level: 8'd6, dvfs_level: 8'd6, domain_level: '0}), .cerf_fb_done_i(1'b0),
+        .view_o(view), .smt_o(smt), .smt_update_o(update), .park_o(), .cerf_fb_o(), .cerf_fb_evt_o()
     );
     logic [31:0] cycle = 0, count, pop = 0;
     logic [3:0][0:0] seen = '0;

@@ -113,9 +113,9 @@ initial begin : fence_fb_test
     cerf_fb_en[0][FB_TYPE]    = 1'b1;
     cerf_write_bitmask(0, 32'h1);
     // Live slots keep themselves in the table, with or without the bit
-    if (!gen_dut[0].i_dut.smt_found[FB_VICTIM_CORE][0] ||
-        gen_dut[0].i_dut.smt_core[FB_VICTIM_CORE][0] != FB_VICTIM_CORE ||
-        gen_dut[0].i_dut.smt_cluster[FB_VICTIM_CORE][0] != 0)
+    if (!gen_dut[0].i_dut.smt.found[FB_VICTIM_CORE][0] ||
+        gen_dut[0].i_dut.smt.core[FB_VICTIM_CORE][0] != FB_VICTIM_CORE ||
+        gen_dut[0].i_dut.smt.cluster[FB_VICTIM_CORE][0] != 0)
         $fatal(1, "[FENCE_FB] live victim entry changed");
     // The AXI-Lite master expects to start on a clock edge
     @(posedge clk_i);
@@ -152,7 +152,7 @@ initial begin : fence_fb_test
             end
         join_any
         disable wait_switch;
-        if (gen_dut[0].i_dut.smt_found[FB_VICTIM_CORE][0])
+        if (gen_dut[0].i_dut.smt.found[FB_VICTIM_CORE][0])
             $fatal(1, "[FENCE_FB] table kept a substitute for the fenced victim");
         fb_wait_done(2, 2000);
         fb_wait_done(4, 2000);
@@ -191,12 +191,12 @@ initial begin : fence_fb_test
             end
         join_any
         disable wait_replayed;
-        if (!gen_dut[0].i_dut.smt_found[FB_VICTIM_CORE][0] ||
-            gen_dut[0].i_dut.smt_core[FB_VICTIM_CORE][0] != FB_SUB_CORE ||
-            gen_dut[0].i_dut.smt_cluster[FB_VICTIM_CORE][0] != 1)
+        if (!gen_dut[0].i_dut.smt.found[FB_VICTIM_CORE][0] ||
+            gen_dut[0].i_dut.smt.core[FB_VICTIM_CORE][0] != FB_SUB_CORE ||
+            gen_dut[0].i_dut.smt.cluster[FB_VICTIM_CORE][0] != 1)
             $fatal(1, "[FENCE_FB] substitute is core %0d cluster %0d",
-                   gen_dut[0].i_dut.smt_core[FB_VICTIM_CORE][0],
-                   gen_dut[0].i_dut.smt_cluster[FB_VICTIM_CORE][0]);
+                   gen_dut[0].i_dut.smt.core[FB_VICTIM_CORE][0],
+                   gen_dut[0].i_dut.smt.cluster[FB_VICTIM_CORE][0]);
         fb_wait_done(4, 2000);
         @(posedge clk_i);
         task_queue_master[0].write(task_queue_base[0], '0, fb_task[5], '1, resp);
@@ -219,8 +219,8 @@ initial begin : fence_fb_test
             $fatal(1, "[FENCE_FB] exits: absorbed %0d, ready pushes %0d / %0d",
                    fb_exit_absorbs, fb_ready_pushes[5], fb_ready_pushes[6]);
         $display("Fence fallback replay case passed: substitute core %0d cluster %0d",
-                 gen_dut[0].i_dut.smt_core[FB_VICTIM_CORE][0],
-                 gen_dut[0].i_dut.smt_cluster[FB_VICTIM_CORE][0]);
+                 gen_dut[0].i_dut.smt.core[FB_VICTIM_CORE][0],
+                 gen_dut[0].i_dut.smt.cluster[FB_VICTIM_CORE][0]);
     end
     $finish;
 end

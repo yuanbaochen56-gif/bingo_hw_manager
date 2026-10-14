@@ -67,17 +67,17 @@ initial begin : risk_park_test
     if (gen_dut[0].i_dut.core_dead_suspect[0][0] !== 1'b0) $fatal(1, "[RISK] dead_suspect below the heartbeat timeout");
     csr_done(0, 0, 0, 3);
     fork : wait_parked
-        wait (gen_dut[0].i_dut.park_parked[0][0] === 1'b1);
+        wait (gen_dut[0].i_dut.park.parked[0][0] === 1'b1);
         begin
             repeat (200) @(posedge clk_i);
             $fatal(1, "[RISK] core 0 not PARKED (risk %0b hold %0b fail %0b count %0d)", risk[0][0],
-                   gen_dut[0].i_dut.park_hold[0][0], gen_dut[0].i_dut.park_fail[0][0], rp_cnt());
+                   gen_dut[0].i_dut.park.hold[0][0], gen_dut[0].i_dut.park.fail[0][0], rp_cnt());
         end
     join_any
     disable wait_parked;
     if (risk[0][0] !== 1'b1) $fatal(1, "[RISK] parked without being at risk");
     if (park_fail[0][0] !== 1'b0) $fatal(1, "[RISK] park failed with a live substitute");
-    if (gen_dut[0].i_dut.smt_core[0][0] !== 1) $fatal(1, "[RISK] SMT sent core 0 to core %0d", gen_dut[0].i_dut.smt_core[0][0]);
+    if (gen_dut[0].i_dut.smt.core[0][0] !== 1) $fatal(1, "[RISK] SMT sent core 0 to core %0d", gen_dut[0].i_dut.smt.core[0][0]);
 
     // 4. Later tasks of logical core 0 run on core 1; core 0 is idle, not fenced
     core0_got = 1'b0;
@@ -105,7 +105,7 @@ initial begin : risk_park_test
     risk_clear[0] = 32'd0;
     if (risk[0][0] !== 1'b0 || rp_cnt() != 0) $fatal(1, "[RISK] clear left risk %0b count %0d", risk[0][0], rp_cnt());
     fork : wait_back
-        wait (gen_dut[0].i_dut.park_parked[0][0] === 1'b0 && gen_dut[0].i_dut.park_unpark[0][0] === 1'b0);
+        wait (gen_dut[0].i_dut.park.parked[0][0] === 1'b0 && gen_dut[0].i_dut.park.unpark[0][0] === 1'b0);
         begin
             repeat (200) @(posedge clk_i);
             $fatal(1, "[RISK] core 0 did not move back after the clear");

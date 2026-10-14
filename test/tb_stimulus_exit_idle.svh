@@ -59,7 +59,7 @@ initial begin : exit_idle_test
     repeat (100) @(posedge clk_i);
     if (!gen_dut[0].i_dut.exited_q[0][1] || gen_dut[0].i_dut.exited_q[1][0])
         $fatal(1, "[EXIT_IDLE] wrong exit slot");
-    if (gen_dut[0].i_dut.ctrl_pm_boost[0][1]) $fatal(1, "[EXIT_IDLE] exited survivor still a boost candidate");
+    if (gen_dut[0].i_dut.ctrl_view.boost[0][1]) $fatal(1, "[EXIT_IDLE] exited survivor still a boost candidate");
     ei_expect("capacity exit", PM_BOOST_LEVEL, PM_IDLE_LEVEL);
     csr_write(0, 1, 0, CSR_HEARTBEAT, 1);
     repeat (100) @(posedge clk_i);
@@ -69,7 +69,7 @@ initial begin : exit_idle_test
     boost_policy[0] = '0; // P3b: the substitute must also idle after its real exit
     csr_write(0, 0, 1, CSR_HEARTBEAT, HEARTBEAT_EXIT);
     repeat (100) @(posedge clk_i);
-    if (!gen_dut[0].i_dut.exited_q[1][0] || gen_dut[0].i_dut.ctrl_pm_boost[1][0])
+    if (!gen_dut[0].i_dut.exited_q[1][0] || gen_dut[0].i_dut.ctrl_view.boost[1][0])
         $fatal(1, "[EXIT_IDLE] exited substitute still a boost candidate");
     ei_expect("substitute exit", PM_IDLE_LEVEL, PM_IDLE_LEVEL);
 

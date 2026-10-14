@@ -25,7 +25,7 @@ initial begin : replay_with_risk
         csr_done(0, 0, 0, id);
         repeat (5) @(posedge clk_i);
     end
-    if (!risk[0][0] || |park_fail[0] || gen_dut[0].i_dut.park_hold[0][0])
+    if (!risk[0][0] || |park_fail[0] || gen_dut[0].i_dut.park.hold[0][0])
         $fatal(1, "[RISK_CONFIRM] did not register action-zero risk");
     task_queue_master[0].write(task_queue_base[0], '0, rc_task(3), '1, resp);
     csr_read(0, 0, 0, CSR_READY, got);

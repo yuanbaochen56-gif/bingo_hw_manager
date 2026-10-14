@@ -49,7 +49,7 @@ initial begin
     task_queue_master[0].write(task_queue_base[0], '0,
         pack_normal_task(2'b00, 1, 0, 0, 0, 1'b0, '0, 1'b0, 1'b0, 0, 0, '0), '1, resp);
     servo_level(6);
-    if (gen_dut[0].i_dut.ctrl_access_only[0][0])
+    if (gen_dut[0].i_dut.ctrl_view.access_only[0][0])
         $fatal(1, "[ACCESS_LEVEL] genuinely busy slot marked access-only");
     $display("External access servo validation and derate passed");
     $finish;

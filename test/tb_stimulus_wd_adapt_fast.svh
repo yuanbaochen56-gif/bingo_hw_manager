@@ -22,14 +22,14 @@ logic [31:0][7:0] forced_levels;
 task automatic force_level(input int unsigned level);
     forced_levels = '0;
     forced_levels[1] = 8'(level);
-    force gen_dut[0].i_dut.i_ctrl.domain_level_i = forced_levels;
+    force gen_dut[0].i_dut.i_ctrl.pm_i.domain_level = forced_levels;
     #1;
 endtask
 
 task automatic expect_fast(input bit fast, input string what);
-    if (gen_dut[0].i_dut.ctrl_wd_fast[0][0] !== fast || gen_dut[0].i_dut.ctrl_wd_fast[1][0] !== fast)
+    if (gen_dut[0].i_dut.ctrl_view.wd_fast[0][0] !== fast || gen_dut[0].i_dut.ctrl_view.wd_fast[1][0] !== fast)
         $fatal(1, "[ADAPT_FAST] %s: fast %b, expected %b", what,
-               gen_dut[0].i_dut.ctrl_wd_fast[1:0], fast);
+               gen_dut[0].i_dut.ctrl_view.wd_fast[1:0], fast);
 endtask
 
 task automatic expect_samples(input int n, input string what);
@@ -52,14 +52,14 @@ task automatic run_task(input int task_id, input bit boosted);
         force_level(3);
         expect_fast(1'b1, "level 3 while busy");
         repeat (3) @(posedge clk_i);
-        release gen_dut[0].i_dut.i_ctrl.domain_level_i;
+        release gen_dut[0].i_dut.i_ctrl.pm_i.domain_level;
     end
     force_level(PM_NORMAL_LEVEL);
     expect_fast(1'b0, "normal level while busy");
     repeat (4) @(posedge clk_i);
     csr_done(0, 0, 0, task_id);
     repeat (5) @(posedge clk_i);
-    release gen_dut[0].i_dut.i_ctrl.domain_level_i;
+    release gen_dut[0].i_dut.i_ctrl.pm_i.domain_level;
     if (gen_dut[0].i_dut.core_busy[0][0]) $fatal(1, "[ADAPT_FAST] core 0 still busy");
 endtask
 
@@ -90,7 +90,7 @@ initial begin
     expect_fast(1'b1, "level 3");
     force_level(0);
     expect_fast(1'b0, "unknown level 0");
-    release gen_dut[0].i_dut.i_ctrl.domain_level_i;
+    release gen_dut[0].i_dut.i_ctrl.pm_i.domain_level;
     release gen_dut[0].i_dut.bingo_hw_manager_wd_late_i;
     $display("Fast execution tests passed off=%0d samples=%0d", fast_off, learned);
     $finish;

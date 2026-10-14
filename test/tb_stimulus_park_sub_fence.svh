@@ -21,14 +21,14 @@ initial begin : park_sub_fence_test
     wait (rst_ni);
     park_req[0] = 32'd1;
     fork : wait_parked
-        wait (gen_dut[0].i_dut.park_parked[0][0] === 1'b1);
+        wait (gen_dut[0].i_dut.park.parked[0][0] === 1'b1);
         begin
             repeat (200) @(posedge clk_i);
             $fatal(1, "core 0 did not become PARKED");
         end
     join_any
     disable wait_parked;
-    if (gen_dut[0].i_dut.smt_core[0][0] !== 1) $fatal(1, "core 0 parked onto core %0d, expected 1", gen_dut[0].i_dut.smt_core[0][0]);
+    if (gen_dut[0].i_dut.smt.core[0][0] !== 1) $fatal(1, "core 0 parked onto core %0d, expected 1", gen_dut[0].i_dut.smt.core[0][0]);
     for (int i = 1; i <= 10; i++) begin
         task_queue_master[0].write(task_queue_base[0], '0,
             pack_normal_task(2'b00, i, 0, 0, 0, 1'b0, '0, 1'b0, 1'b0, 0, 0, '0), '1, resp);
@@ -39,15 +39,15 @@ initial begin : park_sub_fence_check
     wait (rst_ni);
     wait (gen_dut[0].i_dut.core_fenced[1][0] === 1'b1);
     repeat (5) @(posedge clk_i);
-    if (gen_dut[0].i_dut.smt_core[0][0] !== PSF_TARGET)
-        $error("[PARK_SUB] logical core 0 now goes to core %0d, expected %0d", gen_dut[0].i_dut.smt_core[0][0], PSF_TARGET);
+    if (gen_dut[0].i_dut.smt.core[0][0] !== PSF_TARGET)
+        $error("[PARK_SUB] logical core 0 now goes to core %0d, expected %0d", gen_dut[0].i_dut.smt.core[0][0], PSF_TARGET);
     if (PSF_TARGET == 0) begin
-        if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b0 || park_fail[0][0] !== 1'b1)
+        if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b0 || park_fail[0][0] !== 1'b1)
             $error("[PARK_SUB] no substitute left: expected the park to fail (parked %0b fail %0b)",
-                   gen_dut[0].i_dut.park_parked[0][0], park_fail[0][0]);
-    end else if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b1) begin
+                   gen_dut[0].i_dut.park.parked[0][0], park_fail[0][0]);
+    end else if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b1) begin
         $error("[PARK_SUB] core 0 left PARKED although core 2 is live");
     end
     $display("[PARK_SUB] %0t core 1 fenced; logical core 0 -> core %0d, parked %0b fail %0b", $time,
-             gen_dut[0].i_dut.smt_core[0][0], gen_dut[0].i_dut.park_parked[0][0], park_fail[0][0]);
+             gen_dut[0].i_dut.smt.core[0][0], gen_dut[0].i_dut.park.parked[0][0], park_fail[0][0]);
 end

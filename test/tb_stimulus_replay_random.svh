@@ -98,10 +98,10 @@ if (`TB_RANDOM_PARK != 0) begin : gen_random_park
     logic [NUM_CORES_PER_CLUSTER-1:0] rnd_parked_q = '0, rnd_unpark_q = '0;
     always @(posedge clk_i) begin
         for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
-            if (gen_dut[0].i_dut.park_parked[c][0] && !rnd_parked_q[c]) rnd_parks++;
-            if (rnd_unpark_q[c] && !gen_dut[0].i_dut.park_parked[c][0] && !gen_dut[0].i_dut.core_fenced[c][0]) rnd_unparks++;
-            rnd_parked_q[c] = gen_dut[0].i_dut.park_parked[c][0];
-            rnd_unpark_q[c] = gen_dut[0].i_dut.park_unpark[c][0];
+            if (gen_dut[0].i_dut.park.parked[c][0] && !rnd_parked_q[c]) rnd_parks++;
+            if (rnd_unpark_q[c] && !gen_dut[0].i_dut.park.parked[c][0] && !gen_dut[0].i_dut.core_fenced[c][0]) rnd_unparks++;
+            rnd_parked_q[c] = gen_dut[0].i_dut.park.parked[c][0];
+            rnd_unpark_q[c] = gen_dut[0].i_dut.park.unpark[c][0];
         end
     end
 end

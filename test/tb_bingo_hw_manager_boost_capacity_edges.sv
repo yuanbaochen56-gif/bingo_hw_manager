@@ -20,6 +20,16 @@ module tb_bingo_hw_manager_boost_capacity_edges;
     logic [7:0] boost_load_min;
     logic [5:0][0:0] pm_boost, pm_derate, risk, parked;
 
+    // The control plane under test; its port structs (bingo_hw_manager/typedef.svh)
+    `include "bingo_hw_manager/typedef.svh"
+    `BINGO_HW_MANAGER_TYPEDEF_CTRL_ALL(6, 1, 3, 1, 4, 4)
+    ctrl_view_t view;
+    park_t park;
+    assign pm_boost  = view.boost;
+    assign pm_derate = view.derate;
+    assign risk      = view.risk;
+    assign parked    = park.parked;
+
     bingo_hw_manager_ctrl #(
         .NumCores(6),
         .NumClusters(1),
@@ -27,55 +37,45 @@ module tb_bingo_hw_manager_boost_capacity_edges;
         .ClusterIdWidth(1),
         .CoreTypeIdWidth(4),
         .CoreTypeId(CoreTypeId),
-        .LoadWidth(4)
+        .LoadWidth(4),
+        .slot_state_t(slot_state_t),
+        .ctrl_queue_t(ctrl_queue_t),
+        .ctrl_host_t(ctrl_host_t),
+        .ctrl_view_t(ctrl_view_t),
+        .type_cfg_t(type_cfg_t),
+        .smt_t(smt_t),
+        .park_t(park_t),
+        .cerf_fb_t(cerf_fb_t)
     ) i_ctrl (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
-        .fenced_i(fenced),
-        .waiting_i(waiting),
-        .load_i(load),
-        .pm_enable_i(1'b1),
-        .pm_dvfs_i(1'b0),
-        .normal_level_i(8'd6),
-        .dvfs_level_i(8'd6),
-        .domain_level_i(domain_level),
-        .slot_domain_i(slot_domain),
-        .idle_delay_i(32'd0),
-        .cluster_access_i(1'b0),
-        .access_hold_i(32'd0),
-        .park_req_i(park_req),
-        .checkout_empty_i('1),
-        .ready_empty_i('1),
-        .slot_push_i('0),
-        .moved_i('0),
-        .stuck_i(stuck),
-        .rejected_i(rejected),
+        .slot_i('{fenced:   fenced,
+                  stuck:    stuck,
+                  rejected: rejected,
+                  default:  '0}),
         .late_i(late),
-        .risk_thresh_i(risk_thresh),
-        .risk_action_i(risk_action),
-        .risk_epoch_i(32'd0),
-        .risk_clear_i(risk_clear),
-        .boost_policy_i(boost_policy),
-        .boost_credit_i(boost_credit),
-        .boost_load_min_i(boost_load_min),
-        .pm_boost_o(pm_boost),
-        .pm_derate_o(pm_derate),
-        .risk_o(risk),
-        .park_parked_o(parked),
-        .pm_idle_o(),
-        .load_clear_o(),
-        .wd_tick_o(),
-        .smt_found_o(),
-        .smt_core_o(),
-        .smt_cluster_o(),
+        .queue_i('{waiting: waiting, load: load,
+                   checkout_empty: '1, ready_empty: '1, default: '0}),
+        .host_i('{park_req: park_req, risk_clear: risk_clear, domain: slot_domain}),
+        .type_cfg_i('0),
+        .cfg_i('{risk_thresh:    risk_thresh,
+                 risk_action:    risk_action,
+                 boost_policy:   boost_policy,
+                 boost_credit:   boost_credit,
+                 boost_load_min: boost_load_min,
+                 default:        '0}),
+        .pm_i('{enable:       1'b1,
+                dvfs:         1'b0,
+                normal_level: 8'd6,
+                dvfs_level:   8'd6,
+                domain_level: domain_level}),
+        .cluster_access_i(1'b0),
+        .cerf_fb_done_i(1'b0),
+        .view_o(view),
+        .smt_o(),
         .smt_update_o(),
-        .park_hold_o(),
-        .park_unpark_o(),
-        .park_fail_o(),
-        .cerf_fb_req_o(),
-        .cerf_fb_type_o(),
-        .cerf_fb_clear_o(),
-        .cerf_fb_set_o(),
+        .park_o(park),
+        .cerf_fb_o(),
         .cerf_fb_evt_o()
     );
 

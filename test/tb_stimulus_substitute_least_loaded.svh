@@ -48,8 +48,8 @@ initial begin : least_loaded_test
         busy_with_heartbeat(0, 0, 1, 3000, 100);   // core 1 stays busy, 12 and 13 queued
         begin
             wait_retired(0, 0, 0, 5000);
-            if (gen_dut[0].i_dut.smt_core[0][0] != 2) begin
-                $error("[LEAST_LOADED] substitute of core 0 is core %0d, expected core 2", gen_dut[0].i_dut.smt_core[0][0]);
+            if (gen_dut[0].i_dut.smt.core[0][0] != 2) begin
+                $error("[LEAST_LOADED] substitute of core 0 is core %0d, expected core 2", gen_dut[0].i_dut.smt.core[0][0]);
             end
             ll_read(2, 1);       // replayed on the least loaded core
             csr_done(0, 0, 2, 1);

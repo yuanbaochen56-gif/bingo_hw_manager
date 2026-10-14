@@ -35,7 +35,7 @@ initial begin : park_fence_test
     @(negedge clk_i);
     park_req[0] = 32'd1;
     fork : wait_hold_f
-        wait (gen_dut[0].i_dut.park_hold[0][0] === 1'b1);
+        wait (gen_dut[0].i_dut.park.hold[0][0] === 1'b1);
         begin
             repeat (50) @(posedge clk_i);
             $fatal(1, "core 0 did not enter HOLD (fenced %0b)", fenced_export[0][0][0]);
@@ -47,7 +47,7 @@ initial begin : park_fence_test
     task_queue_master[0].write(task_queue_base[0], '0, park_f_task_2, '1, resp);
     repeat (30) @(posedge clk_i);
     if (remap_count[0] != 0) $fatal(1, "task 2 left logical core 0 during HOLD");
-    if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b0) $fatal(1, "PARKED while task 1 was still outstanding");
+    if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b0) $fatal(1, "PARKED while task 1 was still outstanding");
 
     fork : wait_fence_f
         wait (fenced_export[0][0][0] === 1'b1);
@@ -58,8 +58,8 @@ initial begin : park_fence_test
     join_any
     disable wait_fence_f;
     repeat (4) @(posedge clk_i);
-    if (gen_dut[0].i_dut.park_hold[0][0] !== 1'b0) $fatal(1, "HOLD survived the fence");
-    if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b0) $fatal(1, "PARKED after the fence");
+    if (gen_dut[0].i_dut.park.hold[0][0] !== 1'b0) $fatal(1, "HOLD survived the fence");
+    if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b0) $fatal(1, "PARKED after the fence");
 
     fork : wait_done_f
         wait (task_completed_bitmap[1] && task_completed_bitmap[2]);
@@ -73,7 +73,7 @@ initial begin : park_fence_test
     disable wait_done_f;
     if (replay_move_count[0] == 0) $fatal(1, "the outstanding task was not replayed");
     if (remap_count[0] == 0) $fatal(1, "task 2 did not follow the substitute after the retire");
-    if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b0) $fatal(1, "core 0 stayed PARKED");
+    if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b0) $fatal(1, "core 0 stayed PARKED");
     repeat (20) @(posedge clk_i);
     $display("Core parking fence-during-drain test passed");
     $finish;

@@ -30,7 +30,7 @@ initial begin
     wd_adapt[0] = (40 << 12) | (1 << 8) | (2 << 5) | (1 << 2) | !adapt_off;
     risk_confirm[0] = risk_value;
     test_risk = '1;
-    force gen_dut[0].i_dut.risk = test_risk;
+    force gen_dut[0].i_dut.ctrl_view.risk = test_risk;
     repeat (20) @(posedge clk_i);
     descriptor = pack_normal_task(2'b00, 0, 0, 0, 0,
                                   1'b0, '0, 1'b0, 1'b0, 0, 0, '0);
@@ -94,7 +94,7 @@ initial begin
     repeat (20) @(posedge clk_i);
     if (gen_dut[0].i_dut.replay_stuck_o)
         $fatal(1, "[ADAPT_REPLAY] recovery stuck");
-    release gen_dut[0].i_dut.risk;
+    release gen_dut[0].i_dut.ctrl_view.risk;
     $display("Adaptive replay tests passed R=%0d off=%0d threshold=%0d reason=%0d",
              risk_value, adapt_off, expected_c, expected_reason);
     $finish;

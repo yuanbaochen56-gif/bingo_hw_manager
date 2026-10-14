@@ -116,7 +116,7 @@ initial begin
             $fatal(1, "[P9_TB] first late beat did not leave exactly one risk count");
         late_beat(3, 90, 1);
         fork : park_timeout
-            wait (gen_dut[0].i_dut.park_parked[0][0]);
+            wait (gen_dut[0].i_dut.park.parked[0][0]);
             begin
                 repeat (200) @(posedge clk_i);
                 $fatal(1, "[P9_TB] two late beats did not PARK");

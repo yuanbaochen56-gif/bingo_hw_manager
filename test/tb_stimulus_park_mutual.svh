@@ -20,14 +20,14 @@ initial begin : park_mutual_test
     park_req[0] = 32'b011;
     repeat (10) @(posedge clk_i);
     for (int c = 0; c < 2; c++) begin
-        if (gen_dut[0].i_dut.park_parked[c][0] !== 1'b1 || gen_dut[0].i_dut.smt_core[c][0] !== 2)
+        if (gen_dut[0].i_dut.park.parked[c][0] !== 1'b1 || gen_dut[0].i_dut.smt.core[c][0] !== 2)
             $error("[PARK_MUTUAL] core %0d: parked %0b onto core %0d, expected core 2", c,
-                   gen_dut[0].i_dut.park_parked[c][0], gen_dut[0].i_dut.smt_core[c][0]);
+                   gen_dut[0].i_dut.park.parked[c][0], gen_dut[0].i_dut.smt.core[c][0]);
     end
     @(negedge clk_i);
     park_req[0] = 32'b111;
     repeat (5) @(posedge clk_i);
-    if (park_fail[0][2] !== 1'b1 || gen_dut[0].i_dut.park_hold[2][0] !== 1'b0)
+    if (park_fail[0][2] !== 1'b1 || gen_dut[0].i_dut.park.hold[2][0] !== 1'b0)
         $error("[PARK_MUTUAL] parking core 2, which runs both parked cores, did not fail at once");
     task_queue_master[0].write(task_queue_base[0], '0,
         pack_normal_task(2'b00, 1, 0, 0, 0, 1'b0, '0, 1'b0, 1'b0, 0, 0, '0), '1, resp);

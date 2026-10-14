@@ -5,26 +5,27 @@
 // Fault precursors of the control plane (bingo_hw_manager_ctrl): every late
 // beat of a slot (late_i, from the watchdog: a heartbeat or done of a busy core
 // whose timer had reached the late threshold) adds one to a 4-bit saturating
-// count. Every risk_epoch_i cycles all counts are halved (0 = never), so only a
-// high rate of late beats adds up. A count at or above risk_thresh_i (0 = off)
-// makes the slot at risk; that is sticky until the host clears it
-// (risk_clear_i) or the slot is fenced. What an at-risk slot does is decided
-// elsewhere: the park request in bingo_hw_manager_ctrl, the derate level in
-// bingo_hw_manager_level_policy.
-module bingo_hw_manager_risk #(
+// count. Every cfg_i.risk_epoch cycles all counts are halved (0 = never), so
+// only a high rate of late beats adds up. A count at or above
+// cfg_i.risk_thresh (0 = off) makes the slot at risk; that is sticky until the
+// host clears it (risk_clear_i) or the slot is fenced. What an at-risk slot
+// does is decided elsewhere: the park request in bingo_hw_manager_ctrl, the
+// derate level in bingo_hw_manager_level_policy.
+module bingo_hw_manager_risk
+    import bingo_hw_manager_pkg::*;
+#(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2
 ) (
     input  logic clk_i,
     input  logic rst_ni,
 
-    // Watchdog: confirmed dead slots (sticky)
+    // Watchdog: confirmed dead slots (sticky), and late beats
     input  logic [NumCores-1:0][NumClusters-1:0]      fenced_i,
-    // Late beats, count threshold (0 = off), halving period (0 = never), host clear
     input  logic [NumCores-1:0][NumClusters-1:0]      late_i,
-    input  logic [3:0]                                risk_thresh_i,
-    input  logic [31:0]                               risk_epoch_i,
+    // Host: clear per slot, count threshold (0 = off) and halving period (0 = never)
     input  logic [NumCores-1:0][NumClusters-1:0]      risk_clear_i,
+    input  ctrl_cfg_t                                 cfg_i,
 
     // At-risk slots
     output logic [NumCores-1:0][NumClusters-1:0]      risk_o,
@@ -38,7 +39,7 @@ module bingo_hw_manager_risk #(
     logic [31:0]                               risk_epoch_cnt_q;
     logic                                      risk_epoch_end;
 
-    assign risk_epoch_end = (risk_epoch_i != '0) && (risk_epoch_cnt_q >= risk_epoch_i - 1);
+    assign risk_epoch_end = (cfg_i.risk_epoch != '0) && (risk_epoch_cnt_q >= cfg_i.risk_epoch - 1);
 
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
@@ -46,7 +47,7 @@ module bingo_hw_manager_risk #(
             risk_cnt_q       <= '0;
             risk_q           <= '0;
         end else begin
-            risk_epoch_cnt_q <= ((risk_epoch_i == '0) || risk_epoch_end) ? '0 : risk_epoch_cnt_q + 1;
+            risk_epoch_cnt_q <= ((cfg_i.risk_epoch == '0) || risk_epoch_end) ? '0 : risk_epoch_cnt_q + 1;
             for (int unsigned c = 0; c < NumCores; c++) begin
                 for (int unsigned cl = 0; cl < NumClusters; cl++) begin
                     automatic logic [3:0] cnt = risk_cnt_q[c][cl];
@@ -57,7 +58,7 @@ module bingo_hw_manager_risk #(
                         if (risk_epoch_end) cnt = cnt >> 1;
                         if (late_i[c][cl] && (cnt != 4'hf)) cnt = cnt + 1;
                         risk_cnt_q[c][cl] <= cnt;
-                        if ((risk_thresh_i != '0) && (cnt >= risk_thresh_i)) risk_q[c][cl] <= 1'b1;
+                        if ((cfg_i.risk_thresh != '0) && (cnt >= cfg_i.risk_thresh)) risk_q[c][cl] <= 1'b1;
                     end
                 end
             end

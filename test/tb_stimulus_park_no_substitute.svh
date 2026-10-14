@@ -37,7 +37,7 @@ initial begin : park_no_substitute_test
     @(negedge clk_i);
     park_req[0] = 32'd1;
     fork : wait_hold_ns
-        wait (gen_dut[0].i_dut.park_hold[0][0] === 1'b1);
+        wait (gen_dut[0].i_dut.park.hold[0][0] === 1'b1);
         begin
             repeat (50) @(posedge clk_i);
             $fatal(1, "core 0 did not enter HOLD");
@@ -54,13 +54,13 @@ initial begin : park_no_substitute_test
         begin
             repeat (500) @(posedge clk_i);
             $fatal(1, "park did not fail (hold %0b parked %0b internal %0b)",
-                   gen_dut[0].i_dut.park_hold[0][0], gen_dut[0].i_dut.park_parked[0][0],
-                   gen_dut[0].i_dut.park_fail[0][0]);
+                   gen_dut[0].i_dut.park.hold[0][0], gen_dut[0].i_dut.park.parked[0][0],
+                   gen_dut[0].i_dut.park.fail[0][0]);
         end
     join_any
     disable wait_fail_ns;
-    if (gen_dut[0].i_dut.park_parked[0][0] !== 1'b0) $fatal(1, "PARKED with no substitute");
-    if (gen_dut[0].i_dut.park_hold[0][0] !== 1'b0) $fatal(1, "HOLD stayed set after the failure");
+    if (gen_dut[0].i_dut.park.parked[0][0] !== 1'b0) $fatal(1, "PARKED with no substitute");
+    if (gen_dut[0].i_dut.park.hold[0][0] !== 1'b0) $fatal(1, "HOLD stayed set after the failure");
 
     csr_read(0, 0, 0, CSR_READY, id);
     if (id[TaskIdWidth-1:0] !== 2) $fatal(1, "core 0 read task %0d after the failed park, expected 2", id);

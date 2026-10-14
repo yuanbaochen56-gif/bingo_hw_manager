@@ -1208,7 +1208,7 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_remap_monitor
                         automatic int src_cl = gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].assigned_cluster_id;
                         if ((src != p) || (src_cl != cl)) begin
                             if ((gen_dut[gi].i_dut.core_retired[src][src_cl] !== 1'b1) &&
-                                (gen_dut[gi].i_dut.park_parked[src][src_cl] !== 1'b1)) begin
+                                (gen_dut[gi].i_dut.park.parked[src][src_cl] !== 1'b1)) begin
                                 $error("[REMAP_CHECK] chip %0d: task %0d of non-retired logical core %0d (cluster %0d) placed on physical core %0d cluster %0d",
                                        gi, gen_dut[gi].i_dut.waiting_dep_check_task_desc[src].task_id, src, src_cl, p, cl);
                             end
