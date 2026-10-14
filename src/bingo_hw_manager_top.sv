@@ -95,6 +95,9 @@ module bingo_hw_manager_top #(
     parameter int unsigned DoneQueueDepth = 32,
     parameter int unsigned CheckoutQueueDepth = 8,
     parameter int unsigned ReadyQueueDepth = 8,
+    // Waiting queue of each core index, shared by the clusters: a task waits
+    // there for its dependency check before it is placed on a slot
+    parameter int unsigned WaitingQueueDepth = 8,
     parameter int unsigned EventLogDepth = 0,
     parameter int unsigned EventLogAgeWidth = 6,
     // Power-domain counters (bingo_hw_manager_pm_counters, pm_count_o) of the
@@ -1198,7 +1201,7 @@ module bingo_hw_manager_top #(
     for (genvar core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin: gen_waiting_dep_check_queue
         fifo_v3 #(
             .FALL_THROUGH ( 1'b0                               ),
-            .DEPTH        ( 8                                  ),
+            .DEPTH        ( WaitingQueueDepth                  ),
             .dtype        ( bingo_hw_manager_task_desc_t       )
         ) i_waiting_dep_check_queue (
             .clk_i       ( clk_i                               ),
