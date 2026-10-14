@@ -115,7 +115,6 @@ module bingo_hw_manager_replay_ctrl #(
     logic [NumCores-1:0][NumClusters-1:0] ready_flush, moving, hold;
     logic move_fire, push_ready, rotate, exported, bounce;
 
-
     localparam bit RemoteEn = SubstituteLevelMask[2];
 
     typedef enum logic [1:0] {
@@ -213,9 +212,9 @@ module bingo_hw_manager_replay_ctrl #(
         exec_moved_d  = exec_moved_q;
         used_d        = used_q;
         rotated_d     = rotated_q;
-        rotate      = 1'b0;
+        rotate        = 1'b0;
         exported      = 1'b0;
-        bounce      = 1'b0;
+        bounce        = 1'b0;
 
         // A partly moved slot waiting for a stuck slot can never resume
         for (int unsigned c = 0; c < NumCores; c++) begin
@@ -226,10 +225,10 @@ module bingo_hw_manager_replay_ctrl #(
             end
         end
 
-        ready_flush = '0;
+        ready_flush   = '0;
         moving        = '0;
-        move_fire   = 1'b0;
-        push_ready  = 1'b0;
+        move_fire     = 1'b0;
+        push_ready    = 1'b0;
 
         case (state_q)
             IDLE: begin
@@ -270,7 +269,7 @@ module bingo_hw_manager_replay_ctrl #(
                     if (head_no_exec || l3_i.export_ready[CoreTypeId[head_logical_core][head_logical_cluster]]) begin
                         move_fire = 1'b1;
                         rotate    = 1'b1;
-                        exported    = !head_no_exec;
+                        exported  = !head_no_exec;
                         rotated_d[src_core_q][src_cluster_q] = 1'b1;
                     end
                 end else if (!dst_found && RemoteEn && slot_i.imported[src_core_q][src_cluster_q]) begin
@@ -311,7 +310,7 @@ module bingo_hw_manager_replay_ctrl #(
         for (int unsigned c = 0; c < NumCores; c++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
                 hold[c][cl] = moving[c][cl] ||
-                                (slot_i.fenced[c][cl] && !retired_q[c][cl] && partly_moved[c][cl]);
+                              (slot_i.fenced[c][cl] && !retired_q[c][cl] && partly_moved[c][cl]);
             end
         end
     end

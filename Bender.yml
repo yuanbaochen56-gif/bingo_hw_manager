@@ -51,10 +51,10 @@ sources:
   - src/control/bingo_hw_manager_slot_table.sv             # Slot mapping table (substitutes) and core parking
   - src/control/bingo_hw_manager_ctrl.sv                   # Control plane: joins the submodules above
   - src/frontend/bingo_hw_manager_dep_matrix.sv            # Dependency Matrix Module
+  - src/frontend/bingo_hw_manager_dep_check_manager.sv     # Dependency Check Manager Module
   - src/frontend/bingo_hw_manager_dep_unit.sv              # waiting queues, dependency check and dependency sets (dep_matrix per cluster)
   - src/frontend/bingo_hw_manager_chiplet_dep_set.sv       # Chiplet DependencySetModule (The Master port to send chiplet dep set info to other chiplets)
   - src/frontend/bingo_hw_manager_chiplet_link.sv          # dependency sets between chiplets: out (arbiter + chiplet_dep_set), in (mailbox)
-  - src/frontend/bingo_hw_manager_dep_check_manager.sv     # Dependency Check Manager Module
   - src/power/bingo_hw_manager_pm_policy.sv                # PM: the level each domain (DFS) or the chip (DVFS) should run at
   - src/power/bingo_hw_manager_pm.sv                       # Power Management Module
   - src/power/bingo_hw_manager_pm_counters.sv              # Cycles of each power domain per clock level, and its active cycles

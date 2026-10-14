@@ -554,7 +554,6 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_task_id_t                 task_id;
     } bingo_hw_manager_done_info_full_t;
 
-
     typedef struct packed{
         bingo_hw_manager_task_id_t           task_id;
     } bingo_hw_manager_ready_task_desc_t;
@@ -587,7 +586,6 @@ module bingo_hw_manager_top #(
     logic                              fetch_bus_error;   // master mode: a descriptor read failed
     logic [1:0]                        pm_bus_error;
 
-
     /////////////////////////////////////////////////////////
     // Dependency sets between chiplets (bingo_hw_manager_chiplet_link)
     /////////////////////////////////////////////////////////
@@ -612,7 +610,6 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] local_set_ready;
     logic                                                           remote_set_ready;
 
-
     //////////////////////
     // Ready queue signals
     //////////////////////
@@ -624,7 +621,6 @@ module bingo_hw_manager_top #(
     logic                                    [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_pop;
     bingo_hw_manager_ready_task_desc_full_t  [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_data_out;
     logic                                    [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_empty;
-
 
     //////////////////////
     // Checkout queue signals
@@ -1017,7 +1013,6 @@ module bingo_hw_manager_top #(
     assign cur_task_desc_full = bingo_hw_manager_task_desc_full_t'(muxed_task_data);
     assign cur_task_desc = full_to_desc(cur_task_desc_full);
 
-
     //////////////////////////////////////////////////////////////////////
     // Dependency sets between chiplets: out, the retiring checkout heads whose
     // dep set names another chiplet; in, the chiplet mailbox
@@ -1140,7 +1135,6 @@ module bingo_hw_manager_top #(
             assign ready_moved[core][cluster]          = head.moved;
         end
     end
-
 
     //////////////////////////////////////////////////////////////////////
     // Checkout Queue
