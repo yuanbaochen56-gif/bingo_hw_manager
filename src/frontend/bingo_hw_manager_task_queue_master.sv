@@ -97,6 +97,12 @@ module bingo_hw_manager_task_queue_master #(
         task_queue_axi_lite_req_o.b_ready = 1'b0;
     end
 
+    // The descriptor read now is the last one: the task count is reached, or
+    // every task id is used (a larger count could never be reached, and the
+    // fetch would not stop). A count of 0 fetches nothing.
+    logic last_task;
+    assign last_task = (task_counter_q == (num_task_i - 1)) || (&task_counter_q);
+
     // State Update
     always_ff @(posedge clk_i, negedge rst_ni) begin
         if (!rst_ni) begin
@@ -113,7 +119,7 @@ module bingo_hw_manager_task_queue_master #(
         case (cur_state)
             IDLE: begin
                 if (start_i) begin
-                    next_state = SEND_AR;
+                    next_state = (num_task_i == '0) ? FINISH : SEND_AR;
                 end
             end
             SEND_AR: begin
@@ -123,7 +129,7 @@ module bingo_hw_manager_task_queue_master #(
             end
             WAIT_R: begin
                 if (task_queue_axi_lite_resp_i.r_valid && task_queue_axi_lite_req_o.r_ready) begin
-                    if (task_counter_q == (num_task_i - 1)) begin
+                    if (last_task) begin
                         next_state = FINISH;
                     end else begin
                         next_state = SEND_AR;
@@ -181,4 +187,13 @@ module bingo_hw_manager_task_queue_master #(
     assign task_queue_axi_lite_req_o.r_ready = ~task_queue_full;
     assign task_queue_push = task_queue_axi_lite_resp_i.r_valid && ~task_queue_full;
     assign task_queue_data_in = task_queue_axi_lite_resp_i.r.data;
+
+`ifndef SYNTHESIS
+    // A count beyond the task ids is a software error: report what is fetched
+    always @(posedge clk_i) begin
+        if (rst_ni && (cur_state == IDLE) && start_i && (num_task_i > (1 << TaskIdWidth)))
+            $warning("[BINGO_TASK_QUEUE] %0t task count %0d exceeds the %0d task ids: fetching %0d descriptors",
+                     $time, num_task_i, 1 << TaskIdWidth, 1 << TaskIdWidth);
+    end
+`endif
 endmodule

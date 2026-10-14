@@ -214,6 +214,7 @@ sources:
       - test/tb_bingo_hw_manager_risk_decay.sv            # fault precursors: sparse late beats decay, a burst trips
       - test/tb_bingo_hw_manager_boost_capacity.sv        # capacity boost: survivors of a type, budget per lost core, minimum load
       - test/tb_bingo_hw_manager_boost_capacity_edges.sv  # capacity boost: lost-slot accounting, shared/derated domains, at-risk parking
+      - test/tb_bingo_hw_manager_task_queue_master.sv     # task fetch: exactly the task count, none for 0, at most one per task id
       - test/tb_bingo_hw_manager_task_queue_slave.sv      # task queue slave mode: the start reset outputs stay 0
       - test/tb_bingo_hw_manager_park_random.sv           # random graph, fault and park / move back (seeds in run_regression.sh)
       - test/tb_bingo_hw_manager_rlink_random.sv           # level 3 over remote_link: random (scripts/run_replay_random.sh)
