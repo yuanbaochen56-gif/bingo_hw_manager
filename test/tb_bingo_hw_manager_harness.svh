@@ -24,6 +24,9 @@
 `ifndef TB_EVLOG_DEPTH
   `define TB_EVLOG_DEPTH 0
 `endif
+`ifndef TB_WAITING_QUEUE_DEPTH
+  `define TB_WAITING_QUEUE_DEPTH 8
+`endif
 
 import axi_pkg::*;
 import axi_test::*;
@@ -1050,7 +1053,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .SubstituteL2TypeEn                  ( `TB_SUBSTITUTE_L2_TYPE_EN           ),
         .SubstitutePolicy                    ( `TB_SUBSTITUTE_POLICY               ),
         .ForeignStuckDrain                   ( `TB_FOREIGN_STUCK_DRAIN             ),
-        .EventLogDepth                       ( `TB_EVLOG_DEPTH                     ), .PmCountBase ( 1 ), .PmCountDomains ( (`TB_PM_ENABLE != 0) ? NUM_CLUSTERS_PER_CHIPLET : 0 ),
+        .EventLogDepth                       ( `TB_EVLOG_DEPTH                     ), .WaitingQueueDepth ( `TB_WAITING_QUEUE_DEPTH ), .PmCountBase ( 1 ), .PmCountDomains ( (`TB_PM_ENABLE != 0) ? NUM_CLUSTERS_PER_CHIPLET : 0 ),
         .RemoteNumPeers                      ( RL_NUM_PEERS                        ),
         .ImportSubstituteLevelMask           ( `TB_IMPORT_SUBSTITUTE_LEVEL_MASK    ),
         .CsrHeartbeatAddr                    ( `TB_CSR_HEARTBEAT_ADDR              ),

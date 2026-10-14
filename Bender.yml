@@ -228,6 +228,7 @@ sources:
       - test/tb_bingo_hw_manager_csr_unknown.sv           # CSR port: an unknown CSR reads 0 or is ignored, never stalls
       - test/tb_bingo_hw_manager_chiplet_dep_set_data.sv  # chiplet dep-set write: the data is the whole descriptor, no unknown bit
       - test/tb_bingo_hw_manager_done_mailbox.sv          # done mailbox: a done for a slot that does not exist is dropped, never blocks
+      - test/tb_bingo_hw_manager_waiting_depth.sv         # waiting queues of depth 2: back-pressure on the task queue, all tasks complete
       - test/tb_bingo_hw_manager_park_random.sv           # random graph, fault and park / move back (seeds in run_regression.sh)
       - test/tb_bingo_hw_manager_rlink_random.sv           # level 3 over remote_link: random (scripts/run_replay_random.sh)
       - test/tb_bingo_hw_manager_rlink_random_reject.sv    # level 3 over remote_link: random, a hang on each chiplet (rejects)
