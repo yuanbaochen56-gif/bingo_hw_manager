@@ -35,12 +35,12 @@
 // While D is partly moved, its checkout output stays held (hold_o), so a
 // dummy-set left on D cannot fire before D's moved tasks.
 // Stuck is sticky and final: fenced is sticky, so a missing substitute never
-// appears later. A stuck slot keeps its remaining entries (the top holds its
-// checkout output, except for heads that run on no core: stuck_drain there),
-// and the other fenced slots are still migrated.
-// While a slot is fenced and not retired, the top holds the new tasks of every
-// fenced logical core, so the migrated (older) tasks of a logical core always
-// enter a substitute before its newer ones.
+// appears later. A stuck slot keeps its remaining entries (its checkout queue,
+// bingo_hw_manager_checkout_queue, holds them, except for heads that run on no
+// core: stuck_drain there), and the other fenced slots are still migrated.
+// While a slot is fenced and not retired, the router (bingo_hw_manager_router)
+// holds the new tasks of every fenced logical core, so the migrated (older)
+// tasks of a logical core always enter a substitute before its newer ones.
 //
 // Level 3 (SubstituteLevelMask[2], remote chiplet): an entry that no live core
 // of the chiplet may run is not stuck if its logical core has a non-zero type
@@ -56,8 +56,8 @@
 // tasks. D's done FIFO may already hold remote dones when an aborted
 // migration resumes, so DRAIN does not wait for it once D rotated an entry.
 // An entry imported from another chiplet that no live core here may run is
-// bounced instead of stuck: MOVE pops it without a push (bounce_o) and the top
-// sends a reject back to its origin, which marks the proxy slot stuck there.
+// bounced instead of stuck: MOVE pops it without a push (bounce_o) and
+// bingo_hw_manager_remote_import rejects it to its origin (proxy stuck there).
 //
 // task_type 11 is executable but cannot be replayed after possibly starting.
 // The runtime takes one ready task at a time and sends done before taking the
@@ -131,7 +131,7 @@ module bingo_hw_manager_replay_ctrl #(
     output logic                      rotate_o,
     output logic                      export_o,
     // Level 3: this MOVE step drops the (imported) head of the source without
-    // a push; the top rejects it back to its origin chiplet
+    // a push; bingo_hw_manager_remote_import rejects it back to its origin
     output logic                      bounce_o
 );
 

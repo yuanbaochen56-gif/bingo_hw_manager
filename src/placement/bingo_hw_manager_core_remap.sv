@@ -32,8 +32,8 @@
 //   substitute the task is held, unless level 3 (SubstituteLevelMask[2]) is
 //   enabled and the core has a non-zero type that the transport can export
 //   (remote_type_en_i): then it stays on its (retired) logical slot, which acts
-//   as the proxy of a remote chiplet, and remote_o tells the top to export it
-//   instead of pushing it to the ready queue. Once the remote chiplet rejected
+//   as the proxy of a remote chiplet; remote_o has the router export it, not
+//   push it to the ready queue (remote_export). Once the remote chiplet rejected
 //   a task of that proxy (remote_rejected_i: no live core of the type there
 //   either), its new tasks are held, like those of a core without substitute.
 // - Dummy-set and CERF-skipped tasks (remappable_i = 0) never execute on a
