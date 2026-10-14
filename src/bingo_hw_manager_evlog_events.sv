@@ -42,7 +42,7 @@ module bingo_hw_manager_evlog_events #(
     // An exit absorbed into a dummy, and the entry it enters as
     input  logic       [NumCores-1:0][NumClusters-1:0] exit_absorb_i,
     input  task_desc_t [NumCores-1:0][NumClusters-1:0] exit_desc_i,
-    // CERF fallback of a core type (bingo_hw_manager_ctrl), committed by the CERF
+    // CERF fallback of a core type (bingo_hw_manager_cerf_fallback), committed by the CERF
     input  logic                                      cerf_fb_req_i,
     input  logic [CoreTypeIdWidth-1:0]                cerf_fb_type_i,
     input  logic                                      cerf_fb_done_i,

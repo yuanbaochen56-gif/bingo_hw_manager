@@ -12,9 +12,9 @@
 // The logical cluster is searched first, then the other clusters in index
 // order; within a cluster the lowest core wins. With LeastWeight the candidate
 // with the lowest weight_i wins instead (e.g. its queue occupancy), still in the
-// logical cluster first, the lowest index on a tie. bingo_hw_manager_ctrl keeps
-// the choice in its slot mapping table, so all tasks of one dead core go to the
-// same substitute even when the weights change.
+// logical cluster first, the lowest index on a tie. bingo_hw_manager_slot_table
+// keeps the choice in the slot mapping table, so all tasks of one dead core go
+// to the same substitute even when the weights change.
 module bingo_hw_manager_substitute_sel #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,

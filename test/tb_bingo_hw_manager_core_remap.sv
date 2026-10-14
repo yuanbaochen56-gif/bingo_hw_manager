@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 
-// Combinational slot mapping table for the unit test (bingo_hw_manager_ctrl
+// Combinational slot mapping table for the unit test (bingo_hw_manager_slot_table
 // keeps the same choice in a register)
 module tb_core_remap_smt #(
     parameter int unsigned NumCores = 3,

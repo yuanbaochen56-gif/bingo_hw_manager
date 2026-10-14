@@ -21,7 +21,7 @@ module bingo_hw_manager_watchdog #(
     input  logic [NumCores-1:0][NumClusters-1:0] task_done_i,       // Signal indicating a core has completed its current task
     input  logic [NumCores-1:0][NumClusters-1:0] heartbeat_i,       // Heartbeat signal from each core to indicate it's alive
     input  logic [NumCores-1:0][NumClusters-1:0] waiting_task_i,    // Signal indicating a task is waiting to be dispatched to a core
-    // The timer of a busy core only advances on a tick. bingo_hw_manager_ctrl
+    // The timer of a busy core only advances on a tick. bingo_hw_manager_wd_tick
     // slows the ticks down while the core's power domain runs below the normal
     // level, so the timeouts count cycles of the normal clock.
     input  logic [NumCores-1:0][NumClusters-1:0] tick_i = '1,

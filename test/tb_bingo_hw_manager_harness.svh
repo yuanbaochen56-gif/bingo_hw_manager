@@ -690,7 +690,7 @@ logic [CERF_FB_NUM_TYPES-1:0][4:0] cerf_fb_clear [NUM_CHIPLET];
 logic [CERF_FB_NUM_TYPES-1:0][4:0] cerf_fb_set   [NUM_CHIPLET];
 logic [CERF_FB_NUM_TYPES-1:0]      cerf_fb_evt   [NUM_CHIPLET];
 
-// Fence fallback types (see bingo_hw_manager_ctrl): TB_FENCE_FB from the start;
+// Fence fallback types (see bingo_hw_manager_slot_table): TB_FENCE_FB from the start;
 // a stimulus file may write it like the host register.
 logic [CERF_FB_NUM_TYPES-1:0] fence_fb [NUM_CHIPLET] = '{default: 16'(`TB_FENCE_FB)};
 

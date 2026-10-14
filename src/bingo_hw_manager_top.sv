@@ -65,7 +65,7 @@ module bingo_hw_manager_top #(
     // fenced core (force remote) and still lets it run on a same-cluster core
     // when it comes back through a loopback link.
     parameter logic [2:0] ImportSubstituteLevelMask = SubstituteLevelMask & 3'b011,
-    // Substitute choice when a core dies (bingo_hw_manager_ctrl): 0 = lowest
+    // Substitute choice when a core dies (bingo_hw_manager_slot_table): 0 = lowest
     // live core of the type, 1 = least loaded (checkout queue occupancy), both
     // in the logical cluster first. Fixed until that substitute dies.
     parameter int unsigned SubstitutePolicy = 0,
@@ -178,22 +178,22 @@ module bingo_hw_manager_top #(
     // Recovery boost level (a faster clock divider than the normal level) of a
     // domain whose core runs a dead core's tasks; 0 disables the boost
     input device_axi_lite_data_t                bingo_hw_manager_boost_power_level_i = '0,
-    // Which cores get the boost level (bingo_hw_manager_ctrl): [0] 0 = the
+    // Which cores get the boost level (bingo_hw_manager_level_policy): [0] 0 = the
     // substitutes of fenced cores, 1 = capacity (busy cores of a type that lost
     // a core); [11:8] boosted domains per lost core (0 = no limit); [23:16]
     // minimum load (checkout occupancy) of a boosted core
     input device_axi_lite_data_t                bingo_hw_manager_boost_policy_i = '0,
     // Cycles a core must be idle before it lets its domain drop to the idle
-    // level (bingo_hw_manager_ctrl); 0 = at once
+    // level (bingo_hw_manager_power_view); 0 = at once
     input device_axi_lite_data_t                bingo_hw_manager_idle_entry_delay_i = '0,
-    // External access wake (bingo_hw_manager_ctrl): a request from outside into
+    // External access wake (bingo_hw_manager_power_view): a request from outside into
     // a cluster's memory this cycle (e.g. the host reading its L1), and the
     // cycles the cluster's domain stays awake after the last one; 0 = off
     input logic [NUM_CLUSTERS_PER_CHIPLET-1:0]  bingo_hw_manager_cluster_access_i = '0,
     input device_axi_lite_data_t                bingo_hw_manager_access_wake_hold_i = '0,
     input logic [31:0]                         bingo_hw_manager_recovery_hold_i = '0,
     input logic [31:0]                         bingo_hw_manager_pm_access_level_i = '0,
-    // Core parking (bingo_hw_manager_ctrl). Bit (core + cluster*NUM_CORES) asks
+    // Core parking (bingo_hw_manager_slot_table). Bit (core + cluster*NUM_CORES) asks
     // that logical slot to drain, then send later executing tasks to a live
     // core of its type. 0 leaves placement unchanged. park_fail_o is sticky for
     // a slot until its request bit drops (no substitute, or the slot runs
@@ -202,7 +202,7 @@ module bingo_hw_manager_top #(
     // of its tasks is left on another core, then run on the slot again.
     input  device_axi_lite_data_t               bingo_hw_manager_park_req_i = '0,
     output device_axi_lite_data_t               bingo_hw_manager_park_fail_o,
-    // Fault precursors (bingo_hw_manager_ctrl). A heartbeat or done of a busy
+    // Fault precursors (bingo_hw_manager_risk). A heartbeat or done of a busy
     // core whose watchdog timer reached risk_late is late (0 = off). policy:
     // [3:0] late beats that make a slot at risk (0 = off), [4] park it,
     // [5] derate its domain, [15:8] derate level. epoch: the counts are
@@ -236,14 +236,14 @@ module bingo_hw_manager_top #(
     input  logic                                cerf_write_en_i,
     input  logic [31:0]                         cerf_write_data_i,
     output logic [31:0]                         cerf_state_o,
-    // Degradation (bingo_hw_manager_ctrl): per core type, once any slot of that
+    // Degradation (bingo_hw_manager_cerf_fallback): per core type, once any slot of that
     // type is stuck or rejected, clear one CERF group and set another.
     // Enable 0 leaves the CERF unchanged. evt is sticky until that enable drops.
     input  logic [2**CoreTypeIdWidth-1:0]       cerf_fb_en_i = '0,
     input  logic [2**CoreTypeIdWidth-1:0][4:0]  cerf_fb_clear_i = '0,
     input  logic [2**CoreTypeIdWidth-1:0][4:0]  cerf_fb_set_i = '0,
     output logic [2**CoreTypeIdWidth-1:0]       cerf_fb_evt_o,
-    // Fence fallback (bingo_hw_manager_ctrl): per core type, a fenced or parked
+    // Fence fallback (bingo_hw_manager_slot_table): per core type, a fenced or parked
     // slot of that type takes no substitute at any level (it is not exported
     // either), so a fence makes it stuck and the degradation above applies.
     // 0 = off. Set it before the first fence or park.
@@ -1588,7 +1588,7 @@ module bingo_hw_manager_top #(
         .core_derate_i         ( ctrl_pm_derate                         ),
         .pm_base_addr_i        ( bingo_hw_manager_pm_base_addr_i        ),
         .core_power_domain_i   ( bingo_hw_manager_core_power_domain_i   ),
-        // Internal Core status: polling or fenced (bingo_hw_manager_ctrl), so a
+        // Internal Core status: polling or fenced (bingo_hw_manager_power_view), so a
         // dead core does not keep its domain at the normal level
         .core_status_waiting_task_i ( ctrl_pm_idle                     ),
         .access_power_level_i  ( device_axi_lite_data_t'(pm_access_level) ),

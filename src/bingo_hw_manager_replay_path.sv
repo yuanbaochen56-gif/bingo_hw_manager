@@ -34,7 +34,7 @@ module bingo_hw_manager_replay_path #(
     input  task_desc_t  [NumCores-1:0][NumClusters-1:0] head_i,
     input  remote_tag_t [NumCores-1:0][NumClusters-1:0] head_tag_i,
     input  logic        [NumCores-1:0][NumClusters-1:0] head_imported_i,
-    // Substitute of each logical slot (bingo_hw_manager_ctrl), and the core
+    // Substitute of each logical slot (bingo_hw_manager_slot_table), and the core
     // types level 3 may export
     input  logic [NumCores-1:0][NumClusters-1:0]                     smt_found_i,
     input  logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    smt_core_i,

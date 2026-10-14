@@ -19,7 +19,7 @@
 //          arrived before the fence retires its task normally, no replay)
 //   MOVE   pop D's checkout head and push it to substitute S, chosen per entry
 //          from the entry's logical core and cluster (slot mapping table of
-//          bingo_hw_manager_ctrl, so S may sit in another cluster with level 2);
+//          bingo_hw_manager_slot_table, so S may sit in another cluster with level 2);
 //          stall while S is full or the table is written. If no live core may
 //          run the entry, mark D stuck and go back to IDLE.
 //   FINISH mark D retired
@@ -100,7 +100,7 @@ module bingo_hw_manager_replay_ctrl #(
     input  logic [2**CoreTypeIdWidth-1:0]        remote_type_en_i,
     // Level 3: the reject register accepts a bounced entry
     input  logic                                 bounce_ready_i,
-    // Slot mapping table (bingo_hw_manager_ctrl), indexed by logical slot
+    // Slot mapping table (bingo_hw_manager_slot_table), indexed by logical slot
     input  logic [NumCores-1:0][NumClusters-1:0]                     smt_found_i,
     input  logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    smt_core_i,
     input  logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] smt_cluster_i,

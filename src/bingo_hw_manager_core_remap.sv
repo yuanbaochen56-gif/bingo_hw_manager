@@ -4,7 +4,7 @@
 // `logical_core_i` in cluster `logical_cluster_i`.
 //
 // Semantics (remap only after a dead core's outstanding tasks were replayed,
-// or after a live core was parked — see bingo_hw_manager_ctrl):
+// or after a live core was parked — see bingo_hw_manager_slot_table):
 // - A logical core that is not fenced and not parked always keeps its own
 //   tasks. Being busy, slow or dead_suspect is NOT a reason to move work: the
 //   compiler relies on per-core in-order execution (same-core HOL), and a
@@ -22,7 +22,7 @@
 //   Dummy-set and CERF-skipped tasks stay on the logical core. A parked slot
 //   is not a remote proxy: level 3 does not export it.
 // - Once retired, an executing task (remappable_i) goes to the substitute of
-//   the logical core in the slot mapping table of bingo_hw_manager_ctrl
+//   the logical core in the slot mapping table, bingo_hw_manager_slot_table
 //   (smt_*_i): a live core with the same non-zero CoreTypeId as the logical
 //   core, in the logical cluster if there is one (level 1), else in another
 //   cluster (level 2, if SubstituteLevelMask[1]). The table entry only changes
@@ -72,12 +72,12 @@ module bingo_hw_manager_core_remap #(
     input  logic [2**CoreTypeIdWidth-1:0] remote_type_en_i,
     // Level 3: proxy slots whose exports were rejected (sticky)
     input  logic [NumCores-1:0][NumClusters-1:0] remote_rejected_i,
-    // Slot mapping table (bingo_hw_manager_ctrl), indexed by logical slot
+    // Slot mapping table (bingo_hw_manager_slot_table), indexed by logical slot
     input  logic [NumCores-1:0][NumClusters-1:0]                     smt_found_i,
     input  logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    smt_core_i,
     input  logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] smt_cluster_i,
     input  logic                                                     smt_update_i,
-    // Parking (bingo_hw_manager_ctrl). HOLD (or UNPARK) blocks every new task;
+    // Parking (bingo_hw_manager_slot_table). HOLD (or UNPARK) blocks every new task;
     // PARKED sends executing tasks through the table. Both stay 0 when park_req
     // is 0.
     input  logic [NumCores-1:0][NumClusters-1:0] park_hold_i = '0,

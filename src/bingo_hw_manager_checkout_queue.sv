@@ -209,7 +209,7 @@ module bingo_hw_manager_checkout_queue #(
     // A stuck or rejected slot runs nothing more. Its head may still retire
     // the way a skipped task does (dep_set, no done) when it never runs on
     // a core anyway (dummy-set, or skipped at dispatch) or when the CERF
-    // now skips it (degradation, see bingo_hw_manager_ctrl). For the
+    // now skips it (degradation, see bingo_hw_manager_cerf_fallback). For the
     // slot's own logical core with no task in another slot: then every
     // older task of that core has left this FIFO. With ForeignStuckDrain,
     // also for a logical core X that died before this slot: X is retired
