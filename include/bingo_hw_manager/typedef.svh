@@ -360,6 +360,52 @@
     logic [(NumCores)-1:0][(NumClusters)-1:0]                       exported;                                     \
   } replay_head_t;
 
+// What the replay controller (bingo_hw_manager_replay_ctrl) reads of every slot:
+//   fenced           confirmed dead (bingo_hw_manager_watchdog)
+//   done_empty       its done queue is empty
+//   checkout_empty, checkout_full, ready_full   its checkout and ready queues
+//   imported         level 3: its checkout head was imported from another chiplet
+`define BINGO_HW_MANAGER_TYPEDEF_REPLAY_SLOT_T(replay_slot_t, NumCores, NumClusters) \
+  typedef struct packed {                                                          \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] fenced;                              \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] done_empty;                          \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] checkout_empty;                      \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] checkout_full;                       \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] ready_full;                          \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] imported;                            \
+  } replay_slot_t;
+
+// Level 3 as the replay controller sees it, per core type (index: CoreTypeId):
+//   export_ready   the export queue of the type has room
+//   type_en        the type has an export target
+// and bounce_ready: the reject register takes a bounced entry
+`define BINGO_HW_MANAGER_TYPEDEF_REPLAY_L3_T(replay_l3_t, CoreTypeIdWidth) \
+  typedef struct packed {                                                \
+    logic [2**(CoreTypeIdWidth)-1:0] export_ready;                       \
+    logic [2**(CoreTypeIdWidth)-1:0] type_en;                            \
+    logic                            bounce_ready;                       \
+  } replay_l3_t;
+
+// What the replay controller reports of every slot:
+//   retired      fenced and all its outstanding tasks moved (sticky)
+//   ready_flush  its ready queue is flushed (being drained)
+//   hold         its checkout output is held: being moved, or partly moved
+//                and waiting to resume
+//   stuck        its next entry no live core may run (sticky); its checkout
+//                output stays held
+//   blocked      replay protection stopped it (task_type 11, sticky, implies stuck)
+//   exec_moved   its first executing entry (the one that may have started) was
+//                moved: read only by the checks of bingo_hw_manager_top_assert
+`define BINGO_HW_MANAGER_TYPEDEF_REPLAY_STATUS_T(replay_status_t, NumCores, NumClusters) \
+  typedef struct packed {                                                              \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] retired;                                 \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] ready_flush;                             \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] hold;                                    \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] stuck;                                   \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] blocked;                                 \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] exec_moved;                              \
+  } replay_status_t;
+
 // One MOVE step of the replay controller (bingo_hw_manager_replay_ctrl):
 //   move                    the slots being moved (fenced, not retired)
 //   fire                    the step moves the head of slot (src_core, src_cluster)

@@ -32,7 +32,7 @@
 // entries, including D's older ones, reached S2 first) and then resumes. If
 // such a slot is stuck, D is marked stuck as well. The wait-for relation is
 // acyclic: D only waits for slots fenced after they received D's entries.
-// While D is partly moved, its checkout output stays held (hold_o), so a
+// While D is partly moved, its checkout output stays held (status_o.hold), so a
 // dummy-set left on D cannot fire before D's moved tasks.
 // Stuck is sticky and final: fenced is sticky, so a missing substitute never
 // appears later. A stuck slot keeps its remaining entries (its checkout queue,
@@ -44,11 +44,11 @@
 //
 // Level 3 (SubstituteLevelMask[2], remote chiplet): an entry that no live core
 // of the chiplet may run is not stuck if its logical core has a non-zero type
-// that the transport can export (remote_type_en_i) and the entry was not itself
+// that the transport can export (l3_i.type_en) and the entry was not itself
 // imported from another chiplet. MOVE then
-// rotates it: pops D's head and pushes it back to D's tail (rotate_o, marked
+// rotates it: pops D's head and pushes it back to D's tail (step_o.rotate, marked
 // exported), and an executing entry is also copied to the export FIFO
-// (export_o). D stays the proxy of these entries: the remote done of an
+// (step_o.exported). D stays the proxy of these entries: the remote done of an
 // exported entry is pushed into D's done FIFO and retires it at D's checkout
 // head, with the normal dep_set, once D is retired. MOVE ends when the head is
 // an exported entry (every older entry was moved or rotated). A dummy-set
@@ -56,7 +56,7 @@
 // tasks. D's done FIFO may already hold remote dones when an aborted
 // migration resumes, so DRAIN does not wait for it once D rotated an entry.
 // An entry imported from another chiplet that no live core here may run is
-// bounced instead of stuck: MOVE pops it without a push (bounce_o) and
+// bounced instead of stuck: MOVE pops it without a push (step_o.bounce) and
 // bingo_hw_manager_remote_import rejects it to its origin (proxy stuck there).
 //
 // task_type 11 is executable but cannot be replayed after possibly starting.
@@ -75,68 +75,46 @@ module bingo_hw_manager_replay_ctrl #(
     parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId =
         {(NumCores * NumClusters){CoreTypeIdWidth'(1)}},
     // Substitute levels (see bingo_hw_manager_top SubstituteLevelMask)
-    parameter logic [2:0] SubstituteLevelMask = 3'b001
+    parameter logic [2:0] SubstituteLevelMask = 3'b001,
+    // Port types (bingo_hw_manager/typedef.svh)
+    parameter type        replay_slot_t = logic,
+    parameter type        replay_head_t = logic,
+    parameter type        replay_l3_t = logic,
+    parameter type        smt_t = logic,
+    parameter type        replay_step_t = logic,
+    parameter type        replay_status_t = logic
 ) (
-    input  logic clk_i,
-    input  logic rst_ni,
-
-    input  logic [NumCores-1:0][NumClusters-1:0] fenced_i,
-    input  logic [NumCores-1:0][NumClusters-1:0] done_q_empty_i,
-    input  logic [NumCores-1:0][NumClusters-1:0] checkout_empty_i,
-    input  logic [NumCores-1:0][NumClusters-1:0] checkout_full_i,
-    input  logic [NumCores-1:0][NumClusters-1:0] ready_full_i,
-    // Fields of each checkout head
-    input  logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0] checkout_logical_core_i,
-    input  logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] checkout_logical_cluster_i,
-    input  logic [NumCores-1:0][NumClusters-1:0] checkout_no_exec_i, // task_type 01: checkout only
-    input  logic [NumCores-1:0][NumClusters-1:0] checkout_no_replay_i = '0, // task_type 11
-    // Level 3: the head was exported by this slot (rotated) / imported from
-    // another chiplet
-    input  logic [NumCores-1:0][NumClusters-1:0] checkout_exported_i,
-    input  logic [NumCores-1:0][NumClusters-1:0] checkout_imported_i,
-    // Level 3: the export queue of each core type (index: CoreTypeId) has room
-    input  logic [2**CoreTypeIdWidth-1:0]        export_type_ready_i,
-    // Level 3: core types with an export target (index: CoreTypeId)
-    input  logic [2**CoreTypeIdWidth-1:0]        remote_type_en_i,
-    // Level 3: the reject register accepts a bounced entry
-    input  logic                                 bounce_ready_i,
-    // Slot mapping table (bingo_hw_manager_slot_table), indexed by logical slot
-    input  logic [NumCores-1:0][NumClusters-1:0]                     smt_found_i,
-    input  logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    smt_core_i,
-    input  logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] smt_cluster_i,
-    input  logic                                                     smt_update_i,
-
-    output logic [NumCores-1:0][NumClusters-1:0] retired_o,
-    output logic [NumCores-1:0][NumClusters-1:0] ready_flush_o,
-    // Slot currently drained by MOVE: its normal checkout output must be held
-    output logic [NumCores-1:0][NumClusters-1:0] move_o,
-    // Fenced slot whose checkout output must be held: being moved, or partly
-    // moved and waiting to resume
-    output logic [NumCores-1:0][NumClusters-1:0] hold_o,
-    // One MOVE step: pop the head of (src_core_o, src_cluster_o) and push it to
-    // (dst_core_o, dst_cluster_o); push_ready_o also pushes its task id to the
-    // ready FIFO of the destination.
-    output logic                      move_fire_o,
-    output logic                      push_ready_o,
-    output logic [CoreIdWidth-1:0]    src_core_o,
-    output logic [ClusterIdWidth-1:0] src_cluster_o,
-    output logic [CoreIdWidth-1:0]    dst_core_o,
-    output logic [ClusterIdWidth-1:0] dst_cluster_o,
-    // Fenced slot whose next entry no live core may run (sticky); its checkout
-    // output must stay held
-    output logic [NumCores-1:0][NumClusters-1:0] stuck_o,
-    output logic [NumCores-1:0][NumClusters-1:0] blocked_o,
-    // Level 3: this MOVE step rotates the head of the source (dst = src) and,
-    // with export_o, copies it to the export FIFO
-    output logic                      rotate_o,
-    output logic                      export_o,
-    // Level 3: this MOVE step drops the (imported) head of the source without
-    // a push; bingo_hw_manager_remote_import rejects it back to its origin
-    output logic                      bounce_o,
-    // Fenced slot whose first executing entry was already moved (the one that
-    // may have started): read only by the checks of bingo_hw_manager_top_assert
-    output logic [NumCores-1:0][NumClusters-1:0] exec_moved_o
+    input  logic           clk_i,
+    input  logic           rst_ni,
+    // Every slot: fenced, its queues (done empty, checkout empty / full, ready
+    // full) and whether its checkout head was imported
+    input  replay_slot_t   slot_i,
+    // Fields of each checkout head: its logical slot, runs on no core (a dummy,
+    // or an exit absorbed when it moves; task_type 01: checkout only), must
+    // not be replayed (task_type 11), exported by this slot (level 3, rotated)
+    input  replay_head_t   head_i,
+    // Level 3: per core type (index: CoreTypeId) the export queue has room and
+    // the type has an export target; the reject register takes a bounced entry
+    input  replay_l3_t     l3_i,
+    // Slot mapping table (bingo_hw_manager_slot_table), indexed by logical
+    // slot, and the cycle it is written
+    input  smt_t           smt_i,
+    input  logic           smt_update_i,
+    // One MOVE step: pop the head of (src_core, src_cluster) and push it to
+    // (dst_core, dst_cluster); push_ready also pushes it into the ready queue
+    // of the destination. move: the slot drained by MOVE (its normal checkout
+    // output is held). Level 3: rotate, the step moves the head of the source
+    // back to its tail (dst = src) and, with exported, copies it to the export
+    // FIFO; bounce, it drops the (imported) head without a push and
+    // bingo_hw_manager_remote_import rejects it back to its origin.
+    output replay_step_t   step_o,
+    // Every slot: retired, ready queue flushed, checkout output held, stuck,
+    // blocked by replay protection, first executing entry moved
+    output replay_status_t status_o
 );
+    logic [NumCores-1:0][NumClusters-1:0] ready_flush, moving, hold;
+    logic move_fire, push_ready, rotate, exported, bounce;
+
 
     localparam bit RemoteEn = SubstituteLevelMask[2];
 
@@ -167,7 +145,7 @@ module bingo_hw_manager_replay_ctrl #(
     always_comb begin
         for (int unsigned c = 0; c < NumCores; c++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                wait_used[c][cl]    = |(used_q[c][cl] & fenced_i & ~retired_q);
+                wait_used[c][cl]    = |(used_q[c][cl] & slot_i.fenced & ~retired_q);
                 stuck_used[c][cl]   = |(used_q[c][cl] & stuck_q);
                 partly_moved[c][cl] = |used_q[c][cl];
             end
@@ -186,7 +164,7 @@ module bingo_hw_manager_replay_ctrl #(
         pending_cluster = '0;
         for (int cl = NumClusters - 1; cl >= 0; cl--) begin
             for (int c = NumCores - 1; c >= 0; c--) begin
-                if (fenced_i[c][cl] && !retired_q[c][cl] && !stuck_q[c][cl] &&
+                if (slot_i.fenced[c][cl] && !retired_q[c][cl] && !stuck_q[c][cl] &&
                     !wait_used[c][cl]) begin
                     pending_found   = 1'b1;
                     pending_core    = CoreIdWidth'(c);
@@ -204,26 +182,26 @@ module bingo_hw_manager_replay_ctrl #(
     logic [CoreIdWidth-1:0]    dst_core;
     logic [ClusterIdWidth-1:0] dst_cluster;
 
-    assign head_logical_core    = checkout_logical_core_i[src_core_q][src_cluster_q];
-    assign head_logical_cluster = checkout_logical_cluster_i[src_core_q][src_cluster_q];
+    assign head_logical_core    = head_i.logical_core[src_core_q][src_cluster_q];
+    assign head_logical_cluster = head_i.logical_cluster[src_core_q][src_cluster_q];
 
     assign dst_found   = (int'(head_logical_core) < NumCores) && (int'(head_logical_cluster) < NumClusters) &&
-                         smt_found_i[head_logical_core][head_logical_cluster];
-    assign dst_core    = smt_core_i[head_logical_core][head_logical_cluster];
-    assign dst_cluster = smt_cluster_i[head_logical_core][head_logical_cluster];
+                         smt_i.found[head_logical_core][head_logical_cluster];
+    assign dst_core    = smt_i.core[head_logical_core][head_logical_cluster];
+    assign dst_cluster = smt_i.cluster[head_logical_core][head_logical_cluster];
 
     logic head_no_exec;
     logic dst_space;
     logic head_exported;
     logic can_rotate;
 
-    assign head_no_exec  = checkout_no_exec_i[src_core_q][src_cluster_q];
-    assign head_exported = RemoteEn && checkout_exported_i[src_core_q][src_cluster_q];
-    assign can_rotate    = RemoteEn && !checkout_imported_i[src_core_q][src_cluster_q] &&
+    assign head_no_exec  = head_i.no_exec[src_core_q][src_cluster_q];
+    assign head_exported = RemoteEn && head_i.exported[src_core_q][src_cluster_q];
+    assign can_rotate    = RemoteEn && !slot_i.imported[src_core_q][src_cluster_q] &&
                            (CoreTypeId[head_logical_core][head_logical_cluster] != '0) &&
-                           remote_type_en_i[CoreTypeId[head_logical_core][head_logical_cluster]];
-    assign dst_space    = !checkout_full_i[dst_core][dst_cluster] &&
-                          (head_no_exec || !ready_full_i[dst_core][dst_cluster]);
+                           l3_i.type_en[CoreTypeId[head_logical_core][head_logical_cluster]];
+    assign dst_space    = !slot_i.checkout_full[dst_core][dst_cluster] &&
+                          (head_no_exec || !slot_i.ready_full[dst_core][dst_cluster]);
 
     always_comb begin
         state_d       = state_q;
@@ -235,23 +213,23 @@ module bingo_hw_manager_replay_ctrl #(
         exec_moved_d  = exec_moved_q;
         used_d        = used_q;
         rotated_d     = rotated_q;
-        rotate_o      = 1'b0;
-        export_o      = 1'b0;
-        bounce_o      = 1'b0;
+        rotate      = 1'b0;
+        exported      = 1'b0;
+        bounce      = 1'b0;
 
         // A partly moved slot waiting for a stuck slot can never resume
         for (int unsigned c = 0; c < NumCores; c++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                if (fenced_i[c][cl] && !retired_q[c][cl] && stuck_used[c][cl]) begin
+                if (slot_i.fenced[c][cl] && !retired_q[c][cl] && stuck_used[c][cl]) begin
                     stuck_d[c][cl] = 1'b1;
                 end
             end
         end
 
-        ready_flush_o = '0;
-        move_o        = '0;
-        move_fire_o   = 1'b0;
-        push_ready_o  = 1'b0;
+        ready_flush = '0;
+        moving        = '0;
+        move_fire   = 1'b0;
+        push_ready  = 1'b0;
 
         case (state_q)
             IDLE: begin
@@ -262,14 +240,14 @@ module bingo_hw_manager_replay_ctrl #(
                 end
             end
             DRAIN: begin
-                ready_flush_o[src_core_q][src_cluster_q] = 1'b1;
-                if (done_q_empty_i[src_core_q][src_cluster_q] || rotated_q[src_core_q][src_cluster_q]) begin
+                ready_flush[src_core_q][src_cluster_q] = 1'b1;
+                if (slot_i.done_empty[src_core_q][src_cluster_q] || rotated_q[src_core_q][src_cluster_q]) begin
                     state_d = MOVE;
                 end
             end
             MOVE: begin
-                move_o[src_core_q][src_cluster_q] = 1'b1;
-                if (checkout_empty_i[src_core_q][src_cluster_q] || head_exported) begin
+                moving[src_core_q][src_cluster_q] = 1'b1;
+                if (slot_i.checkout_empty[src_core_q][src_cluster_q] || head_exported) begin
                     // Everything left (if anything) was rotated: D is its proxy
                     state_d = FINISH;
                 end else if (wait_used[src_core_q][src_cluster_q]) begin
@@ -279,7 +257,7 @@ module bingo_hw_manager_replay_ctrl #(
                 end else if (smt_update_i) begin
                     // A slot was just fenced: the substitutes are being recomputed
                 end else if (!head_no_exec &&
-                             checkout_no_replay_i[src_core_q][src_cluster_q] &&
+                             head_i.no_replay[src_core_q][src_cluster_q] &&
                              (!exec_moved_q[src_core_q][src_cluster_q] || !dst_found)) begin
                     // Possibly started, or would need unsupported level-3 recovery.
                     stuck_d[src_core_q][src_cluster_q] = 1'b1;
@@ -289,25 +267,25 @@ module bingo_hw_manager_replay_ctrl #(
                     // Level 3: keep it on D as a remote proxy entry. Pop and push
                     // in one cycle leave the usage unchanged, so D's fullness
                     // does not matter.
-                    if (head_no_exec || export_type_ready_i[CoreTypeId[head_logical_core][head_logical_cluster]]) begin
-                        move_fire_o = 1'b1;
-                        rotate_o    = 1'b1;
-                        export_o    = !head_no_exec;
+                    if (head_no_exec || l3_i.export_ready[CoreTypeId[head_logical_core][head_logical_cluster]]) begin
+                        move_fire = 1'b1;
+                        rotate    = 1'b1;
+                        exported    = !head_no_exec;
                         rotated_d[src_core_q][src_cluster_q] = 1'b1;
                     end
-                end else if (!dst_found && RemoteEn && checkout_imported_i[src_core_q][src_cluster_q]) begin
+                end else if (!dst_found && RemoteEn && slot_i.imported[src_core_q][src_cluster_q]) begin
                     // Level 3: an imported entry nobody here may run goes back
                     // to its origin as a reject
-                    if (bounce_ready_i) begin
-                        move_fire_o = 1'b1;
-                        bounce_o    = 1'b1;
+                    if (l3_i.bounce_ready) begin
+                        move_fire = 1'b1;
+                        bounce    = 1'b1;
                     end
                 end else if (!dst_found) begin
                     stuck_d[src_core_q][src_cluster_q] = 1'b1;
                     state_d = IDLE;
                 end else if (dst_space) begin
-                    move_fire_o  = 1'b1;
-                    push_ready_o = !head_no_exec;
+                    move_fire  = 1'b1;
+                    push_ready = !head_no_exec;
                     used_d[src_core_q][src_cluster_q][dst_core][dst_cluster] = 1'b1;
                 end
             end
@@ -318,27 +296,35 @@ module bingo_hw_manager_replay_ctrl #(
             end
             default: state_d = IDLE;
         endcase
-        if (move_fire_o && !head_no_exec) begin
+        if (move_fire && !head_no_exec) begin
             exec_moved_d[src_core_q][src_cluster_q] = 1'b1;
         end
     end
 
-    assign retired_o     = retired_q;
-    assign stuck_o       = stuck_q;
-    assign blocked_o     = blocked_q;
-    assign exec_moved_o  = exec_moved_q;
+    assign status_o = '{retired:     retired_q,
+                        ready_flush: ready_flush,
+                        hold:        hold,
+                        stuck:       stuck_q,
+                        blocked:     blocked_q,
+                        exec_moved:  exec_moved_q};
     always_comb begin
         for (int unsigned c = 0; c < NumCores; c++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                hold_o[c][cl] = move_o[c][cl] ||
-                                (fenced_i[c][cl] && !retired_q[c][cl] && partly_moved[c][cl]);
+                hold[c][cl] = moving[c][cl] ||
+                                (slot_i.fenced[c][cl] && !retired_q[c][cl] && partly_moved[c][cl]);
             end
         end
     end
-    assign src_core_o    = src_core_q;
-    assign src_cluster_o = src_cluster_q;
-    assign dst_core_o    = rotate_o ? src_core_q : dst_core;
-    assign dst_cluster_o = rotate_o ? src_cluster_q : dst_cluster;
+    assign step_o = '{move:        moving,
+                      fire:        move_fire,
+                      push_ready:  push_ready,
+                      bounce:      bounce,
+                      rotate:      rotate,
+                      exported:    exported,
+                      src_core:    src_core_q,
+                      src_cluster: src_cluster_q,
+                      dst_core:    rotate ? src_core_q : dst_core,
+                      dst_cluster: rotate ? src_cluster_q : dst_cluster};
 
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin

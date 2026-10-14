@@ -759,6 +759,9 @@ module bingo_hw_manager_top #(
         cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER), cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
     `BINGO_HW_MANAGER_TYPEDEF_REPLAY_STEP_T(replay_step_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET,
         cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER), cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
+    `BINGO_HW_MANAGER_TYPEDEF_REPLAY_SLOT_T(replay_slot_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    `BINGO_HW_MANAGER_TYPEDEF_REPLAY_L3_T(replay_l3_t, CoreTypeIdWidth)
+    `BINGO_HW_MANAGER_TYPEDEF_REPLAY_STATUS_T(replay_status_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
     `BINGO_HW_MANAGER_TYPEDEF_REPLAY_OP_T(replay_op_t, bingo_hw_manager_task_desc_t,
         NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
     `BINGO_HW_MANAGER_TYPEDEF_REMOTE_DISPATCH_T(remote_dispatch_out_t, bingo_hw_manager_task_desc_full_t,
@@ -848,6 +851,8 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_push_ready;
     // The checkout heads as the replay controller sees them (bingo_hw_manager_replay_path)
     replay_head_t                          replay_head;
+    // One MOVE step of the replay controller
+    replay_step_t                          replay_step;
     logic                                  replay_exit_absorb;
     smt_t                                  smt;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] exit_absorb;
@@ -1739,6 +1744,18 @@ module bingo_hw_manager_top #(
         .cerf_fb_evt_o    ( cerf_fb_evt_o                     )
     );
 
+    replay_slot_t   replay_slot;
+    replay_l3_t     replay_l3;
+    replay_status_t replay_status;
+    assign replay_slot = '{fenced:         core_fenced,
+                           done_empty:     done_q_empty,
+                           checkout_empty: checkout_queue_empty,
+                           checkout_full:  checkout_queue_full,
+                           ready_full:     ready_queue_full,
+                           imported:       checkout_head_imported};
+    assign replay_l3   = '{export_ready: export_type_ready,
+                           type_en:      remote_export_type_en,
+                           bounce_ready: !reject_pending};
     bingo_hw_manager_replay_ctrl #(
         .NumCores(NUM_CORES_PER_CLUSTER),
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
@@ -1746,60 +1763,44 @@ module bingo_hw_manager_top #(
         .ClusterIdWidth(cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET)),
         .CoreTypeIdWidth(CoreTypeIdWidth),
         .CoreTypeId(CoreTypeId),
-        .SubstituteLevelMask(SubstituteLevelMask)
+        .SubstituteLevelMask(SubstituteLevelMask),
+        .replay_slot_t(replay_slot_t),
+        .replay_head_t(replay_head_t),
+        .replay_l3_t(replay_l3_t),
+        .smt_t(smt_t),
+        .replay_step_t(replay_step_t),
+        .replay_status_t(replay_status_t)
     ) i_replay_ctrl (
-        .clk_i                   ( clk_i                  ),
-        .rst_ni                  ( rst_ni                 ),
-        .fenced_i                ( core_fenced            ),
-        .done_q_empty_i          ( done_q_empty           ),
-        .checkout_empty_i        ( checkout_queue_empty   ),
-        .checkout_full_i         ( checkout_queue_full    ),
-        .ready_full_i            ( ready_queue_full       ),
-        .checkout_logical_core_i    ( replay_head.logical_core    ),
-        .checkout_logical_cluster_i ( replay_head.logical_cluster ),
-        .checkout_no_exec_i         ( replay_head.no_exec         ),
-        .checkout_no_replay_i       ( replay_head.no_replay       ),
-        .checkout_exported_i        ( replay_head.exported        ),
-        .checkout_imported_i        ( checkout_head_imported      ),
-        .export_type_ready_i        ( export_type_ready           ),
-        .remote_type_en_i           ( remote_export_type_en       ),
-        .bounce_ready_i             ( !reject_pending             ),
-        .smt_found_i                ( smt.found                   ),
-        .smt_core_i                 ( smt.core                    ),
-        .smt_cluster_i              ( smt.cluster                 ),
-        .smt_update_i               ( smt_update                  ),
-        .retired_o               ( core_retired           ),
-        .ready_flush_o           ( replay_ready_flush     ),
-        .move_o                  ( replay_move            ),
-        .hold_o                  ( replay_hold_slot       ),
-        .move_fire_o             ( replay_move_fire       ),
-        .push_ready_o            ( replay_push_ready_q    ),
-        .src_core_o              ( replay_src_core        ),
-        .src_cluster_o           ( replay_src_cluster     ),
-        .dst_core_o              ( replay_dst_core        ),
-        .dst_cluster_o           ( replay_dst_cluster     ),
-        .stuck_o                 ( replay_stuck_slot      ),
-        .blocked_o               ( replay_blocked_o       ),
-        .rotate_o                ( replay_rotate          ),
-        .export_o                ( replay_export          ),
-        .bounce_o                ( replay_bounce          ),
-        .exec_moved_o            ( replay_exec_moved      )
+        .clk_i        ( clk_i         ),
+        .rst_ni       ( rst_ni        ),
+        .slot_i       ( replay_slot   ),
+        .head_i       ( replay_head   ),
+        .l3_i         ( replay_l3     ),
+        .smt_i        ( smt           ),
+        .smt_update_i ( smt_update    ),
+        .step_o       ( replay_step   ),
+        .status_o     ( replay_status )
     );
+    assign core_retired        = replay_status.retired;
+    assign replay_ready_flush  = replay_status.ready_flush;
+    assign replay_hold_slot    = replay_status.hold;
+    assign replay_stuck_slot   = replay_status.stuck;
+    assign replay_blocked_o    = replay_status.blocked;
+    assign replay_exec_moved   = replay_status.exec_moved;
+    assign replay_move         = replay_step.move;
+    assign replay_move_fire    = replay_step.fire;
+    assign replay_push_ready_q = replay_step.push_ready;
+    assign replay_src_core     = replay_step.src_core;
+    assign replay_src_cluster  = replay_step.src_cluster;
+    assign replay_dst_core     = replay_step.dst_core;
+    assign replay_dst_cluster  = replay_step.dst_cluster;
+    assign replay_rotate       = replay_step.rotate;
+    assign replay_export       = replay_step.exported;
+    assign replay_bounce       = replay_step.bounce;
     assign replay_stuck   = (|replay_stuck_slot) || (|remote_rejected_q);
     assign replay_stuck_o = replay_stuck;
-    // One MOVE step of the replay controller, and what it does to the queues
-    replay_step_t replay_step;
+    // What the replay controller's MOVE step does to the queues
     replay_op_t   replay_op;
-    assign replay_step = '{move:        replay_move,
-                           fire:        replay_move_fire,
-                           push_ready:  replay_push_ready_q,
-                           bounce:      replay_bounce,
-                           rotate:      replay_rotate,
-                           exported:    replay_export,
-                           src_core:    replay_src_core,
-                           src_cluster: replay_src_cluster,
-                           dst_core:    replay_dst_core,
-                           dst_cluster: replay_dst_cluster};
     bingo_hw_manager_replay_path #(
         .NumCores        ( NUM_CORES_PER_CLUSTER                            ),
         .NumClusters     ( NUM_CLUSTERS_PER_CHIPLET                         ),
