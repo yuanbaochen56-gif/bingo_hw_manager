@@ -445,6 +445,86 @@
     logic [(ClusterIdWidth)-1:0]              cluster;                                                                             \
   } import_t;
 
+// What the watchdog (bingo_hw_manager_watchdog) times, per slot:
+//   dispatch   the core took its next task (busy, the timer restarts)
+//   done       its done reached the done queue (idle)
+//   heartbeat  a heartbeat write (the timer restarts)
+//   waiting    the core polls its ready queue (feeds only status.available)
+//   tick       its timer advances this cycle (bingo_hw_manager_wd_tick)
+`define BINGO_HW_MANAGER_TYPEDEF_WD_EVENT_T(wd_event_t, NumCores, NumClusters) \
+  typedef struct packed {                                                      \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] dispatch;                        \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] done;                            \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] heartbeat;                       \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] waiting;                         \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] tick;                            \
+  } wd_event_t;
+
+// The bounds the watchdog adaptation learned (bingo_hw_manager_wd_adapt), per
+// slot: suspect (h), confirm (c) and late threshold, each with its valid bit
+`define BINGO_HW_MANAGER_TYPEDEF_WD_LEARNED_T(wd_learned_t, NumCores, NumClusters) \
+  typedef struct packed {                                                          \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][31:0] h;                             \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][31:0] c;                             \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][31:0] late;                          \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]       h_valid;                       \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]       c_valid;                       \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]       late_valid;                    \
+  } wd_learned_t;
+
+// The thresholds of the watchdog (bingo_hw_manager_wd_bounds), in timer ticks:
+//   late_global      late-beat threshold of the host (0: off)
+//   risk_confirm     confirm threshold of an at-risk slot (the host's, narrowed)
+// and per slot:
+//   h_static, c_static  suspect and confirm threshold of its core type (A5),
+//                    or the parameters (the limits of the adaptation)
+//   suspect          suspect threshold; with suspect_valid clear, 0 means the parameter
+//   suspect_valid    suspect is the learned one
+//   confirm          confirm threshold (0: the parameter)
+//   late             late threshold (0: late_global)
+//   late_adaptive    late is the learned one
+//   risk             the slot is at risk (bingo_hw_manager_ctrl)
+//   risk_valid       risk_confirm lies between the slot's own suspect and confirm
+//   risk_use         risk_valid, and the learned confirm is not shorter
+//   adapt_confirm    confirm is the learned one
+//   wd_class         class of the task the slot runs (for the log)
+`define BINGO_HW_MANAGER_TYPEDEF_WD_BOUND_T(wd_bound_t, NumCores, NumClusters, CounterWidth, WdClassWidth) \
+  typedef struct packed {                                                                               \
+    logic [(CounterWidth)-1:0]                                     late_global;                         \
+    logic [(CounterWidth)-1:0]                                     risk_confirm;                        \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][31:0]                h_static;                            \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][31:0]                c_static;                            \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][(CounterWidth)-1:0]  suspect;                             \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                      suspect_valid;                       \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][(CounterWidth)-1:0]  confirm;                             \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][(CounterWidth)-1:0]  late;                                \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                      late_adaptive;                       \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                      risk;                                \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                      risk_valid;                          \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                      risk_use;                            \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                      adapt_confirm;                       \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][(WdClassWidth)-1:0]  wd_class;                            \
+  } wd_bound_t;
+
+// What the watchdog reports, per slot:
+//   busy           the core runs a task
+//   available      it polls its ready queue, is not busy and not suspected
+//   dead_suspect   no heartbeat for the suspect threshold (stays set once fenced)
+//   fenced         confirmed dead, sticky
+//   late           one-cycle pulse per late beat (a heartbeat or done after the late threshold)
+//   progress       a done, or a heartbeat that is no dispatch, of a busy slot (learned from)
+//   interval       its timer
+`define BINGO_HW_MANAGER_TYPEDEF_WD_STATUS_T(wd_status_t, NumCores, NumClusters, CounterWidth) \
+  typedef struct packed {                                                                    \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                     busy;                      \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                     available;                 \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                     dead_suspect;              \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                     fenced;                    \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                     late;                      \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                     progress;                  \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][(CounterWidth)-1:0] interval;                  \
+  } wd_status_t;
+
 // All port types of the control plane (bingo_hw_manager_ctrl), named as its
 // type parameters, for a module or testbench that instantiates it
 `define BINGO_HW_MANAGER_TYPEDEF_CTRL_ALL(NumCores, NumClusters, CoreIdWidth, ClusterIdWidth, CoreTypeIdWidth, LoadWidth) \

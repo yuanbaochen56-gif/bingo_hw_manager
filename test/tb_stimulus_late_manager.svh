@@ -8,8 +8,8 @@ int last_late_interval, last_late_threshold;
 always @(posedge clk_i) begin
     if (rst_ni && gen_dut[0].i_dut.wd_late[0][0]) begin
         late_count++;
-        last_late_interval = gen_dut[0].i_dut.wd_interval[0][0];
-        last_late_threshold = gen_dut[0].i_dut.wd_late_slot[0][0];
+        last_late_interval = gen_dut[0].i_dut.wd_status.interval[0][0];
+        last_late_threshold = gen_dut[0].i_dut.wd_bound.late[0][0];
     end
 end
 
@@ -75,12 +75,12 @@ initial begin
     wd_late[0] = (80 << 12) | (1 << 1) | 1;
     #1;
     if (!gen_dut[0].i_dut.wd_late_ad_valid[0][0] ||
-        gen_dut[0].i_dut.wd_late_slot[0][0] != 80)
+        gen_dut[0].i_dut.wd_bound.late[0][0] != 80)
         $fatal(1, "[P9_TB] learned late floor not selected");
 
     if (`TB_LATE_CASE == 0) begin
         late_beat(2, 50, 0);
-        bound = gen_dut[0].i_dut.wd_late_slot[0][0];
+        bound = gen_dut[0].i_dut.wd_bound.late[0][0];
         late_beat(3, bound + 10, 1);
         if (last_late_interval < last_late_threshold || last_late_interval >= 200)
             $fatal(1, "[P9_TB] late window is not [Late,H)");
@@ -90,23 +90,23 @@ initial begin
     end else if (`TB_LATE_CASE == 1) begin
         risk_late[0] = 40;
         #1;
-        if (gen_dut[0].i_dut.wd_late_slot[0][0] != 40)
+        if (gen_dut[0].i_dut.wd_bound.late[0][0] != 40)
             $fatal(1, "[P9_TB] smaller static threshold not selected");
         late_beat(2, 50, 1);
         risk_late[0] = 180;
         bound = gen_dut[0].i_dut.wd_late_ad[0][0];
         #1;
-        if (gen_dut[0].i_dut.wd_late_slot[0][0] != bound || bound >= 180)
+        if (gen_dut[0].i_dut.wd_bound.late[0][0] != bound || bound >= 180)
             $fatal(1, "[P9_TB] smaller adaptive threshold not selected");
         late_beat(3, bound + 10, 1);
         risk_late[0] = 0;
         #1;
-        if (gen_dut[0].i_dut.wd_late_slot[0][0] != bound)
+        if (gen_dut[0].i_dut.wd_bound.late[0][0] != bound)
             $fatal(1, "[P9_TB] zero static threshold did not use adaptive");
         late_beat(4, bound + 10, 1);
         wd_late[0] = 0;
         #1;
-        if (gen_dut[0].i_dut.wd_late_slot[0][0] != 0)
+        if (gen_dut[0].i_dut.wd_bound.late[0][0] != 0)
             $fatal(1, "[P9_TB] both disabled still select a threshold");
         $display("Predictive late min tests passed");
     end else begin

@@ -33,9 +33,9 @@ always @(posedge clk_i) begin
                     if (i_dut.park.parked[c][cl] && !old[6][c][cl]) expect_event(8, slot, 0);
                     if (i_dut.park.fail[c][cl] && !old[7][c][cl]) expect_event(9, slot, 0);
                     if (i_dut.core_retired[c][cl] && !old[8][c][cl]) expect_event(11, slot, 0);
-                    fence_reason[c][cl] = (i_dut.ctrl_view.risk[c][cl] && i_dut.wd_risk_confirm_valid[c][cl] &&
+                    fence_reason[c][cl] = (i_dut.ctrl_view.risk[c][cl] && i_dut.wd_bound.risk_valid[c][cl] &&
                         risk_confirm[chiplet_idx] != 0) ? 1 :
-                        ((i_dut.wd_confirm_thr[c][cl] != 0) ? 2 : 0);
+                        ((i_dut.wd_bound.confirm[c][cl] != 0) ? 2 : 0);
                 end
             end
             if (i_dut.cerf_fb_done && i_dut.cerf_fb.req)

@@ -35,6 +35,7 @@ sources:
   # Level 1
   - src/frontend/bingo_hw_manager_cond_exec_controller.sv  # DARTS: CERF
   - src/monitor/bingo_hw_manager_load_monitor.sv           # DARTS: Load Monitor
+  - src/watchdog/bingo_hw_manager_wd_bounds.sv             # watchdog thresholds of every slot (parameter, type, learned, risk)
   - src/watchdog/bingo_hw_manager_watchdog.sv              # core state monitoring and dead core detection
   - src/watchdog/bingo_hw_manager_wd_adapt.sv              # type/class progress interval bounds
   - src/placement/bingo_hw_manager_substitute_sel.sv       # Substitute of a fenced core (remap and replay)

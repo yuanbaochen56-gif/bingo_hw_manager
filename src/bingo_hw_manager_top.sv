@@ -953,24 +953,27 @@ module bingo_hw_manager_top #(
         (WatchdogConfirmTimeoutCycles > WatchdogHeartbeatTimeoutCycles) ?
         WatchdogConfirmTimeoutCycles : WatchdogHeartbeatTimeoutCycles;
     localparam int unsigned WatchdogCounterWidth = $clog2(WatchdogMaxTimeoutCycles + 1) + 1;
-    logic [WatchdogCounterWidth-1:0] wd_late_cycles;  // late-beat threshold of the watchdog
-    // Not read by the design (each slot uses wd_risk_confirm_valid below): the value
+    `BINGO_HW_MANAGER_TYPEDEF_WD_EVENT_T(wd_event_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    `BINGO_HW_MANAGER_TYPEDEF_WD_LEARNED_T(wd_learned_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    `BINGO_HW_MANAGER_TYPEDEF_WD_BOUND_T(wd_bound_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET,
+                                         WatchdogCounterWidth, WdClassWidth)
+    `BINGO_HW_MANAGER_TYPEDEF_WD_STATUS_T(wd_status_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET,
+                                          WatchdogCounterWidth)
+    // What the watchdog times, its thresholds (bingo_hw_manager_wd_bounds) and what it reports
+    wd_event_t   wd_event;
+    wd_bound_t   wd_bound;
+    wd_status_t  wd_status;
+    // Not read by the design (each slot uses wd_bound.risk_valid): the value
     // tb_bingo_hw_manager_watchdog_risk_confirm compares the effective threshold with
     logic [WatchdogCounterWidth-1:0] wd_risk_confirm;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WatchdogCounterWidth-1:0] wd_suspect_thr;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WatchdogCounterWidth-1:0] wd_confirm_thr;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] wd_h_eff, wd_c_eff;
+    // The bounds learned by bingo_hw_manager_wd_adapt
+    wd_learned_t wd_learned;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] wd_h_ad, wd_c_ad;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_h_ad_valid, wd_c_ad_valid;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_adapt_confirm, wd_risk_use;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_progress;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WatchdogCounterWidth-1:0] wd_interval;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] wd_late_ad;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_late_ad_valid, wd_late_ad_use;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WatchdogCounterWidth-1:0] wd_late_slot;
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_late_ad_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WdClassWidth-1:0] wd_class_q, ready_class;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_moved_q, ready_moved;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_risk_confirm_valid;
     // The waiting queue heads, and the checkout, ready and done queues of every slot
     waiting_t  waiting_heads;
     checkout_t checkout_queue;
@@ -1738,6 +1741,11 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////////////////
     // core_available is kept for observability only; routing no longer uses it
     // (a healthy core keeps its tasks whether it is busy or polling).
+    assign wd_event = '{dispatch:  ready_queue_pop,          // ready pop: busy, timer cleared
+                        done:      done_q_push,              // done reached the done FIFO: idle
+                        heartbeat: heartbeat_valid,          // clears the timer (ignored once fenced)
+                        waiting:   core_status_waiting_task, // only feeds core_available
+                        tick:      ctrl_view.wd_tick};       // slowed down in a slow power domain
     bingo_hw_manager_watchdog #(
         .NumCores(NUM_CORES_PER_CLUSTER),
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
@@ -1747,37 +1755,23 @@ module bingo_hw_manager_top #(
         .CoreMask(WatchdogCoreMask),
         .CoreTypeIdWidth(CoreTypeIdWidth),
         .WdClassWidth(WdClassWidth),
-        .CoreTypeId(CoreTypeId)
+        .CoreTypeId(CoreTypeId),
+        .wd_event_t(wd_event_t),
+        .wd_bound_t(wd_bound_t),
+        .wd_status_t(wd_status_t)
     ) i_watchdog (
-        .clk_i                 ( clk_i                          ),
-        .rst_ni                ( rst_ni                         ),
-        .task_dispatched_i     ( ready_queue_pop                 ), // ready pop: busy, timer cleared
-        .task_done_i           ( done_q_push                     ), // done reached the done FIFO: idle
-        .heartbeat_i           ( heartbeat_valid                 ), // clears the timer (ignored once fenced)
-        .waiting_task_i        ( core_status_waiting_task        ), // only feeds core_available
-        .tick_i                ( ctrl_view.wd_tick               ), // slowed down in a slow power domain
-        .late_cycles_i         ( wd_late_cycles                  ), // fault precursor threshold
-        .late_thr_i            ( wd_late_slot                    ),
-        .risk_i                ( ctrl_view.risk                  ), // registered ctrl risk bitmap
-        .risk_confirm_i        ( WatchdogCounterWidth'(bingo_hw_manager_risk_confirm_i) ),
-        .risk_confirm_valid_i  ( wd_risk_use                     ),
-        .suspect_thr_i         ( wd_suspect_thr                  ),
-        .confirm_thr_i         ( wd_confirm_thr                  ),
-        .suspect_thr_valid_i   ( wd_h_ad_valid                   ),
-        .adapt_confirm_i       ( wd_adapt_confirm                ),
-        .wd_class_i            ( wd_class_q                      ),
-        .progress_o            ( wd_progress                     ),
-        .interval_o            ( wd_interval                     ),
-        .late_o                ( wd_late                         ),
-        .core_busy_o           ( core_busy                       ),
-        .core_available_o      ( core_available                  ),
-        .core_dead_suspect_o   ( core_dead_suspect               ),
-        .core_fenced_o         ( core_fenced                     )
+        .clk_i    ( clk_i     ),
+        .rst_ni   ( rst_ni    ),
+        .event_i  ( wd_event  ),
+        .bound_i  ( wd_bound  ),
+        .status_o ( wd_status )
     );
+    assign core_busy         = wd_status.busy;
+    assign core_available    = wd_status.available;
+    assign core_dead_suspect = wd_status.dead_suspect;
+    assign core_fenced       = wd_status.fenced;
+    assign wd_late           = wd_status.late;              // fault precursor
     assign core_fenced_o = core_fenced;
-    // A threshold beyond the timer saturates it (the timer stops at all ones)
-    assign wd_late_cycles = (bingo_hw_manager_risk_late_i > device_axi_lite_data_t'({WatchdogCounterWidth{1'b1}})) ?
-                            {WatchdogCounterWidth{1'b1}} : bingo_hw_manager_risk_late_i[WatchdogCounterWidth-1:0];
     assign core_dead_suspect_o = core_dead_suspect;
     assign ready_queue_pending_o = (READY_AND_DONE_QUEUE_INTERFACE_TYPE == 0) ? '0 : ~ready_queue_empty;
     // Validate the full CSR before narrowing it. A valid R is below C and fits.
@@ -1785,42 +1779,31 @@ module bingo_hw_manager_top #(
                              bingo_hw_manager_risk_confirm_i > WatchdogHeartbeatTimeoutCycles &&
                              bingo_hw_manager_risk_confirm_i < WatchdogConfirmTimeoutCycles) ?
                              WatchdogCounterWidth'(bingo_hw_manager_risk_confirm_i) : '0;
-    for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_wd_type_core
-        for (genvar cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin : gen_wd_type_cluster
-            localparam int Type = CoreTypeId[c][cl];
-            logic [31:0] h_eff, c_eff;
-            logic c_valid;
-            assign h_eff = (wd_type_h_i[Type] != 0 &&
-                            wd_type_h_i[Type] <= WatchdogHeartbeatTimeoutCycles) ?
-                            wd_type_h_i[Type] : WatchdogHeartbeatTimeoutCycles;
-            assign c_valid = (WatchdogConfirmTimeoutCycles != 0 &&
-                              wd_type_c_i[Type] != 0 &&
-                              wd_type_c_i[Type] <= WatchdogConfirmTimeoutCycles &&
-                              wd_type_c_i[Type] > h_eff);
-            assign c_eff = c_valid ? wd_type_c_i[Type] : WatchdogConfirmTimeoutCycles;
-            assign wd_h_eff[c][cl] = h_eff;
-            assign wd_c_eff[c][cl] = c_eff;
-            assign wd_late_ad_use[c][cl] = wd_late_ad_valid[c][cl] &&
-                (wd_late_cycles == '0 || wd_late_ad[c][cl] <= 32'(wd_late_cycles));
-            assign wd_late_slot[c][cl] = wd_late_ad_use[c][cl] ?
-                WatchdogCounterWidth'(wd_late_ad[c][cl]) : wd_late_cycles;
-            assign wd_suspect_thr[c][cl] = WatchdogCounterWidth'(
-                wd_h_ad_valid[c][cl] ? wd_h_ad[c][cl] : h_eff);
-            assign wd_risk_confirm_valid[c][cl] = (WatchdogConfirmTimeoutCycles != 0 &&
-                                                  bingo_hw_manager_risk_confirm_i > h_eff &&
-                                                  bingo_hw_manager_risk_confirm_i < c_eff);
-            // R keeps its A5 validity rule; C_ad wins only if strictly shorter.
-            assign wd_adapt_confirm[c][cl] = wd_c_ad_valid[c][cl] &&
-                wd_c_ad[c][cl] < ((ctrl_view.risk[c][cl] && wd_risk_confirm_valid[c][cl]) ?
-                                  bingo_hw_manager_risk_confirm_i : c_eff);
-            assign wd_risk_use[c][cl] = wd_risk_confirm_valid[c][cl] &&
-                                        !wd_adapt_confirm[c][cl];
-            // Zero retains the parameter path and all existing logging.
-            assign wd_confirm_thr[c][cl] = wd_adapt_confirm[c][cl] ?
-                WatchdogCounterWidth'(wd_c_ad[c][cl]) :
-                c_valid ? WatchdogCounterWidth'(c_eff) : '0;
-        end
-    end
+    // Thresholds of every slot: parameters, core type, learned, at risk
+    assign wd_learned = '{h: wd_h_ad, c: wd_c_ad, late: wd_late_ad,
+                          h_valid: wd_h_ad_valid, c_valid: wd_c_ad_valid, late_valid: wd_late_ad_valid};
+    bingo_hw_manager_wd_bounds #(
+        .NumCores(NUM_CORES_PER_CLUSTER),
+        .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
+        .CounterWidth(WatchdogCounterWidth),
+        .HeartbeatTimeoutCycles(WatchdogHeartbeatTimeoutCycles),
+        .ConfirmTimeoutCycles(WatchdogConfirmTimeoutCycles),
+        .CoreTypeIdWidth(CoreTypeIdWidth),
+        .WdClassWidth(WdClassWidth),
+        .CoreTypeId(CoreTypeId),
+        .data_t(device_axi_lite_data_t),
+        .wd_learned_t(wd_learned_t),
+        .wd_bound_t(wd_bound_t)
+    ) i_wd_bounds (
+        .type_h_i       ( wd_type_h_i                     ),
+        .type_c_i       ( wd_type_c_i                     ),
+        .late_i         ( bingo_hw_manager_risk_late_i    ),
+        .risk_confirm_i ( bingo_hw_manager_risk_confirm_i ),
+        .risk_i         ( ctrl_view.risk                  ), // registered ctrl risk bitmap
+        .learned_i      ( wd_learned                      ),
+        .class_i        ( wd_class_q                      ),
+        .bound_o        ( wd_bound                        )
+    );
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) wd_class_q <= '0;
         else begin
@@ -1849,10 +1832,10 @@ module bingo_hw_manager_top #(
     ) i_wd_adapt (
         .clk_i(clk_i), .rst_ni(rst_ni), .ctrl_i(wd_adapt_i),
         .late_ctrl_i(bingo_hw_manager_wd_late_i),
-        .progress_i(wd_progress), .interval_i(wd_interval), .dispatch_i(ready_queue_pop),
+        .progress_i(wd_status.progress), .interval_i(wd_status.interval), .dispatch_i(ready_queue_pop),
         .done_i(done_q_push), .fenced_i(core_fenced), .busy_i(core_busy),
         .class_i(wd_class_q), .moved_i(wd_moved_q), .fast_i(ctrl_view.wd_fast),
-        .h_eff_i(wd_h_eff), .c_eff_i(wd_c_eff),
+        .h_eff_i(wd_bound.h_static), .c_eff_i(wd_bound.c_static),
         .h_ad_o(wd_h_ad), .c_ad_o(wd_c_ad), .h_valid_o(wd_h_ad_valid),
         .c_valid_o(wd_c_ad_valid), .late_ad_o(wd_late_ad), .late_valid_o(wd_late_ad_valid)
     );
@@ -1867,8 +1850,8 @@ module bingo_hw_manager_top #(
                     if (wd_late[c][cl])
                         $display("[BINGO_ADAPT_LATE] %0t slot=%0d core=%0d cluster=%0d type=%0d class=%0d interval=%0d threshold=%0d source=%s",
                                  $time, c + cl * NUM_CORES_PER_CLUSTER, c, cl,
-                                 CoreTypeId[c][cl], wd_class_q[c][cl], wd_interval[c][cl],
-                                 wd_late_slot[c][cl], wd_late_ad_use[c][cl] ? "adaptive" : "static");
+                                 CoreTypeId[c][cl], wd_class_q[c][cl], wd_status.interval[c][cl],
+                                 wd_bound.late[c][cl], wd_bound.late_adaptive[c][cl] ? "adaptive" : "static");
         end
     end
 `endif
@@ -2338,10 +2321,10 @@ module bingo_hw_manager_top #(
         always_comb begin
             for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
-                    fence_reason[c][cl] = wd_adapt_confirm[c][cl] ? 2'd3 :
-                        (ctrl_view.risk[c][cl] && wd_risk_confirm_valid[c][cl] &&
+                    fence_reason[c][cl] = wd_bound.adapt_confirm[c][cl] ? 2'd3 :
+                        (ctrl_view.risk[c][cl] && wd_bound.risk_valid[c][cl] &&
                         bingo_hw_manager_risk_confirm_i != 0) ? 2'd1 :
-                        ((wd_confirm_thr[c][cl] != 0) ? 2'd2 : 2'd0);
+                        ((wd_bound.confirm[c][cl] != 0) ? 2'd2 : 2'd0);
         end
         bingo_hw_manager_evlog_events #(
             .NumCores        ( NUM_CORES_PER_CLUSTER                            ),

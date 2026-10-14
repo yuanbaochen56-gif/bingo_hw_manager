@@ -1,4 +1,5 @@
 `timescale 1ns/1ps
+`include "bingo_hw_manager/typedef.svh"
 
 module tb_bingo_hw_manager_watchdog;
 
@@ -21,45 +22,57 @@ module tb_bingo_hw_manager_watchdog;
     logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_dead_suspect_o;
     logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_fenced_o;
 
-    bingo_hw_manager_watchdog #(
-        .NumCores(NUM_CORES),
-        .NumClusters(NUM_CLUSTERS),
-        .CounterWidth(COUNTER_WIDTH),
-        .HeartbeatTimeoutCycles(TIMEOUT)
-    ) dut (
-        .clk_i(clk_i),
-        .rst_ni(rst_ni),
-        .task_dispatched_i(task_dispatched_i),
-        .task_done_i(task_done_i),
-        .heartbeat_i(heartbeat_i),
-        .waiting_task_i(waiting_task_i),
-        .core_busy_o(core_busy_o),
-        .core_available_o(core_available_o),
-        .core_dead_suspect_o(core_dead_suspect_o),
-        .core_fenced_o(core_fenced_o)
-    );
-
-    // Same stimulus, but core 0 excluded from monitoring (CoreMask[core][cluster]).
-    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_busy_masked;
-    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_dead_suspect_masked;
+    // Port structs of the watchdog: every slot ticks, no threshold but the parameters
+    `BINGO_HW_MANAGER_TYPEDEF_WD_EVENT_T(wd_event_t, NUM_CORES, NUM_CLUSTERS)
+    `BINGO_HW_MANAGER_TYPEDEF_WD_BOUND_T(wd_bound_t, NUM_CORES, NUM_CLUSTERS, COUNTER_WIDTH, 3)
+    `BINGO_HW_MANAGER_TYPEDEF_WD_STATUS_T(wd_status_t, NUM_CORES, NUM_CLUSTERS, COUNTER_WIDTH)
+    wd_event_t  wd_event;
+    wd_status_t wd_status, wd_status_masked, wd_status_f;
+    assign wd_event = '{dispatch: task_dispatched_i, done: task_done_i, heartbeat: heartbeat_i,
+                        waiting: waiting_task_i, tick: '1};
+    assign core_busy_o         = wd_status.busy;
+    assign core_available_o    = wd_status.available;
+    assign core_dead_suspect_o = wd_status.dead_suspect;
+    assign core_fenced_o       = wd_status.fenced;
 
     bingo_hw_manager_watchdog #(
         .NumCores(NUM_CORES),
         .NumClusters(NUM_CLUSTERS),
         .CounterWidth(COUNTER_WIDTH),
         .HeartbeatTimeoutCycles(TIMEOUT),
-        .CoreMask(2'b10)
+        .wd_event_t(wd_event_t),
+        .wd_bound_t(wd_bound_t),
+        .wd_status_t(wd_status_t)
+    ) dut (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
+        .event_i(wd_event),
+        .bound_i('0),
+        .status_o(wd_status)
+    );
+
+    // Same stimulus, but core 0 excluded from monitoring (CoreMask[core][cluster]).
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_busy_masked;
+    logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_dead_suspect_masked;
+
+    assign core_busy_masked         = wd_status_masked.busy;
+    assign core_dead_suspect_masked = wd_status_masked.dead_suspect;
+
+    bingo_hw_manager_watchdog #(
+        .NumCores(NUM_CORES),
+        .NumClusters(NUM_CLUSTERS),
+        .CounterWidth(COUNTER_WIDTH),
+        .HeartbeatTimeoutCycles(TIMEOUT),
+        .CoreMask(2'b10),
+        .wd_event_t(wd_event_t),
+        .wd_bound_t(wd_bound_t),
+        .wd_status_t(wd_status_t)
     ) dut_masked (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
-        .task_dispatched_i(task_dispatched_i),
-        .task_done_i(task_done_i),
-        .heartbeat_i(heartbeat_i),
-        .waiting_task_i(waiting_task_i),
-        .core_busy_o(core_busy_masked),
-        .core_available_o(),
-        .core_dead_suspect_o(core_dead_suspect_masked),
-        .core_fenced_o()
+        .event_i(wd_event),
+        .bound_i('0),
+        .status_o(wd_status_masked)
     );
 
     // Same stimulus, with the confirm timeout enabled (fencing).
@@ -68,23 +81,26 @@ module tb_bingo_hw_manager_watchdog;
     logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_dead_suspect_f;
     logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_fenced_f;
 
+    assign core_busy_f         = wd_status_f.busy;
+    assign core_available_f    = wd_status_f.available;
+    assign core_dead_suspect_f = wd_status_f.dead_suspect;
+    assign core_fenced_f       = wd_status_f.fenced;
+
     bingo_hw_manager_watchdog #(
         .NumCores(NUM_CORES),
         .NumClusters(NUM_CLUSTERS),
         .CounterWidth(COUNTER_WIDTH),
         .HeartbeatTimeoutCycles(TIMEOUT),
-        .ConfirmTimeoutCycles(CONFIRM)
+        .ConfirmTimeoutCycles(CONFIRM),
+        .wd_event_t(wd_event_t),
+        .wd_bound_t(wd_bound_t),
+        .wd_status_t(wd_status_t)
     ) dut_fence (
         .clk_i(clk_i),
         .rst_ni(rst_ni),
-        .task_dispatched_i(task_dispatched_i),
-        .task_done_i(task_done_i),
-        .heartbeat_i(heartbeat_i),
-        .waiting_task_i(waiting_task_i),
-        .core_busy_o(core_busy_f),
-        .core_available_o(core_available_f),
-        .core_dead_suspect_o(core_dead_suspect_f),
-        .core_fenced_o(core_fenced_f)
+        .event_i(wd_event),
+        .bound_i('0),
+        .status_o(wd_status_f)
     );
 
     initial clk_i = 1'b0;

@@ -10,16 +10,23 @@ logic [1:0][0:0] ud = '0, done = '0, hb = '0, ticks = '1;
 logic [1:0][0:0] ubusy, suspect, ufence;
 wire [CW-1:0] effective_r = gen_dut[0].i_dut.wd_risk_confirm;
 
+`include "bingo_hw_manager/typedef.svh"
+`BINGO_HW_MANAGER_TYPEDEF_WD_EVENT_T(unit_wd_event_t, 2, 1)
+`BINGO_HW_MANAGER_TYPEDEF_WD_BOUND_T(unit_wd_bound_t, 2, 1, CW, 3)
+`BINGO_HW_MANAGER_TYPEDEF_WD_STATUS_T(unit_wd_status_t, 2, 1, CW)
+unit_wd_status_t unit_status;
+assign ubusy = unit_status.busy;
+assign suspect = unit_status.dead_suspect;
+assign ufence = unit_status.fenced;
 bingo_hw_manager_watchdog #(
     .NumCores(2), .NumClusters(1), .CounterWidth(CW),
-    .HeartbeatTimeoutCycles(20), .ConfirmTimeoutCycles(WATCHDOG_CONFIRM_TIMEOUT)
+    .HeartbeatTimeoutCycles(20), .ConfirmTimeoutCycles(WATCHDOG_CONFIRM_TIMEOUT),
+    .wd_event_t(unit_wd_event_t), .wd_bound_t(unit_wd_bound_t), .wd_status_t(unit_wd_status_t)
 ) unit_wd (
     .clk_i(clk_i), .rst_ni(unit_rst),
-    .task_dispatched_i(ud), .task_done_i(done), .heartbeat_i(hb),
-    .waiting_task_i('0), .tick_i(ticks), .risk_i(2'b01),
-    .risk_confirm_i(effective_r), .core_busy_o(ubusy),
-    .core_dead_suspect_o(suspect), .core_fenced_o(ufence),
-    .core_available_o(), .late_o()
+    .event_i('{dispatch: ud, done: done, heartbeat: hb, waiting: '0, tick: ticks}),
+    .bound_i('{risk: 2'b01, risk_use: '1, risk_confirm: effective_r, default: '0}),
+    .status_o(unit_status)
 );
 
 task automatic step();

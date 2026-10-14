@@ -1,3 +1,21 @@
+// Copyright 2026 KU Leuven.
+// Solderpad Hardware License, Version 0.51, see LICENSE for details.
+// SPDX-License-Identifier: SHL-0.51
+
+// Heartbeat watchdog of every (core, cluster) slot. A slot is busy from the
+// dispatch of a task to its done; while busy, its timer counts ticks (cycles of
+// the normal clock, bingo_hw_manager_wd_tick) since the dispatch or the last
+// heartbeat. Two thresholds act on the timer:
+//   suspect  the slot is reported dead_suspect (reversible: a heartbeat or done
+//            clears the timer)
+//   confirm  the slot is fenced, for good (sticky until reset): the manager
+//            stops using it and replays its tasks (bingo_hw_manager_replay_ctrl)
+// A heartbeat or done that comes after the late threshold is a late beat, a
+// fault precursor for the risk counter of bingo_hw_manager_ctrl.
+// The parameters give the default thresholds; bound_i may replace them per
+// slot (bingo_hw_manager_wd_bounds: per core type, learned by
+// bingo_hw_manager_wd_adapt, or shorter for an at-risk slot). This module only
+// compares; every choice of threshold is made there.
 module bingo_hw_manager_watchdog #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
@@ -12,45 +30,18 @@ module bingo_hw_manager_watchdog #(
     parameter logic [NumCores-1:0][NumClusters-1:0] CoreMask = '1,
     parameter int unsigned CoreTypeIdWidth = 4,
     parameter int unsigned WdClassWidth = 3,
-    parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId = '0
+    parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId = '0,
+    // Port types (bingo_hw_manager/typedef.svh)
+    parameter type         wd_event_t = logic,
+    parameter type         wd_bound_t = logic,
+    parameter type         wd_status_t = logic
 ) (
-    input  logic clk_i,
-    input  logic rst_ni,
-
-    input  logic [NumCores-1:0][NumClusters-1:0] task_dispatched_i, // Signal indicating a new task has been dispatched to a core
-    input  logic [NumCores-1:0][NumClusters-1:0] task_done_i,       // Signal indicating a core has completed its current task
-    input  logic [NumCores-1:0][NumClusters-1:0] heartbeat_i,       // Heartbeat signal from each core to indicate it's alive
-    input  logic [NumCores-1:0][NumClusters-1:0] waiting_task_i,    // Signal indicating a task is waiting to be dispatched to a core
-    // The timer of a busy core only advances on a tick. bingo_hw_manager_wd_tick
-    // slows the ticks down while the core's power domain runs below the normal
-    // level, so the timeouts count cycles of the normal clock.
-    input  logic [NumCores-1:0][NumClusters-1:0] tick_i = '1,
-    // Late beat (fault precursor): a heartbeat or done of a busy core whose
-    // timer has reached late_cycles_i. 0 = off. The timer counts ticks, so
-    // like the timeouts this counts cycles of the normal clock.
-    input  logic [CounterWidth-1:0]               late_cycles_i = '0,
-    // Nonzero per-slot thresholds override the legacy global late threshold.
-    input  logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] late_thr_i = '0,
-    input  logic [NumCores-1:0][NumClusters-1:0] risk_i = '0,
-    // Same timer as H/C, not an interval restarted at suspicion. 0 = disabled.
-    input  logic [CounterWidth-1:0]               risk_confirm_i = '0,
-    input  logic [NumCores-1:0][NumClusters-1:0] risk_confirm_valid_i = '1,
-    input  logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] suspect_thr_i = '0,
-    input  logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] confirm_thr_i = '0,
-    // The adaptive source only asserts validity for a nonzero threshold.
-    input  logic [NumCores-1:0][NumClusters-1:0] suspect_thr_valid_i = '0,
-    input  logic [NumCores-1:0][NumClusters-1:0] adapt_confirm_i = '0,
-    input  logic [NumCores-1:0][NumClusters-1:0][WdClassWidth-1:0] wd_class_i = '0,
-
-    output logic [NumCores-1:0][NumClusters-1:0] core_busy_o,      // Indicates when a core is currently executing a task
-    output logic [NumCores-1:0][NumClusters-1:0] core_available_o,  // Indicates when a core is available for new tasks
-    output logic [NumCores-1:0][NumClusters-1:0] core_dead_suspect_o,   // Indicates when a core is suspected to be dead (no heartbeat for too long)
-    output logic [NumCores-1:0][NumClusters-1:0] core_fenced_o,     // Confirmed dead (sticky): the core is isolated from the manager
-    output logic [NumCores-1:0][NumClusters-1:0] late_o,            // One-cycle pulse per late beat
-    output logic [NumCores-1:0][NumClusters-1:0] progress_o,
-    output logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] interval_o
+    input  logic       clk_i,
+    input  logic       rst_ni,
+    input  wd_event_t  event_i,   // dispatch, done, heartbeat, waiting, tick of every slot
+    input  wd_bound_t  bound_i,   // thresholds (0 or not valid: the parameters)
+    output wd_status_t status_o
 );
-
     localparam int unsigned MaxTimeoutCycles =
         (ConfirmTimeoutCycles > HeartbeatTimeoutCycles) ? ConfirmTimeoutCycles : HeartbeatTimeoutCycles;
 
@@ -82,25 +73,25 @@ module bingo_hw_manager_watchdog #(
         for(int c=0; c<NumCores; c++) begin
             for(int cl=0; cl<NumClusters; cl++) begin
                 automatic logic [CounterWidth-1:0] late_cycles =
-                    late_thr_i[c][cl] != '0 ? late_thr_i[c][cl] : late_cycles_i;
-                core_busy_o[c][cl] = busy_q[c][cl];
-                core_fenced_o[c][cl] = fenced_q[c][cl];
+                    bound_i.late[c][cl] != '0 ? bound_i.late[c][cl] : bound_i.late_global;
+                status_o.busy[c][cl] = busy_q[c][cl];
+                status_o.fenced[c][cl] = fenced_q[c][cl];
                 // A fenced core stays dead_suspect, so the event log never shows a
                 // fake recovery.
-                core_dead_suspect_o[c][cl] = fenced_q[c][cl] ||
-                                             (CoreMask[c][cl] && busy_q[c][cl] &&
-                                              (timer_q[c][cl] >= ((suspect_thr_i[c][cl] != '0 || suspect_thr_valid_i[c][cl]) ?
-                                               suspect_thr_i[c][cl] : HeartbeatTimeoutCycles[CounterWidth-1:0])));
-                core_available_o[c][cl] = waiting_task_i[c][cl] && !busy_q[c][cl] && !core_dead_suspect_o[c][cl];
+                status_o.dead_suspect[c][cl] = fenced_q[c][cl] ||
+                                               (CoreMask[c][cl] && busy_q[c][cl] &&
+                                                (timer_q[c][cl] >= ((bound_i.suspect[c][cl] != '0 || bound_i.suspect_valid[c][cl]) ?
+                                                 bound_i.suspect[c][cl] : HeartbeatTimeoutCycles[CounterWidth-1:0])));
+                status_o.available[c][cl] = event_i.waiting[c][cl] && !busy_q[c][cl] && !status_o.dead_suspect[c][cl];
                 // Same priority as the timer update below: a fenced core is ignored
-                late_o[c][cl] = (late_cycles != '0) && CoreMask[c][cl] && !fenced_q[c][cl] &&
-                                busy_q[c][cl] && (task_done_i[c][cl] || heartbeat_i[c][cl]) &&
-                                (timer_q[c][cl] >= late_cycles);
+                status_o.late[c][cl] = (late_cycles != '0) && CoreMask[c][cl] && !fenced_q[c][cl] &&
+                                       busy_q[c][cl] && (event_i.done[c][cl] || event_i.heartbeat[c][cl]) &&
+                                       (timer_q[c][cl] >= late_cycles);
                 // Matches done -> dispatch -> heartbeat priority. No fenced
                 // interval or heartbeat concurrent with dispatch is learned.
-                progress_o[c][cl] = CoreMask[c][cl] && !fenced_q[c][cl] && busy_q[c][cl] &&
-                    (task_done_i[c][cl] || (!task_dispatched_i[c][cl] && heartbeat_i[c][cl]));
-                interval_o[c][cl] = timer_q[c][cl];
+                status_o.progress[c][cl] = CoreMask[c][cl] && !fenced_q[c][cl] && busy_q[c][cl] &&
+                    (event_i.done[c][cl] || (!event_i.dispatch[c][cl] && event_i.heartbeat[c][cl]));
+                status_o.interval[c][cl] = timer_q[c][cl];
             end
         end
     end
@@ -123,34 +114,34 @@ module bingo_hw_manager_watchdog #(
                         busy_q[c][cl] <= 1'b0;
                         timer_q[c][cl] <= '0;
                     // Check for task completion, new task dispatch, and heartbeat
-                    end else if(task_done_i[c][cl]) begin
+                    end else if(event_i.done[c][cl]) begin
                         busy_q[c][cl] <= 1'b0;
                         timer_q[c][cl] <= '0;
-                    end else if(task_dispatched_i[c][cl]) begin
+                    end else if(event_i.dispatch[c][cl]) begin
                         busy_q[c][cl] <= 1'b1;
                         timer_q[c][cl] <= '0;
-                    end else if (heartbeat_i[c][cl]) begin
+                    end else if (event_i.heartbeat[c][cl]) begin
                         timer_q[c][cl] <= '0; // Reset timer on heartbeat
                     end else if ((ConfirmTimeoutCycles != 0) && CoreMask[c][cl] && busy_q[c][cl] &&
-                                 (timer_q[c][cl] >= ((risk_i[c][cl] && risk_confirm_valid_i[c][cl] && risk_confirm_i != '0) ?
-                                  risk_confirm_i : ((confirm_thr_i[c][cl] != '0) ?
-                                  confirm_thr_i[c][cl] : ConfirmTimeoutCycles[CounterWidth-1:0])))) begin
+                                 (timer_q[c][cl] >= ((bound_i.risk[c][cl] && bound_i.risk_use[c][cl] && bound_i.risk_confirm != '0) ?
+                                  bound_i.risk_confirm : ((bound_i.confirm[c][cl] != '0) ?
+                                  bound_i.confirm[c][cl] : ConfirmTimeoutCycles[CounterWidth-1:0])))) begin
                         // A done, dispatch or heartbeat in this cycle wins (branches above).
                         fenced_q[c][cl] <= 1'b1;
                         busy_q[c][cl] <= 1'b0;
                         timer_q[c][cl] <= '0;
 `ifndef SYNTHESIS
-                        if (adapt_confirm_i[c][cl])
+                        if (bound_i.adapt_confirm[c][cl])
                             $display("[BINGO_ADAPT_CONFIRM] %0t core=%0d cluster=%0d type=%0d class=%0d threshold=%0d",
-                                     $time, c, cl, CoreTypeId[c][cl], wd_class_i[c][cl], confirm_thr_i[c][cl]);
-                        else if (risk_i[c][cl] && risk_confirm_valid_i[c][cl] && risk_confirm_i != '0)
+                                     $time, c, cl, CoreTypeId[c][cl], bound_i.wd_class[c][cl], bound_i.confirm[c][cl]);
+                        else if (bound_i.risk[c][cl] && bound_i.risk_use[c][cl] && bound_i.risk_confirm != '0)
                             $display("[BINGO_RISK_CONFIRM] %0t core=%0d cluster=%0d threshold=%0d",
-                                     $time, c, cl, risk_confirm_i);
-                        else if (confirm_thr_i[c][cl] != '0)
+                                     $time, c, cl, bound_i.risk_confirm);
+                        else if (bound_i.confirm[c][cl] != '0)
                             $display("[BINGO_TYPE_CONFIRM] %0t core=%0d cluster=%0d type=%0d threshold=%0d",
-                                     $time, c, cl, CoreTypeId[c][cl], confirm_thr_i[c][cl]);
+                                     $time, c, cl, CoreTypeId[c][cl], bound_i.confirm[c][cl]);
 `endif
-                    end else if (busy_q[c][cl] && tick_i[c][cl] && timer_q[c][cl] != {CounterWidth{1'b1}}) begin
+                    end else if (busy_q[c][cl] && event_i.tick[c][cl] && timer_q[c][cl] != {CounterWidth{1'b1}}) begin
                         timer_q[c][cl] <= timer_q[c][cl] + 1'b1; // Increment timer if core is busy and no heartbeat
                     end
                 end
