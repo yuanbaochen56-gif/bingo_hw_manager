@@ -12,16 +12,26 @@ module tb_bingo_hw_manager_wd_adapt_boundary;
     logic [31:0] ctrl;
     assign h_thr = hv ? 8'(h_ad) : 8'd40;
     assign c_thr = cv ? 8'(c_ad) : 8'd100;
+    // Port structs of bingo_hw_manager_watchdog
+    `BINGO_HW_MANAGER_TYPEDEF_WD_EVENT_T(wd_event_t, 1, 1)
+    `BINGO_HW_MANAGER_TYPEDEF_WD_BOUND_T(wd_bound_t, 1, 1, 8, 3)
+    `BINGO_HW_MANAGER_TYPEDEF_WD_STATUS_T(wd_status_t, 1, 1, 8)
+    wd_status_t wd_status;
+    assign busy     = wd_status.busy;
+    assign fenced   = wd_status.fenced;
+    assign suspect  = wd_status.dead_suspect;
+    assign progress = wd_status.progress;
+    assign interval = wd_status.interval;
     bingo_hw_manager_watchdog #(
         .NumCores(1), .NumClusters(1), .CounterWidth(8),
-        .HeartbeatTimeoutCycles(40), .ConfirmTimeoutCycles(100), .CoreTypeId(4'd1)
+        .HeartbeatTimeoutCycles(40), .ConfirmTimeoutCycles(100), .CoreTypeId(4'd1),
+        .wd_event_t(wd_event_t), .wd_bound_t(wd_bound_t), .wd_status_t(wd_status_t)
     ) wd (
-        .clk_i(clk), .rst_ni(rst), .task_dispatched_i(dispatch), .task_done_i(done),
-        .heartbeat_i(hb), .waiting_task_i('0), .tick_i(ticks),
-        .suspect_thr_i(h_thr), .confirm_thr_i(c_thr), .suspect_thr_valid_i(hv),
-        .adapt_confirm_i(cv), .wd_class_i(3'd1),
-        .core_busy_o(busy), .core_fenced_o(fenced), .core_dead_suspect_o(suspect),
-        .core_available_o(), .late_o(), .progress_o(progress), .interval_o(interval)
+        .clk_i(clk), .rst_ni(rst),
+        .event_i('{dispatch: dispatch, done: done, heartbeat: hb, waiting: '0, tick: ticks}),
+        .bound_i('{suspect: h_thr, confirm: c_thr, suspect_valid: hv, adapt_confirm: cv,
+                   wd_class: 3'd1, default: '0}),
+        .status_o(wd_status)
     );
     // Port structs of bingo_hw_manager_wd_adapt (bingo_hw_manager/typedef.svh)
     `BINGO_HW_MANAGER_TYPEDEF_WD_EVENT_T(adapt_event_t, 1, 1)
