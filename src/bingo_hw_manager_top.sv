@@ -2138,12 +2138,15 @@ module bingo_hw_manager_top #(
     // (bingo_hw_manager_remote_proxy).
     // Executor side: an imported task runs on a live core of its type here, as
     // a task of the lowest slot of that type, and its done (or a reject) goes
-    // back to its origin.
+    // back to its origin (bingo_hw_manager_remote_reply).
     bingo_hw_manager_task_desc_full_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] route_desc_full;
     // The proxy slots of the exported tasks, and the exports to the transport
     proxy_t                                                               proxy;
     remote_dispatch_out_t                                                 remote_dispatch_out;
     remote_dispatch_in_t                                                  remote_dispatch_in;
+    // Level 3, executor side: a reject for the origin (bingo_hw_manager_remote_reply)
+    logic                                                                 import_reject_valid;
+    remote_done_t                                                         import_reject_out;
     always_comb begin
         for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++)
             for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
@@ -2253,15 +2256,28 @@ module bingo_hw_manager_top #(
         .checkout_i          ( checkout_queue                                               ),
         .ready_i             ( ready_queue                                                  ),
         .import_o            ( imported                                                     ),
-        .done_i              ( remote_done_arb_data                                         ),
-        .done_valid_i        ( remote_done_arb_valid                                        ),
-        .done_ready_o        ( remote_done_arb_ready                                        ),
         .bounce_tag_i        ( checkout_remote_tag_out[replay_src_core][replay_src_cluster] ),
         .bounce_desc_i       ( replay_data                                                  ),
-        .reject_pending_o    ( reject_pending                                               ),
-        .remote_done_valid_o ( remote_done_valid_o                                          ),
-        .remote_done_ready_i ( remote_done_ready_i                                          ),
-        .remote_done_o       ( remote_done_out                                              )
+        .reject_valid_o      ( import_reject_valid                                          ),
+        .reject_o            ( import_reject_out                                            ),
+        .reject_pending_i    ( reject_pending                                               )
+    );
+    bingo_hw_manager_remote_reply #(
+        .NumSlots      ( NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET ),
+        .RemoteEn      ( RemoteEn                                         ),
+        .remote_done_t ( remote_done_t                                    )
+    ) i_remote_reply (
+        .clk_i               ( clk_i                 ),
+        .rst_ni              ( rst_ni                ),
+        .reject_valid_i      ( import_reject_valid   ),
+        .reject_i            ( import_reject_out     ),
+        .reject_pending_o    ( reject_pending        ),
+        .done_i              ( remote_done_arb_data  ),
+        .done_valid_i        ( remote_done_arb_valid ),
+        .done_ready_o        ( remote_done_arb_ready ),
+        .remote_done_valid_o ( remote_done_valid_o   ),
+        .remote_done_ready_i ( remote_done_ready_i   ),
+        .remote_done_o       ( remote_done_out       )
     );
     assign remote_done_chip_o       = remote_done_out.chip;
     assign remote_done_proxy_slot_o = remote_done_out.proxy_slot;

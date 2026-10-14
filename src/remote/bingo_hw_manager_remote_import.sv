@@ -13,13 +13,12 @@
 // origin chiplet and it sets none here. Imports wait while a local replay is
 // pending or moving, and never collide with a routed or replayed push into
 // the same slot.
-// When an imported task retires, its done leaves through remote_done_o
-// instead of setting local dependencies. A task that no live core here may
-// run, now or later (fenced is sticky), is taken and rejected back to its
-// origin instead of blocking the link; so is an imported entry that a replay
-// bounces (its core died and no other live core is left). One reject waits at
-// a time, below every retiring done: the dones of a proxy slot reach its
-// origin before its reject (once raised, the request is held until taken).
+// A task that no live core here may run, now or later (fenced is sticky), is
+// taken and rejected back to its origin instead of blocking the link; so is
+// an imported entry that a replay bounces (its core died and no other live
+// core is left). The reject (reject_o) and the dones of retiring imported
+// tasks go back to the origin through bingo_hw_manager_remote_reply, which
+// holds one reject at a time (reject_pending_i).
 // Without RemoteEn every output is 0.
 module bingo_hw_manager_remote_import #(
     parameter int unsigned NumCores = 4,
@@ -43,9 +42,7 @@ module bingo_hw_manager_remote_import #(
     parameter type         route_t = logic,
     parameter type         checkout_t = logic,
     parameter type         ready_t = logic,
-    parameter type         import_t = logic,
-    // Dependent parameters, DO NOT OVERRIDE!
-    parameter int unsigned NumSlots = NumCores * NumClusters
+    parameter type         import_t = logic
 ) (
     input  logic                                 clk_i,
     input  logic                                 rst_ni,
@@ -67,19 +64,14 @@ module bingo_hw_manager_remote_import #(
     // The import taken this cycle (pushed into one slot, or rejected), its home
     // slot and the slot it runs on
     output import_t                              import_o,
-    // Dones of imported tasks: a retiring imported checkout head, per slot
-    input  remote_done_t [NumSlots-1:0]          done_i,
-    input  logic         [NumSlots-1:0]          done_valid_i,
-    output logic         [NumSlots-1:0]          done_ready_o,
     // A bounced imported entry (step_i.bounce: replay found no live core for it)
     input  remote_tag_t                          bounce_tag_i,
     input  task_desc_t                           bounce_desc_i,
-    // A reject waits: the replay controller bounces nothing more meanwhile
-    output logic                                 reject_pending_o,
-    // To the transport
-    output logic                                 remote_done_valid_o,
-    input  logic                                 remote_done_ready_i,
-    output remote_done_t                         remote_done_o
+    // A reject for the origin: of the import taken this cycle, or of a bounced
+    // entry; and a reject still waits (none is taken meanwhile)
+    output logic                                 reject_valid_o,
+    output remote_done_t                         reject_o,
+    input  logic                                 reject_pending_i
 );
     // The import taken this cycle (import_o)
     logic                                 import_fire, import_reject;
@@ -165,64 +157,25 @@ module bingo_hw_manager_remote_import #(
         // and reject it back to its origin instead of blocking the link. Waits
         // for a local replay, which may first bounce older imports of the type.
         assign import_reject = dispatch_valid_i && !(home_found && sub_found) &&
-                               !replay_pending_i && !(|step_i.move) && !reject_pending_o;
+                               !replay_pending_i && !(|step_i.move) && !reject_pending_i;
         assign dispatch_ready_o = import_fire || import_reject;
 
-        // One pending reject (an import reject or a bounced imported entry)
-        logic         reject_valid_q, reject_raised_q;
-        remote_done_t reject_q;
-        logic         reject_arb_valid, reject_arb_ready;
-        always_ff @(posedge clk_i or negedge rst_ni) begin
-            if (!rst_ni) begin
-                reject_valid_q  <= 1'b0;
-                reject_q        <= '0;
-                reject_raised_q <= 1'b0;
+        // A reject for the origin: the import taken this cycle, else a bounced
+        // imported entry
+        assign reject_valid_o = import_reject || step_i.bounce;
+        always_comb begin
+            if (import_reject) begin
+                reject_o = '{chip:       dispatch_i.origin_chip,
+                             proxy_slot: dispatch_i.proxy_slot,
+                             task_id:    import_desc.task_id,
+                             reject:     1'b1};
             end else begin
-                if (reject_arb_valid && reject_arb_ready) begin
-                    reject_valid_q  <= 1'b0;
-                    reject_raised_q <= 1'b0;
-                end else if (reject_arb_valid) begin
-                    reject_raised_q <= 1'b1;
-                end
-                if (import_reject) begin
-                    reject_valid_q <= 1'b1;
-                    reject_q       <= '{chip:       dispatch_i.origin_chip,
-                                        proxy_slot: dispatch_i.proxy_slot,
-                                        task_id:    import_desc.task_id,
-                                        reject:     1'b1};
-                end else if (step_i.bounce) begin
-                    reject_valid_q <= 1'b1;
-                    reject_q       <= '{chip:       bounce_tag_i.origin_chip,
-                                        proxy_slot: bounce_tag_i.proxy_slot,
-                                        task_id:    bounce_desc_i.task_id,
-                                        reject:     1'b1};
-                end
+                reject_o = '{chip:       bounce_tag_i.origin_chip,
+                             proxy_slot: bounce_tag_i.proxy_slot,
+                             task_id:    bounce_desc_i.task_id,
+                             reject:     1'b1};
             end
         end
-        assign reject_pending_o = reject_valid_q;
-        // Below every retiring done: the dones of a proxy slot reach its origin
-        // before its reject (once raised, the request is held until taken)
-        assign reject_arb_valid = reject_valid_q && (reject_raised_q || !(|done_valid_i));
-
-        // Dones of imported tasks and rejects, back to their origin
-        remote_done_t [NumSlots:0] remote_done_all_data;
-        logic         [NumSlots:0] remote_done_all_valid, remote_done_all_ready;
-        assign remote_done_all_data  = {reject_q, done_i};
-        assign remote_done_all_valid = {reject_arb_valid, done_valid_i};
-        assign {reject_arb_ready, done_ready_o} = remote_done_all_ready;
-        stream_arbiter #(
-            .DATA_T(remote_done_t),
-            .N_INP (NumSlots + 1)
-        ) i_remote_done_arbiter (
-            .clk_i      ( clk_i                 ),
-            .rst_ni     ( rst_ni                ),
-            .inp_data_i ( remote_done_all_data  ),
-            .inp_valid_i( remote_done_all_valid ),
-            .inp_ready_o( remote_done_all_ready ),
-            .oup_data_o ( remote_done_o         ),
-            .oup_valid_o( remote_done_valid_o   ),
-            .oup_ready_i( remote_done_ready_i   )
-        );
     end else begin : gen_no_import
         assign dispatch_ready_o    = 1'b0;
         assign import_fire         = 1'b0;
@@ -234,9 +187,7 @@ module bingo_hw_manager_remote_import #(
         assign home_cluster        = '0;
         assign import_core         = '0;
         assign import_cluster      = '0;
-        assign done_ready_o        = '0;
-        assign reject_pending_o    = 1'b0;
-        assign remote_done_valid_o = 1'b0;
-        assign remote_done_o       = '0;
+        assign reject_valid_o      = 1'b0;
+        assign reject_o            = '0;
     end
 endmodule
