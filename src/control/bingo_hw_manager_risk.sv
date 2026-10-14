@@ -50,11 +50,11 @@ module bingo_hw_manager_risk
             risk_epoch_cnt_q <= ((cfg_i.risk_epoch == '0) || risk_epoch_end) ? '0 : risk_epoch_cnt_q + 1;
             for (int unsigned c = 0; c < NumCores; c++) begin
                 for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                    automatic logic [3:0] cnt = risk_cnt_q[c][cl];
                     if (fenced_i[c][cl] || risk_clear_i[c][cl]) begin
                         risk_cnt_q[c][cl] <= '0;
                         risk_q[c][cl]     <= 1'b0;
                     end else begin
+                        automatic logic [3:0] cnt = risk_cnt_q[c][cl];
                         if (risk_epoch_end) cnt = cnt >> 1;
                         if (late_i[c][cl] && (cnt != 4'hf)) cnt = cnt + 1;
                         risk_cnt_q[c][cl] <= cnt;
