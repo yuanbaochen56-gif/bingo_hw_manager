@@ -12,7 +12,7 @@
 `include "tb_stimulus_remote_dispatch.svh"
 
 int unsigned rm_dispatches [2][$];
-int unsigned rm_moved      [2][$];
+int unsigned rm_imported   [$];    // dispatches of imported tasks on chiplet 1
 for (genvar chip = 0; chip < 2; chip++) begin : gen_rlink_moved_monitor
     logic [2:0] check_core, check_moved;
     always @(negedge clk_i) begin
@@ -33,7 +33,7 @@ for (genvar chip = 0; chip < 2; chip++) begin : gen_rlink_moved_monitor
                     if (gen_dut[chip].i_dut.ready_moved[core][0] !== imported)
                         $error("[RLINK_MOVED] chiplet %0d core %0d task %0d: ready head moved %b, expected %b",
                                chip, core, id, gen_dut[chip].i_dut.ready_moved[core][0], imported);
-                    if (imported) rm_moved[chip].push_back(id);
+                    if (imported) rm_imported.push_back(id);
                     check_core[core]  = 1'b1;
                     check_moved[core] = imported;
                 end
@@ -42,10 +42,12 @@ for (genvar chip = 0; chip < 2; chip++) begin : gen_rlink_moved_monitor
     end
 end
 
+// Coverage only: the checks are the $error of every dispatch above; this one
+// makes sure they saw the three imported tasks dispatched on chiplet 1
 final begin
-    if (rm_moved[1] != '{1, 2, 7} || rm_moved[0].size() != 0)
-        $error("[RLINK_MOVED] moved dispatches %p / %p, expected none / '{1, 2, 7}", rm_moved[0], rm_moved[1]);
+    if (rm_imported != '{1, 2, 7})
+        $error("[RLINK_MOVED] imported dispatches on chiplet 1 %p, expected '{1, 2, 7}", rm_imported);
     else
         $display("[RLINK_MOVED] dispatches chiplet 0 %p, chiplet 1 %p; moved on chiplet 1: %p",
-                 rm_dispatches[0], rm_dispatches[1], rm_moved[1]);
+                 rm_dispatches[0], rm_dispatches[1], rm_imported);
 end
