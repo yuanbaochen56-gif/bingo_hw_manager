@@ -120,9 +120,9 @@ module bingo_hw_manager_csr_port #(
         );
 
 `ifndef SYNTHESIS
-    // A CSR request with an unknown address is never served and silently stalls
-    // its core (e.g. an integration that forwards a translated CSR number).
-    // Report it once when it appears.
+    // A CSR request with an unknown address reads 0 or is ignored (e.g. an
+    // integration that forwards a translated CSR number): a software or
+    // integration error that the core does not see. Report it once when it appears.
     logic [N_CORES_TOTAL-1:0] csr_req_unknown_q;
     always @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
@@ -131,7 +131,7 @@ module bingo_hw_manager_csr_port #(
             csr_req_unknown_q <= csr_req_unknown_1d;
             for (int unsigned i = 0; i < N_CORES_TOTAL; i++) begin
                 if (csr_req_unknown_1d[i] && !csr_req_unknown_q[i]) begin
-                    $error("[BINGO_CSR] chip %0d core %0d cluster %0d: unknown CSR address 0x%0h (write=%0b), request will stall",
+                    $error("[BINGO_CSR] chip %0d core %0d cluster %0d: unknown CSR address 0x%0h (write=%0b), read as 0 / ignored",
                            chip_id_i, i % NumCores, i / NumCores,
                            csr_req_1d[i].addr, csr_req_1d[i].write);
                 end

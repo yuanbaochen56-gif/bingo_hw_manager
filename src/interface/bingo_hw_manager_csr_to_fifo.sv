@@ -59,9 +59,9 @@ module bingo_hw_manager_csr_to_fifo #(
     // Heartbeat CSR writes are accepted locally and do not enter the done FIFO.
     output data_t    [N-1:0]    heartbeat_data_o,
     output logic     [N-1:0]    heartbeat_valid_o,
-    // A valid request that matches none of the CSRs above. It is never served
-    // (no FIFO access, no response), so the requesting core stalls; exported
-    // so the top can report it.
+    // A valid request that matches none of the CSRs above. It touches no FIFO:
+    // a read is answered with 0 at once, a write is taken and ignored, so the
+    // requesting core goes on; exported so the top can report it.
     output logic     [N-1:0]    csr_req_unknown_o
 );
     // Signals for csr_to_fifo_read
@@ -84,13 +84,15 @@ module bingo_hw_manager_csr_to_fifo #(
         logic is_ready_read;
         logic is_done_write;
         logic is_heartbeat;
+        logic is_unknown;
+        data_t ready_rsp_data;
 
         bingo_hw_manager_csr_to_fifo_read #(
             .data_t(data_t)
         ) csr_to_fifo_read (
             .csr_req_valid_i(csr_req_valid_read[i]),
             .csr_req_ready_o(csr_req_ready_read[i]),
-            .csr_rsp_data_o(csr_rsp_o[i].data),
+            .csr_rsp_data_o(ready_rsp_data),
             .csr_rsp_valid_o(csr_rsp_valid_read[i]),
             .csr_rsp_ready_i(csr_rsp_ready_i[i]),
             .fifo_data_i(fifo_data_i[i]),
@@ -131,14 +133,19 @@ module bingo_hw_manager_csr_to_fifo #(
         assign fifo_data_o[i] = data_t'(done_info[i]);
         assign csr_req_valid_write[i] = is_done_write;
 
-        assign csr_req_ready_o[i] = is_heartbeat ? 1'b1 :
-                                    (csr_req_i[i].write ? csr_req_ready_write[i] : csr_req_ready_read[i]);
-        assign csr_rsp_valid_o[i] = csr_req_i[i].write ? '0 : csr_rsp_valid_read[i];
+        // An unknown read is answered with 0 in the cycle the core takes the
+        // response (as a ready read), an unknown write is taken at once
+        assign is_unknown = csr_req_valid_i[i] && !is_ready_read && !is_done_write && !is_heartbeat;
+        assign csr_req_ready_o[i] = (is_heartbeat || (is_unknown && csr_req_i[i].write)) ? 1'b1 :
+                                    (is_unknown ? csr_rsp_ready_i[i] :
+                                    (csr_req_i[i].write ? csr_req_ready_write[i] : csr_req_ready_read[i]));
+        assign csr_rsp_valid_o[i] = csr_req_i[i].write ? '0 : (csr_rsp_valid_read[i] || is_unknown);
+        assign csr_rsp_o[i].data  = is_unknown ? '0 : ready_rsp_data;
 
         assign heartbeat_valid_o[i] = is_heartbeat;
         assign heartbeat_data_o[i]  = csr_req_i[i].data;
 
-        assign csr_req_unknown_o[i] = csr_req_valid_i[i] && !is_ready_read && !is_done_write && !is_heartbeat;
+        assign csr_req_unknown_o[i] = is_unknown;
 
     end
 endmodule
