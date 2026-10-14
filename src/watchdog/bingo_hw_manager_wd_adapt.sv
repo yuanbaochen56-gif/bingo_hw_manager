@@ -1,35 +1,103 @@
+// Copyright 2026 KU Leuven.
+// Solderpad Hardware License, Version 0.51, see LICENSE for details.
+// SPDX-License-Identifier: SHL-0.51
+
+// Learned watchdog thresholds. For every (core type, task class) the module
+// learns how long a healthy execution runs without progress, and gives every
+// slot thresholds derived from it, which can only be shorter than the slot's
+// static ones (h_eff_i, c_eff_i: those of its core type, or the parameters).
+// Times are ticks of the watchdog timer (bingo_hw_manager_watchdog), so they
+// count cycles of the normal clock.
+//
+// Table table_q[type][class], type = CoreTypeId of the slot, class = class of
+// the task it runs (class 0 is never learned and gets no threshold):
+//   maximum  M  the longest progress interval of a learned execution
+//   samples  N  learned executions, saturating at 15
+//   load     L  the highest load during a learned execution (load: monitored,
+//               unfenced, busy slots)
+// An execution is learned in the cycle of its done, with the longest of its
+// progress intervals (from the dispatch or a heartbeat to the next heartbeat
+// or the done); completions in the same cycle are folded in slot order, and a
+// new entry applies from the next cycle. Not learned: a fenced slot, class 0,
+// a type beyond the table, a late execution (below), and with LOCAL_ONLY an
+// execution that ran away from its own slot (replayed, remapped or imported)
+// or at a level faster than normal at any time. Learning does not depend on
+// the enables; only reset clears the table.
+//
+// An entry is valid for a slot when M >= 1, N >= WARMUP and, with LOAD_GUARD,
+// the highest load since the slot's dispatch is at most L. With a valid entry,
+// and M' = M << MOVED_SH while the slot runs a task away from its own slot
+// (else M' = M):
+//   ctrl_i EN:       H = min(max(M' << SH_H, FLOOR), h_eff)
+//                    C = min(max(M' << SH_C, 2 H), c_eff)
+//   late_ctrl_i EN:  Late = max((M' + M'/4 * FRAC) << SH_L, LFLOOR), used only
+//                    below the slot's suspect threshold (H if valid, else h_eff)
+// An execution whose longest interval reaches Late is late and is not learned,
+// so a step slowdown does not raise M; a gradual one is still learned.
+//
+// Simulation only: +bingo_adapt_log prints [BINGO_ADAPT_LEARN] when M grows or
+// N reaches WARMUP, and with LOCAL_ONLY [BINGO_ADAPT_SKIP] for an execution it
+// keeps out; +bingo_adapt_trace prints [TRACE] A7_EXEC per dispatch and
+// progress, and with both and the late enable [TRACE] P9_TABLE per table change.
 module bingo_hw_manager_wd_adapt #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
+    // Width of the watchdog timer (interval_i) and of M
     parameter int unsigned CounterWidth = 24,
+    // The table covers core types 0 .. 2**WdAdaptTypeBits-1
     parameter int unsigned WdAdaptTypeBits = 2,
+    // Classes per type (class 0 unused)
     parameter int unsigned WdClassWidth = 3,
     parameter int unsigned CoreTypeIdWidth = 4,
+    // A slot with CoreMask = 0 (e.g. the host) never learns, is not counted in
+    // the load and gets no learned threshold
     parameter logic [NumCores-1:0][NumClusters-1:0] CoreMask = '1,
     parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId = '0
 ) (
     input logic clk_i,
     input logic rst_ni,
+    // BINGO_WD_ADAPT (reset 0: no learned H and C):
+    //   [0] EN  [1] LOAD_GUARD  [4:2] SH_H  [7:5] SH_C
+    //   [11:8] WARMUP (0 counts as 1)  [31:12] FLOOR (ticks)
     input logic [31:0] ctrl_i,
+    // BINGO_WD_LATE (reset 0: no Late, learning as without it):
+    //   [0] EN (Late, and late executions are not learned)  [3:1] SH_L
+    //   [6] LOCAL_ONLY  [8:7] MOVED_SH  [10:9] FRAC  [31:12] LFLOOR (ticks)
     input logic [31:0] late_ctrl_i = '0,
+    // From the watchdog: a done, or a heartbeat outside a dispatch cycle, of a
+    // monitored, unfenced, busy slot; and the ticks since the slot's dispatch or
+    // last heartbeat
     input logic [NumCores-1:0][NumClusters-1:0] progress_i,
     input logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] interval_i,
+    // An execution starts (a done in the same cycle wins, as in the watchdog) /
+    // ends (it is learned in this cycle)
     input logic [NumCores-1:0][NumClusters-1:0] dispatch_i,
     input logic [NumCores-1:0][NumClusters-1:0] done_i,
     input logic [NumCores-1:0][NumClusters-1:0] fenced_i,
     input logic [NumCores-1:0][NumClusters-1:0] busy_i,
+    // Class of the slot's task, latched at dispatch (also for replayed,
+    // remapped and imported tasks)
     input logic [NumCores-1:0][NumClusters-1:0][WdClassWidth-1:0] class_i,
     // The slot's task runs away from its own logical slot (replayed, remapped
     // or imported), latched at dispatch like class_i.
     input logic [NumCores-1:0][NumClusters-1:0] moved_i = '0,
     // The slot's power domain runs faster than the normal level this cycle.
     input logic [NumCores-1:0][NumClusters-1:0] fast_i = '0,
+    // Static suspect and confirm thresholds of the slot (its core type's, or
+    // the parameters): the caps of H and C; h_eff also bounds Late while H is
+    // not valid
     input logic [NumCores-1:0][NumClusters-1:0][31:0] h_eff_i,
     input logic [NumCores-1:0][NumClusters-1:0][31:0] c_eff_i,
+    // H (valid: EN, a valid entry, H >= 1) and C (valid: H valid and C > H); the
+    // top uses C only if it is shorter than the confirm threshold it would use
+    // otherwise
     output logic [NumCores-1:0][NumClusters-1:0][31:0] h_ad_o,
     output logic [NumCores-1:0][NumClusters-1:0][31:0] c_ad_o,
     output logic [NumCores-1:0][NumClusters-1:0] h_valid_o,
     output logic [NumCores-1:0][NumClusters-1:0] c_valid_o,
+    // Late (valid: late EN, a valid entry, below the suspect threshold): a
+    // heartbeat or done at or after it is a late beat, the fault precursor of
+    // the risk counter (bingo_hw_manager_risk)
     output logic [NumCores-1:0][NumClusters-1:0][31:0] late_ad_o,
     output logic [NumCores-1:0][NumClusters-1:0] late_valid_o
 );
