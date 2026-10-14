@@ -2134,7 +2134,8 @@ module bingo_hw_manager_top #(
     // that no live core of this chiplet may run stays in D's checkout queue,
     // marked exported, and a copy goes to another chiplet. D is its proxy: the
     // remote done comes back into D's done queue and retires the head with the
-    // normal dep_set. A proxy whose export is rejected or times out stops.
+    // normal dep_set. A proxy whose export is rejected or times out stops
+    // (bingo_hw_manager_remote_proxy).
     // Executor side: an imported task runs on a live core of its type here, as
     // a task of the lowest slot of that type, and its done (or a reject) goes
     // back to its origin.
@@ -2166,10 +2167,7 @@ module bingo_hw_manager_top #(
         .replay_step_t     ( replay_step_t                                    ),
         .route_t           ( route_t                                          ),
         .checkout_t        ( checkout_t                                       ),
-        .done_t            ( done_t                                           ),
-        .done_remote_t     ( done_remote_t                                    ),
-        .remote_dispatch_t ( remote_dispatch_out_t                            ),
-        .proxy_t           ( proxy_t                                          )
+        .remote_dispatch_t ( remote_dispatch_out_t                            )
     ) i_remote_export (
         .clk_i            ( clk_i                         ),
         .rst_ni           ( rst_ni                        ),
@@ -2187,12 +2185,25 @@ module bingo_hw_manager_top #(
         .peer_ready_i     ( remote_export_peer_ready_i    ),
         .dispatch_valid_o ( remote_dispatch_valid_o       ),
         .dispatch_ready_i ( remote_dispatch_ready_i       ),
-        .dispatch_o       ( remote_dispatch_out           ),
-        .head_mismatch_i  ( remote_head_mismatch          ),
-        .done_i           ( done_queue                    ),
-        .remote_i         ( done_remote                   ),
-        .timeout_cycles_i ( 32'(remote_proxy_timeout_i)   ),
-        .proxy_o          ( proxy                         )
+        .dispatch_o       ( remote_dispatch_out           )
+    );
+    bingo_hw_manager_remote_proxy #(
+        .NumCores      ( NUM_CORES_PER_CLUSTER    ),
+        .NumClusters   ( NUM_CLUSTERS_PER_CHIPLET ),
+        .RemoteEn      ( RemoteEn                 ),
+        .checkout_t    ( checkout_t               ),
+        .done_t        ( done_t                   ),
+        .done_remote_t ( done_remote_t            ),
+        .proxy_t       ( proxy_t                  )
+    ) i_remote_proxy (
+        .clk_i            ( clk_i                       ),
+        .rst_ni           ( rst_ni                      ),
+        .checkout_i       ( checkout_queue              ),
+        .head_mismatch_i  ( remote_head_mismatch        ),
+        .done_i           ( done_queue                  ),
+        .remote_i         ( done_remote                 ),
+        .timeout_cycles_i ( 32'(remote_proxy_timeout_i) ),
+        .proxy_o          ( proxy                       )
     );
     assign remote_dispatch_desc_o        = host_axi_lite_data_t'(remote_dispatch_out.desc);
     assign remote_dispatch_core_type_o   = remote_dispatch_out.core_type;

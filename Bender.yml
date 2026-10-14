@@ -59,7 +59,8 @@ sources:
   - src/interface/bingo_hw_manager_csr_port.sv             # CSR port of the cores: ready reads, done writes, heartbeats
   - src/queues/bingo_hw_manager_checkout_queue.sv          # Checkout queue of a slot and the retire rule of its head
   - src/placement/bingo_hw_manager_remap_count.sv          # Tasks of a logical slot in other slots' checkout queues
-  - src/remote/bingo_hw_manager_remote_export.sv           # Level 3, origin side: export queues and proxy slots
+  - src/remote/bingo_hw_manager_remote_export.sv           # Level 3, origin side: export queues
+  - src/remote/bingo_hw_manager_remote_proxy.sv            # Level 3, origin side: state of the proxy slots
   - src/remote/bingo_hw_manager_remote_import.sv           # Level 3, executor side: imports, their dones and rejects
   - src/bingo_hw_manager_top_assert.sv                     # Simulation-only invariants of the top
   # Level 2
