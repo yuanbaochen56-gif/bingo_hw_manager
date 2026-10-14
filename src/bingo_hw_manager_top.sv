@@ -1172,6 +1172,8 @@ module bingo_hw_manager_top #(
             assign import_in = '{valid: imported.push[core][cluster], desc: imported.desc};
             bingo_hw_manager_ready_queue #(
                 .InterfaceType ( READY_AND_DONE_QUEUE_INTERFACE_TYPE     ),
+                .Core          ( core                                    ),
+                .Cluster       ( cluster                                 ),
                 .Depth         ( ReadyQueueDepth                         ),
                 .WdClassWidth  ( WdClassWidth                            ),
                 .ChipIdWidth   ( ChipIdWidth                             ),
@@ -1191,8 +1193,6 @@ module bingo_hw_manager_top #(
                 .clk_i           ( clk_i                                                           ),
                 .rst_ni          ( rst_ni                                                          ),
                 .chip_id_i       ( chip_id_i                                                       ),
-                .core_id_i       ( bingo_hw_manager_assigned_core_id_t'(core)                      ),
-                .cluster_id_i    ( bingo_hw_manager_assigned_cluster_id_t'(cluster)                ),
                 .route_i         ( route_in                                                        ),
                 .replay_i        ( replay_in                                                       ),
                 .import_i        ( import_in                                                       ),

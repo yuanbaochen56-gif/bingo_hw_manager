@@ -21,6 +21,9 @@
 //      flush_i are not used.
 module bingo_hw_manager_ready_queue #(
     parameter int unsigned InterfaceType = 1,
+    // This slot
+    parameter int unsigned Core = 0,
+    parameter int unsigned Cluster = 0,
     parameter int unsigned Depth = 8,
     parameter int unsigned WdClassWidth = 3,
     parameter int unsigned ChipIdWidth = 8,
@@ -41,16 +44,16 @@ module bingo_hw_manager_ready_queue #(
     input  logic                      clk_i,
     input  logic                      rst_ni,
     input  logic [ChipIdWidth-1:0]    chip_id_i,
-    // This slot
-    input  logic [CoreIdWidth-1:0]    core_id_i,
-    input  logic [ClusterIdWidth-1:0] cluster_id_i,
-    // Push
+    // Push: a new task routed to this slot (bingo_hw_manager_router), a task the
+    // replay controller moves here, a task imported from another chiplet
     input  task_push_t                route_i,
     input  task_push_t                replay_i,
     input  task_push_t                import_i,
     output ready_push_t               push_o,
     output logic                      full_o,
-    // FIFO side (InterfaceType 1)
+    // FIFO side (InterfaceType 1). Besides the task, the head carries its class
+    // and whether it runs away from its own slot, which the watchdog adaptation
+    // latches at the dispatch (never in the ready word the core reads)
     input  logic                      flush_i,
     input  logic                      pop_i,
     output ready_head_t               head_o,
@@ -78,8 +81,8 @@ module bingo_hw_manager_ready_queue #(
     // a substitute, or imported from another chiplet.
     logic moved;
     assign moved = (import_i.valid && !replay_i.valid) ||
-                   (source_desc.assigned_core_id != core_id_i) ||
-                   (source_desc.assigned_cluster_id != cluster_id_i);
+                   (source_desc.assigned_core_id != CoreIdWidth'(Core)) ||
+                   (source_desc.assigned_cluster_id != ClusterIdWidth'(Cluster));
 
     if (InterfaceType == 0) begin : gen_ready_queue_axi_lite_mailbox
         bingo_hw_manager_read_mailbox #(
