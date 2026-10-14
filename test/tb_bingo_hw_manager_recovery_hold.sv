@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 `include "axi/typedef.svh"
+`include "bingo_hw_manager/typedef.svh"
 module tb_bingo_hw_manager_recovery_hold;
     typedef logic [47:0] addr_t;
     typedef logic [63:0] data_t;
@@ -15,28 +16,23 @@ module tb_bingo_hw_manager_recovery_hold;
     logic [31:0] hold_cycles = 12;
     logic access = 0, update;
     logic [31:0][7:0] level;
-    logic [3:0][0:0][31:0] pm_domains;
     bus_req_t req;
     bus_resp_t resp;
     assign resp = '{aw_ready:1'b1, w_ready:1'b1, b_valid:1'b1,
                     b:'0, ar_ready:1'b1, r_valid:1'b1, r:'0};
-    for (genvar c = 0; c < 4; c++) assign pm_domains[c][0] = 32'(domains[c][0]);
     // Ready bus: IDLE selection plus four AW/W states takes five edges.
     // Four active domains give L_wake = 4 * 5 = 20 top-clock cycles.
     localparam int L_WAKE = 4 * 5;
+    `BINGO_HW_MANAGER_TYPEDEF_PM_SLOT_T(pm_slot_t, 4, 1)
     bingo_hw_manager_pm #(
         .NUM_CLUSTERS_PER_CHIPLET(1), .NUM_CORES_PER_CLUSTER(4),
         .req_lite_t(bus_req_t), .resp_lite_t(bus_resp_t),
-        .addr_t(addr_t), .data_t(data_t)
+        .addr_t(addr_t), .data_t(data_t), .pm_slot_t(pm_slot_t)
     ) pm (
-        .clk_i(clk), .rst_ni(rst), .enable_idle_pm_i(32'd1),
-        .idle_power_level_i(32'd25), .normal_power_level_i(32'd6),
-        .access_power_level_i(32'd0), .core_access_only_i(access_only),
-        .boost_power_level_i(32'd0), .core_boost_i(boost),
-        .derate_power_level_i(32'd0), .core_derate_i('0),
-        .pm_base_addr_i(48'h1000), .core_power_domain_i(pm_domains),
-        .core_status_waiting_task_i(idle), .pm_mode_i(32'd0),
-        .dvfs_clint_msip_addr_i(48'd0), .dvfs_ack_i(32'd0),
+        .clk_i(clk), .rst_ni(rst),
+        .cfg_i('{enable: 1'b1, idle_level: 8'd25, normal_level: 8'd6, default: '0}),
+        .slot_i('{domain: domains, idle: idle, access_only: access_only, boost: boost, derate: '0}),
+        .pm_base_addr_i(48'h1000), .dvfs_clint_msip_addr_i(48'd0),
         .dvfs_request_o(), .domain_level_o(level),
         .pm_axi_lite_req_o(req), .pm_axi_lite_resp_i(resp)
     );
@@ -132,7 +128,7 @@ module tb_bingo_hw_manager_recovery_hold;
                     if (cold[c]) cold_windows++; else hot_windows++;
                 end
                 if (dut.i_power_view.rec_hold_q[c][0] != 0) begin
-                    if (pm.target_power_level[c+1] == 25)
+                    if (pm.i_policy.target_power_level[c+1] == 25)
                         $fatal(1, "[REC_HOLD] target idle while count nonzero");
                     if (level[c+1] != 25) woke[c] = 1;
                     if (woke[c] && level[c+1] == 25)

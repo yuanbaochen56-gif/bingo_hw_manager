@@ -830,6 +830,7 @@ module bingo_hw_manager_top #(
         cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER), cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
     `BINGO_HW_MANAGER_TYPEDEF_ROUTE_T(route_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET,
         cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER))
+    `BINGO_HW_MANAGER_TYPEDEF_PM_SLOT_T(pm_slot_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
     `BINGO_HW_MANAGER_TYPEDEF_REMAP_REQ_T(remap_req_t, cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER),
                                           cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
     `BINGO_HW_MANAGER_TYPEDEF_REMAP_SEL_T(remap_sel_t, cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER),
@@ -870,15 +871,17 @@ module bingo_hw_manager_top #(
     // Late beats (bingo_hw_manager_watchdog)
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_late;
     logic [31:0][7:0]                                               pm_domain_level;
-    // Power state and configured levels, as the control plane and the
-    // power-domain counters read them
+    // Configuration of the PM from the host (the levels are the low bytes of the
+    // CSRs), and the power state and configured levels as the control plane
+    // and the power-domain counters read them
+    pm_cfg_t                                                        pm_cfg;
     pm_view_t                                                       pm_view;
-    assign pm_view = '{enable:       bingo_hw_manager_enable_idle_pm_i[0],
-                       dvfs:         bingo_hw_manager_pm_mode_i[0],
-                       idle_level:   bingo_hw_manager_idle_power_level_i[7:0],
-                       normal_level: bingo_hw_manager_normal_power_level_i[7:0],
-                       boost_level:  bingo_hw_manager_boost_power_level_i[7:0],
-                       dvfs_level:   bingo_hw_manager_dvfs_ack_i[7:0],
+    assign pm_view = '{enable:       pm_cfg.enable,
+                       dvfs:         pm_cfg.dvfs,
+                       idle_level:   pm_cfg.idle_level,
+                       normal_level: pm_cfg.normal_level,
+                       boost_level:  pm_cfg.boost_level,
+                       dvfs_level:   pm_cfg.dvfs_ack,
                        domain_level: pm_domain_level};
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][5:0] ctrl_slot_domain;
     // Power domain of each slot (PmMaxDomains: none), decoded once for the PM,
@@ -895,6 +898,14 @@ module bingo_hw_manager_top #(
         (bingo_hw_manager_pm_access_level_i > 32'(bingo_hw_manager_normal_power_level_i[7:0]) &&
          bingo_hw_manager_pm_access_level_i < 32'(bingo_hw_manager_idle_power_level_i[7:0])) ?
         bingo_hw_manager_pm_access_level_i : 32'd0;
+    assign pm_cfg = '{enable:       bingo_hw_manager_enable_idle_pm_i[0],
+                      dvfs:         bingo_hw_manager_pm_mode_i[0],
+                      idle_level:   bingo_hw_manager_idle_power_level_i[7:0],
+                      normal_level: bingo_hw_manager_normal_power_level_i[7:0],
+                      access_level: pm_access_level[7:0],
+                      boost_level:  bingo_hw_manager_boost_power_level_i[7:0],
+                      derate_level: bingo_hw_manager_risk_policy_i[15:8],
+                      dvfs_ack:     bingo_hw_manager_dvfs_ack_i[7:0]};
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect;
@@ -1679,6 +1690,15 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////////////////
     // Power Manager
     //////////////////////////////////////////////////////////////////////
+    // Every slot as the PM reads it: domain, idle (polling or fenced,
+    // bingo_hw_manager_power_view, so a dead core does not keep its domain at
+    // the normal level), busy only with outside accesses, boosted, derated
+    pm_slot_t pm_slot;
+    assign pm_slot = '{domain:      ctrl_slot_domain,
+                       idle:        ctrl_view.idle,
+                       access_only: ctrl_view.access_only,
+                       boost:       ctrl_view.boost,
+                       derate:      ctrl_view.derate};
     bingo_hw_manager_pm #(
         .NUM_CLUSTERS_PER_CHIPLET ( NUM_CLUSTERS_PER_CHIPLET          ),
         .NUM_CORES_PER_CLUSTER    ( NUM_CORES_PER_CLUSTER             ),
@@ -1687,35 +1707,22 @@ module bingo_hw_manager_top #(
         .req_lite_t               ( host_axi_lite_req_t               ),
         .resp_lite_t              ( host_axi_lite_resp_t              ),
         .addr_t                   ( host_axi_lite_addr_t              ),
-        .data_t                   ( host_axi_lite_data_t              )
+        .data_t                   ( host_axi_lite_data_t              ),
+        .pm_slot_t                ( pm_slot_t                         )
     ) i_bingo_hw_manager_pm (
-        .clk_i                 ( clk_i                                 ),
-        .rst_ni                ( rst_ni                                ),
-        // Configuration from the host
-        .enable_idle_pm_i      ( bingo_hw_manager_enable_idle_pm_i      ),
-        .idle_power_level_i    ( bingo_hw_manager_idle_power_level_i    ),
-        .normal_power_level_i  ( bingo_hw_manager_normal_power_level_i  ),
-        .boost_power_level_i   ( bingo_hw_manager_boost_power_level_i   ),
-        .core_boost_i          ( ctrl_view.boost                        ),
-        .derate_power_level_i  ( device_axi_lite_data_t'(bingo_hw_manager_risk_policy_i[15:8]) ),
-        .core_derate_i         ( ctrl_view.derate                       ),
-        .pm_base_addr_i        ( bingo_hw_manager_pm_base_addr_i        ),
-        .slot_domain_i         ( ctrl_slot_domain                       ),
-        // Internal Core status: polling or fenced (bingo_hw_manager_power_view), so a
-        // dead core does not keep its domain at the normal level
-        .core_status_waiting_task_i ( ctrl_view.idle                   ),
-        .access_power_level_i  ( device_axi_lite_data_t'(pm_access_level) ),
-        .core_access_only_i    ( ctrl_view.access_only                  ),
+        .clk_i                 ( clk_i                                   ),
+        .rst_ni                ( rst_ni                                  ),
+        .cfg_i                 ( pm_cfg                                  ),
+        .slot_i                ( pm_slot                                 ),
+        .pm_base_addr_i        ( bingo_hw_manager_pm_base_addr_i         ),
         // DVFS mode: monitor + notify host
-        .pm_mode_i             ( bingo_hw_manager_pm_mode_i             ),
-        .dvfs_clint_msip_addr_i( bingo_hw_manager_dvfs_clint_msip_addr_i),
-        .dvfs_ack_i            ( bingo_hw_manager_dvfs_ack_i            ),
-        .dvfs_request_o        ( bingo_hw_manager_dvfs_request_o        ),
-        .domain_level_o        ( pm_domain_level                        ),
+        .dvfs_clint_msip_addr_i( bingo_hw_manager_dvfs_clint_msip_addr_i ),
+        .dvfs_request_o        ( bingo_hw_manager_dvfs_request_o         ),
+        .domain_level_o        ( pm_domain_level                         ),
         // Interface to Host AXI Lite
-        .pm_axi_lite_req_o     (pm_axi_lite_req_o                      ),
-        .pm_axi_lite_resp_i    (pm_axi_lite_resp_i                     ),
-        .bus_error_o           (pm_bus_error                           )
+        .pm_axi_lite_req_o     ( pm_axi_lite_req_o                       ),
+        .pm_axi_lite_resp_i    ( pm_axi_lite_resp_i                      ),
+        .bus_error_o           ( pm_bus_error                            )
     );
     assign bus_error_o = {pm_bus_error, fetch_bus_error};
     // Power-domain counters (observation only): cycles of each counted domain

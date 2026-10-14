@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 `include "axi/typedef.svh"
+`include "bingo_hw_manager/typedef.svh"
 module tb_bingo_hw_manager_recovery_hold_cold;
     typedef logic [47:0] addr_t;
     typedef logic [63:0] data_t;
@@ -8,7 +9,6 @@ module tb_bingo_hw_manager_recovery_hold_cold;
     logic clk = 0, rst = 0;
     always #5 clk = ~clk;
     logic [0:0][1:0] fenced = '0, idle, rec, access_only;
-    logic [0:0][1:0][31:0] domains = {32'd2, 32'd1};
     logic [0:0][1:0][5:0] ctrl_domains = {6'd2, 6'd1};
     logic [31:0][7:0] level;
     bus_req_t req;
@@ -31,18 +31,16 @@ module tb_bingo_hw_manager_recovery_hold_cold;
         .pm_i('{enable: 1'b1, dvfs: 1'b0, normal_level: 8'd6, dvfs_level: 8'd6, domain_level: level, default: '0}),
         .view_o(view), .smt_o(), .smt_update_o(), .park_o(), .cerf_fb_o(), .cerf_fb_evt_o()
     );
+    `BINGO_HW_MANAGER_TYPEDEF_PM_SLOT_T(pm_slot_t, 1, 2)
     bingo_hw_manager_pm #(
         .NUM_CLUSTERS_PER_CHIPLET(2), .NUM_CORES_PER_CLUSTER(1),
-        .req_lite_t(bus_req_t), .resp_lite_t(bus_resp_t), .addr_t(addr_t), .data_t(data_t)
+        .req_lite_t(bus_req_t), .resp_lite_t(bus_resp_t), .addr_t(addr_t), .data_t(data_t),
+        .pm_slot_t(pm_slot_t)
     ) pm (
-        .clk_i(clk), .rst_ni(rst), .enable_idle_pm_i(32'd1),
-        .idle_power_level_i(32'd25), .normal_power_level_i(32'd6),
-        .boost_power_level_i(32'd0), .core_boost_i('0),
-        .access_power_level_i(32'd0), .core_access_only_i(access_only),
-        .derate_power_level_i(32'd0), .core_derate_i('0),
-        .pm_base_addr_i(48'h1000), .core_power_domain_i(domains),
-        .core_status_waiting_task_i(idle), .pm_mode_i(32'd0),
-        .dvfs_clint_msip_addr_i(48'd0), .dvfs_ack_i(32'd0), .dvfs_request_o(),
+        .clk_i(clk), .rst_ni(rst),
+        .cfg_i('{enable: 1'b1, idle_level: 8'd25, normal_level: 8'd6, default: '0}),
+        .slot_i('{domain: ctrl_domains, idle: idle, access_only: access_only, boost: '0, derate: '0}),
+        .pm_base_addr_i(48'h1000), .dvfs_clint_msip_addr_i(48'd0), .dvfs_request_o(),
         .domain_level_o(level), .pm_axi_lite_req_o(req), .pm_axi_lite_resp_i(resp)
     );
     // IDLE selection, frequency AW/W, valid AW/W: 5 cycles per update.
@@ -64,7 +62,7 @@ module tb_bingo_hw_manager_recovery_hold_cold;
             end
             if (level[2] == 6 && first_normal < 0) first_normal = cycle;
             if (ctrl.i_power_view.rec_hold_q[0][1] != 0) begin
-                if (pm.target_power_level[2] == 25)
+                if (pm.i_policy.target_power_level[2] == 25)
                     $fatal(1, "[REC_HOLD] cold target idle");
                 if (first_normal >= 0 && level[2] == 25)
                     $fatal(1, "[REC_HOLD] cold returned to idle in hold");
@@ -72,7 +70,7 @@ module tb_bingo_hw_manager_recovery_hold_cold;
                     $fatal(1, "[REC_HOLD] cold exceeded L_wake");
             end
             $display("[P8_COLD] cycle=%0d hold=%0d target=%0d applied=%0d",
-                     cycle, ctrl.i_power_view.rec_hold_q[0][1], pm.target_power_level[2], level[2]);
+                     cycle, ctrl.i_power_view.rec_hold_q[0][1], pm.i_policy.target_power_level[2], level[2]);
         end
     end
     initial begin

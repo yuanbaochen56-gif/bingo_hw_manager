@@ -445,6 +445,21 @@
     logic [(ClusterIdWidth)-1:0]              cluster;                                                                             \
   } import_t;
 
+// What the PM (bingo_hw_manager_pm) reads of every slot:
+//   domain       its power domain, decoded once by the top (PmMaxDomains: none)
+//   idle         it waits for a task, or is fenced (bingo_hw_manager_power_view)
+//   access_only  it is busy only with accesses from outside (DFS access level)
+//   boost        it runs a dead core's tasks (recovery boost)
+//   derate       it is at risk
+`define BINGO_HW_MANAGER_TYPEDEF_PM_SLOT_T(pm_slot_t, NumCores, NumClusters) \
+  typedef struct packed {                                                    \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][5:0] domain;                   \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]      idle;                     \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]      access_only;              \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]      boost;                    \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]      derate;                   \
+  } pm_slot_t;
+
 // A waiting queue head asking bingo_hw_manager_core_remap for its slot:
 //   valid               there is a head
 //   core, cluster       its logical slot

@@ -12,6 +12,7 @@
 // word; the PM goes on as before (it still applies the levels, rings the
 // doorbell), and an OKAY or EXOKAY answer sets nothing.
 `include "axi/typedef.svh"
+`include "bingo_hw_manager/typedef.svh"
 module tb_bingo_hw_manager_bus_error;
     localparam int unsigned TaskIdWidth = 4;
     typedef logic [47:0] addr_t;
@@ -146,6 +147,7 @@ module tb_bingo_hw_manager_bus_error;
     logic [31:0][7:0] domain_level;
     logic [1:0]  pm_error;
 
+    `BINGO_HW_MANAGER_TYPEDEF_PM_SLOT_T(pm_slot_t, Cores, Clusters)
     bingo_hw_manager_pm #(
         .NUM_CLUSTERS_PER_CHIPLET ( Clusters    ),
         .NUM_CORES_PER_CLUSTER    ( Cores       ),
@@ -154,30 +156,21 @@ module tb_bingo_hw_manager_bus_error;
         .req_lite_t               ( lite_req_t  ),
         .resp_lite_t              ( lite_resp_t ),
         .addr_t                   ( addr_t      ),
-        .data_t                   ( data_t      )
+        .data_t                   ( data_t      ),
+        .pm_slot_t                ( pm_slot_t   )
     ) i_pm (
-        .clk_i                      ( clk_i            ),
-        .rst_ni                     ( rst_ni           ),
-        .enable_idle_pm_i           ( 32'd1            ),
-        .idle_power_level_i         ( 32'd25           ),
-        .normal_power_level_i       ( 32'd6            ),
-        .access_power_level_i       ( '0               ),
-        .core_access_only_i         ( '0               ),
-        .boost_power_level_i        ( '0               ),
-        .core_boost_i               ( '0               ),
-        .derate_power_level_i       ( '0               ),
-        .core_derate_i              ( '0               ),
-        .pm_base_addr_i             ( 48'h0000_0300_0000 ),
-        .slot_domain_i              ( slot_domain      ),
-        .core_status_waiting_task_i ( waiting          ),
-        .pm_mode_i                  ( pm_mode          ),
-        .dvfs_clint_msip_addr_i     ( 48'h0000_0400_0004 ),
-        .dvfs_ack_i                 ( dvfs_ack         ),
-        .dvfs_request_o             ( dvfs_request     ),
-        .domain_level_o             ( domain_level     ),
-        .pm_axi_lite_req_o          ( pm_req           ),
-        .pm_axi_lite_resp_i         ( pm_resp          ),
-        .bus_error_o                ( pm_error         )
+        .clk_i                  ( clk_i              ),
+        .rst_ni                 ( rst_ni             ),
+        .cfg_i                  ( '{enable: 1'b1, dvfs: pm_mode[0], idle_level: 8'd25, normal_level: 8'd6,
+                                    dvfs_ack: dvfs_ack[7:0], default: '0} ),
+        .slot_i                 ( '{domain: slot_domain, idle: waiting, default: '0} ),
+        .pm_base_addr_i         ( 48'h0000_0300_0000 ),
+        .dvfs_clint_msip_addr_i ( 48'h0000_0400_0004 ),
+        .dvfs_request_o         ( dvfs_request       ),
+        .domain_level_o         ( domain_level       ),
+        .pm_axi_lite_req_o      ( pm_req             ),
+        .pm_axi_lite_resp_i     ( pm_resp            ),
+        .bus_error_o            ( pm_error           )
     );
 
     // Slave: takes every AW, W and AR at once, answers each W with a B and each

@@ -8,14 +8,17 @@
 // - Yunhao Deng  <yunhao.deng@kuleuven.be>
 
 // This is the power management module for the bingo hardware manager.
-// It supports two modes selected by pm_mode_i:
-//  - DFS  (pm_mode_i==0): the PM autonomously scales per-domain clock division by writing
+// It supports two modes selected by cfg_i.dvfs:
+//  - DFS  (cfg_i.dvfs = 0): the PM autonomously scales per-domain clock division by writing
 //    the on-chip clk/rst controller over its AXI-Lite master (the legacy behavior).
-//  - DVFS (pm_mode_i==1): the PM only monitors chip-wide idle/busy and notifies the host.
+//  - DVFS (cfg_i.dvfs = 1): the PM only monitors chip-wide idle/busy and notifies the host.
 //    It publishes the requested action on dvfs_request_o and rings a doorbell by writing
 //    the host's dedicated CLINT MSIP bit (read-modify-write, so the other harts' pending
 //    bits are preserved). The host ISR then drives the external PMIC (voltage) and the
 //    clk/rst controller (frequency) in the safe V/F order (raise: V then F; lower: F then V).
+
+// The level each domain (or the chip) should run at comes from
+// bingo_hw_manager_pm_policy; this module applies it over the bus.
 
 module bingo_hw_manager_pm #(
     parameter int unsigned NUM_CLUSTERS_PER_CHIPLET = 4,
@@ -29,43 +32,25 @@ module bingo_hw_manager_pm #(
     parameter type     resp_lite_t  = logic,
     parameter type     addr_t       = logic,
     parameter type     data_t       = logic,
+    // Port type (bingo_hw_manager/typedef.svh)
+    parameter type     pm_slot_t    = logic,
     // Derived type, do not override
     parameter type     cfg_t        = logic [CfgBusWidth-1:0]
 )(
     input  logic        clk_i,
     input  logic        rst_ni,
-    // The configuration specifed by the host
-    // Whether to enable idle power management
-    input  cfg_t        enable_idle_pm_i,
-    // The idle power level specified by the host
-    input  cfg_t        idle_power_level_i,
-    // The normal power level specified by the host
-    input  cfg_t        normal_power_level_i,
-    // Validated DFS-only external-access servo level; 0 preserves normal.
-    input  cfg_t        access_power_level_i = '0,
-    input  logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_access_only_i = '0,
-    // Recovery boost: level of a domain in which a core runs a dead core's
-    // tasks (core_boost_i); 0 disables the boost
-    input  cfg_t        boost_power_level_i,
-    input  logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_boost_i,
-    // Derate: a domain with an at-risk core (core_derate_i) runs no faster than
-    // derate_power_level_i (it takes the slower of the two levels, so no boost
-    // either); 0 disables the derate
-    input  cfg_t        derate_power_level_i = '0,
-    input  logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_derate_i = '0,
-    // The power management base address
-    input  addr_t       pm_base_addr_i,  
-    // The power domain of each slot, as the top decodes it once for the whole
-    // manager: MAX_DOMAINS (and above) for a slot in no domain
-    input  logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][5:0] slot_domain_i,
-    // Idle signal from hw manager
-    input  logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]   core_status_waiting_task_i,
-    // Power management mode: 0 = DFS (autonomous clock scaling), 1 = DVFS (notify host)
-    input  cfg_t        pm_mode_i,
+    // The configuration from the host: enable, DFS / DVFS, the levels, the
+    // DVFS acknowledge
+    input  bingo_hw_manager_pkg::pm_cfg_t cfg_i,
+    // Every slot: its power domain (decoded once by the top), idle (polling or
+    // fenced, bingo_hw_manager_power_view, so a dead core does not keep its
+    // domain at the normal level), busy only with outside accesses, boosted,
+    // derated
+    input  pm_slot_t    slot_i,
+    // The power management base address (clock / reset controller, DFS)
+    input  addr_t       pm_base_addr_i,
     // Physical address of the host's CLINT MSIP word (target of the DVFS doorbell write)
     input  addr_t       dvfs_clint_msip_addr_i,
-    // Host acknowledge: the power level the host has applied (closes the DVFS handshake)
-    input  cfg_t        dvfs_ack_i,
     // DVFS request published to the host: {target_level[15:8], direction[1], pending[0]}
     output cfg_t        dvfs_request_o,
     // Level last applied to each domain by the DFS path (0: none yet)
@@ -97,139 +82,36 @@ module bingo_hw_manager_pm #(
     typedef logic [7:0]                     power_level_t;
     typedef logic [$clog2(MAX_DOMAINS)-1:0] domain_id_t;
     // -------------------------------------------------------------------------
-    // 1. Status Aggregation
-    // -------------------------------------------------------------------------
-    logic [MAX_DOMAINS-1:0] domain_all_idle;    // 1 if ALL cores in domain are idle
-    logic [MAX_DOMAINS-1:0] domain_access_only;
-    logic [MAX_DOMAINS-1:0] domain_boost;       // 1 if a core of the domain is boosted
-    logic [MAX_DOMAINS-1:0] domain_derate;      // 1 if a core of the domain is derated
-    logic [MAX_DOMAINS-1:0] domain_active_mask; // 1 if at least one core is mapped to this domain
-    domain_id_t  [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] domain_id;
-
-    // Example Scenario:
-    // Setup:
-    // - 2 Clusters, each with 2 Cores.
-    // - Configuration:
-    //   - C0_0 -> Domain 0
-    //   - C0_1 -> Domain 0 (Shared)
-    //   - C1_0 -> Domain 1
-    //   - C1_1 -> Domain 2
-    // - Status:
-    //   - C0_0: Waiting (1)
-    //   - C0_1: Active (0)
-    //   - C1_0: Waiting (1)
-    //   - C1_1: Waiting (1)
-    //
-    // Execution Trace:
-    // 1. C0_0 (Domain 0): Idle. domain_all_idle[0] remains 1.
-    // 2. C0_1 (Domain 0): Active. domain_all_idle[0] forced to 0. (Keeps Domain 0 awake).
-    // 3. C1_0 (Domain 1): Idle. domain_all_idle[1] remains 1.
-    // 4. C1_1 (Domain 2): Idle. domain_all_idle[2] remains 1.
-    //
-    // Result:
-    // - domain_all_idle = ...11110 (Bit 0 is 0/Busy, Bits 1 & 2 are 1/Idle)
-    // - Domain 0 -> Normal Power, Domains 1 & 2 -> Idle Power.
-    always_comb begin
-        domain_all_idle = '1; // Default to true, clear if any core busy
-        domain_access_only = '1;
-        domain_boost = '0;
-        domain_derate = '0;
-        domain_active_mask = '0;
-        domain_id = '0;
-        for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
-            for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
-                // Some slots belong to no power domain (the host writes 99 for
-                // them, the top passes MAX_DOMAINS)
-                if (slot_domain_i[core][cluster] < MAX_DOMAINS) begin
-                    domain_id[core][cluster] = slot_domain_i[core][cluster][4:0];
-                    domain_active_mask[domain_id[core][cluster]] = 1'b1;
-                    if (core_status_waiting_task_i[core][cluster] == 1'b0) begin
-                        domain_all_idle[domain_id[core][cluster]] = 1'b0;
-                        if (!core_access_only_i[core][cluster])
-                            domain_access_only[domain_id[core][cluster]] = 1'b0;
-                    end
-                    if (core_boost_i[core][cluster]) begin
-                        domain_boost[domain_id[core][cluster]] = 1'b1;
-                    end
-                    if (core_derate_i[core][cluster]) begin
-                        domain_derate[domain_id[core][cluster]] = 1'b1;
-                    end
-                end
-            end
-        end
-    end
-
-    // -------------------------------------------------------------------------
-    // 2. Change Detection & Arbitration
+    // 1. Level policy (bingo_hw_manager_pm_policy): per domain (DFS) or for the
+    //    chip (DVFS), the level it should run at
     // -------------------------------------------------------------------------
     power_level_t [MAX_DOMAINS-1:0] current_power_level_q; // State tracking
-    power_level_t [MAX_DOMAINS-1:0] target_power_level;
-    logic [MAX_DOMAINS-1:0]         pending_update;       // Domains that need update
     logic                           update_req_valid;
     domain_id_t                     update_domain_id;
     power_level_t                   update_domain_target_level;
-
-    // Calculate target level and pending updates
-    always_comb begin
-        for (int d = 0; d < MAX_DOMAINS; d++) begin
-            if (enable_idle_pm_i[0] && domain_all_idle[d]) begin
-                target_power_level[d] = idle_power_level_i[7:0];
-            end else if (enable_idle_pm_i[0] && !pm_mode_i[0] &&
-                         domain_access_only[d] && access_power_level_i != 0) begin
-                target_power_level[d] = access_power_level_i[7:0];
-            end else if (enable_idle_pm_i[0] && domain_boost[d] && (boost_power_level_i[7:0] != '0)) begin
-                target_power_level[d] = boost_power_level_i[7:0];
-            end else begin
-                target_power_level[d] = normal_power_level_i[7:0];
-            end
-            // Levels are clock dividers: the larger one is the slower clock
-            if (domain_derate[d] && (derate_power_level_i[7:0] > target_power_level[d])) begin
-                target_power_level[d] = derate_power_level_i[7:0];
-            end
-
-            // We update if the domain exists AND the target differs from current
-            if (domain_active_mask[d] && (target_power_level[d] != current_power_level_q[d])) begin
-                pending_update[d] = 1'b1;
-            end else begin
-                pending_update[d] = 1'b0;
-            end
-        end
-    end
-
-    // Simple Priority Arbiter (Least Significant Bit First)
-    lzc #(
-        .WIDTH(MAX_DOMAINS),
-        .MODE (1'b0) // 0 for Trailing Zeros (LSB)
-    ) i_lzc_arbiter (
-        .in_i    ( pending_update   ),
-        .cnt_o   ( update_domain_id ), // Returns the index of the first '1'
-        .empty_o ( /* unused */     )
+    logic                           chip_busy;
+    power_level_t                   desired_chip_level; // clock-division / power level the chip should be at
+    logic                           dvfs_pending;       // host has not yet applied the desired level
+    bingo_hw_manager_pm_policy #(
+        .NumCores    ( NUM_CORES_PER_CLUSTER    ),
+        .NumClusters ( NUM_CLUSTERS_PER_CHIPLET ),
+        .pm_slot_t   ( pm_slot_t                )
+    ) i_policy (
+        .cfg_i           ( cfg_i                      ),
+        .slot_i          ( slot_i                     ),
+        .level_i         ( current_power_level_q      ),
+        .update_valid_o  ( update_req_valid           ),
+        .update_domain_o ( update_domain_id           ),
+        .update_level_o  ( update_domain_target_level ),
+        .chip_busy_o     ( chip_busy                  ),
+        .chip_level_o    ( desired_chip_level         ),
+        .dvfs_pending_o  ( dvfs_pending               )
     );
-
-    assign update_req_valid = |pending_update;
-    assign domain_level_o   = current_power_level_q;
-    assign update_domain_target_level = target_power_level[update_domain_id];
+    assign domain_level_o = current_power_level_q;
 
     // -------------------------------------------------------------------------
-    // 2b. DVFS chip-level aggregation and request generation
+    // 2. DVFS request and doorbell
     // -------------------------------------------------------------------------
-    // In DVFS mode the whole chiplet shares one PMIC, so we reduce the per-domain idle
-    // status to a single chip-wide idle/busy signal. A domain with no core mapped to it
-    // (domain_active_mask==0) does not keep the chip awake.
-    logic         chip_all_idle;
-    logic         chip_busy;
-    power_level_t desired_chip_level; // clock-division / power level the chip should be at
-    power_level_t acked_level;        // level the host reports it has applied (DVFS_ACK)
-    logic         dvfs_pending;       // host has not yet applied the desired level
-
-    assign chip_all_idle      = &(domain_all_idle | ~domain_active_mask);
-    assign chip_busy          = ~chip_all_idle;
-    assign desired_chip_level = chip_busy ? normal_power_level_i[7:0] : idle_power_level_i[7:0];
-    assign acked_level        = dvfs_ack_i[7:0];
-    // Only meaningful when idle-PM is enabled and we are in DVFS mode.
-    assign dvfs_pending       = enable_idle_pm_i[0] && pm_mode_i[0] &&
-                                (desired_chip_level != acked_level);
-
     // Publish the request the host reads in its ISR. Combinational: always reflects the
     // latest desired chip state, so a mid-service transition is picked up on re-read.
     always_comb begin
@@ -328,8 +210,8 @@ module bingo_hw_manager_pm #(
         state_d = state_q; // Default to hold state
         case (state_q)
             IDLE: begin
-                if (enable_idle_pm_i[0]) begin
-                    if (pm_mode_i[0]) begin
+                if (cfg_i.enable) begin
+                    if (cfg_i.dvfs) begin
                         // DVFS: ring the host doorbell for a pending chip-level transition
                         if (dvfs_issue) state_d = READ_MSIP_AR;
                     end else begin
@@ -395,7 +277,7 @@ module bingo_hw_manager_pm #(
             IDLE: begin
                 // In DFS mode latch the arbitrated domain/target for the clk/rst write.
                 // In DVFS mode nothing is latched here (the request is combinational).
-                if (!pm_mode_i[0] && update_req_valid) begin
+                if (!cfg_i.dvfs && update_req_valid) begin
                     active_domain_id_d    = update_domain_id;
                     active_target_level_d = update_domain_target_level;
                 end
@@ -548,7 +430,7 @@ module bingo_hw_manager_pm #(
     // synopsys translate_off
 `ifndef SYNTHESIS
     assert property (@(posedge clk_i) disable iff (!rst_ni)
-        pm_mode_i[0] |-> !(state_q inside {WRITE_FREQ_AW, WRITE_FREQ_W,
+        cfg_i.dvfs |-> !(state_q inside {WRITE_FREQ_AW, WRITE_FREQ_W,
                                            WRITE_VALID_AW, WRITE_VALID_W}))
     else $error("bingo_hw_manager_pm: entered a clk/rst-write state in DVFS mode ",
                 "(the host, not the PM, must scale frequency under voltage coordination)");

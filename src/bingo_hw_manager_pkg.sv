@@ -46,6 +46,19 @@ package bingo_hw_manager_pkg;
         logic [7:0]  boost_load_min; // minimum load of a capacity boost candidate
     } ctrl_cfg_t;
 
+    // Configuration of the PM (bingo_hw_manager_pm) from the host. The levels
+    // are clock dividers: the larger one is the slower clock.
+    typedef struct packed {
+        logic       enable;       // idle PM on
+        logic       dvfs;         // 1: DVFS (notify the host of one chip level), 0: DFS (per domain)
+        logic [7:0] idle_level;   // a domain whose slots all wait for a task
+        logic [7:0] normal_level; // a busy domain
+        logic [7:0] access_level; // DFS: a domain busy only with accesses from outside (0: normal)
+        logic [7:0] boost_level;  // a domain that runs a dead core's tasks (0: off)
+        logic [7:0] derate_level; // a domain with an at-risk slot runs no faster (0: off)
+        logic [7:0] dvfs_ack;     // DVFS: the level the host has applied
+    } pm_cfg_t;
+
     // Power state and configured levels (clock dividers) of the PM
     // (bingo_hw_manager_pm), as the control plane and the power-domain
     // counters read them
