@@ -1250,7 +1250,7 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_retire_scoreboard
         if (rst_ni) begin
             // Entries leaving a waiting queue (all but dummy-check tasks reach a checkout queue)
             for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
-                if (gen_dut[gi].i_dut.waiting_dep_check_queue_pop[core]) begin
+                if (gen_dut[gi].i_dut.i_dep_unit.waiting_dep_check_queue_pop[core]) begin
                     automatic bingo_hw_manager_task_desc_t d = gen_dut[gi].i_dut.waiting_dep_check_task_desc[core];
                     if (!((d.task_type == 2'b01) && d.dep_check_info.dep_check_en)) begin
                         retire_expected[gi][d.assigned_cluster_id][core].push_back(d.task_id);
@@ -1748,7 +1748,7 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_sig_export
                 // Probe the presence-bit scoreboard: 1 if any tag is live in
                 // the cell (monitor/dump only).
                 assign dep_counter_state[gi][gj][gr][gc] =
-                    8'(|gen_dut[gi].i_dut.gen_dep_matrix[gj].i_dep_matrix.sb_q[gr][gc]);
+                    8'(|gen_dut[gi].i_dut.i_dep_unit.gen_dep_matrix[gj].i_dep_matrix.sb_q[gr][gc]);
             end
         end
     end
