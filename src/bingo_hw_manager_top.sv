@@ -8,7 +8,6 @@
 // - Yunhao Deng  <yunhao.deng@kuleuven.be>
 `include "bingo_hw_manager/typedef.svh"
 module bingo_hw_manager_top #(
-    // Top-level parameters can be defined here
     parameter int unsigned READY_AND_DONE_QUEUE_INTERFACE_TYPE = 1, // 1: CSR Req/Resp 0: Default AXi Lite Slave
     parameter int unsigned TASK_QUEUE_TYPE = 1,                     // 1: AXI Lite Master 0: Default AXI Lite Slave
     parameter int unsigned NUM_CORES_PER_CLUSTER = 4,
@@ -98,6 +97,10 @@ module bingo_hw_manager_top #(
     parameter int unsigned ReadyQueueDepth = 8,
     parameter int unsigned EventLogDepth = 0,
     parameter int unsigned EventLogAgeWidth = 6,
+    // Power-domain counters (bingo_hw_manager_pm_counters, pm_count_o) of the
+    // domains PmCountBase .. PmCountBase + PmCountDomains - 1; 0 = none
+    parameter int unsigned PmCountBase = 0,
+    parameter int unsigned PmCountDomains = 0,
     // Level 3 export queues: one per peer of the transport (e.g.
     // bingo_hw_manager_remote_link NumPeers), each deep enough for a whole
     // checkout queue, so a peer without credits only holds its own exports
@@ -113,7 +116,8 @@ module bingo_hw_manager_top #(
     parameter type device_axi_lite_data_t = logic [DeviceAxiLiteDataWidth-1:0],
     // Flat slot id (core + cluster * NUM_CORES_PER_CLUSTER) of the remote interface
     parameter int unsigned RemoteSlotIdWidth = cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET),
-    parameter int unsigned RemotePeerIdWidth = (RemoteNumPeers > 1) ? $clog2(RemoteNumPeers) : 1
+    parameter int unsigned RemotePeerIdWidth = (RemoteNumPeers > 1) ? $clog2(RemoteNumPeers) : 1,
+    parameter int unsigned PmCountPorts = (PmCountDomains != 0) ? PmCountDomains : 1
 ) (
     /// Clock
     input logic clk_i,
@@ -134,8 +138,7 @@ module bingo_hw_manager_top #(
     // Hence this is a master AXI Lite interface
     input host_axi_lite_addr_t                  task_list_base_addr_i, // The task list base address specified by the host
     input device_axi_lite_data_t                num_task_i,            // The number of tasks specified by the host
-    // Control signals to start the HW Manager
-    // The start signals are from the reg gen modules
+    // Control signals to start the HW Manager (from the reg gen modules)
     input  device_axi_lite_data_t               bingo_hw_manager_start_i,
     output device_axi_lite_data_t               bingo_hw_manager_reset_start_o,
     output logic                                bingo_hw_manager_reset_start_en_o,
@@ -164,8 +167,7 @@ module bingo_hw_manager_top #(
     input  device_axi_lite_addr_t               ready_queue_base_addr_i,
     input  device_axi_lite_req_t                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    ready_queue_axi_lite_req_i,
     output device_axi_lite_resp_t               [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    ready_queue_axi_lite_resp_o,
-    /// CSR Req/Resp Interface for ready queue and the done queue
-    // CSR Will Read from the ready queue and write to the done queue
+    /// CSR Req/Resp Interface: the cores read the ready queue and write the done queue
     input  csr_req_t                            [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_req_i,
     input  logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_req_valid_i,
     output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_req_ready_o,
@@ -257,6 +259,8 @@ module bingo_hw_manager_top #(
     output logic [15:0]                        evlog_dropped_o,
     // DARTS: Load Monitor output (CSR readable)
     output logic [10:0]                         load_total_pending_o,
+    // Power-domain counters: per counted domain, bingo_hw_manager_pkg PmcIdle .. PmcActive
+    output logic [PmCountPorts-1:0][bingo_hw_manager_pkg::PmCounters-1:0][31:0] pm_count_o,
     // Watchdog: confirmed dead cores (sticky). The system may reset / isolate them.
     output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    core_fenced_o,
     // Replay: a fenced core holds a task that no live core may run (level 3:
@@ -330,11 +334,7 @@ module bingo_hw_manager_top #(
 );
     import bingo_hw_manager_pkg::*;
     // --------Type definitions and signal declarations--------------------//
-    // ---- Start of Type definitions -------------------------------------//
-    // Task Type (DARTS: expanded to 2 bits for gating support), values in bingo_hw_manager_pkg
-    // TaskNormal: Normal Task              TaskDummy: Dummy Task (set/check synchronization)
-    // TaskGating: Gating Task (executes on core, writes CERF on completion)
-    // TaskNoReplay: runs like a normal task, never replayed once it may have started
+    // Task type (two bits, DARTS gating included): values and meaning in bingo_hw_manager_pkg
     typedef logic [1:0]                                  bingo_hw_manager_task_type_t;
     // Task ID
     typedef logic [TaskIdWidth-1:0                     ] bingo_hw_manager_task_id_t;
@@ -855,6 +855,16 @@ module bingo_hw_manager_top #(
     // Late beats (bingo_hw_manager_watchdog)
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_late;
     logic [31:0][7:0]                                               pm_domain_level;
+    // Power state and configured levels, as the control plane and the
+    // power-domain counters read them
+    pm_view_t                                                       pm_view;
+    assign pm_view = '{enable:       bingo_hw_manager_enable_idle_pm_i[0],
+                       dvfs:         bingo_hw_manager_pm_mode_i[0],
+                       idle_level:   bingo_hw_manager_idle_power_level_i[7:0],
+                       normal_level: bingo_hw_manager_normal_power_level_i[7:0],
+                       boost_level:  bingo_hw_manager_boost_power_level_i[7:0],
+                       dvfs_level:   bingo_hw_manager_dvfs_ack_i[7:0],
+                       domain_level: pm_domain_level};
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][5:0] ctrl_slot_domain;
     // Power domain of each slot (>= PmMaxDomains: none), as bingo_hw_manager_pm reads it
     for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_slot_domain_core
@@ -1689,6 +1699,28 @@ module bingo_hw_manager_top #(
         .pm_axi_lite_req_o     (pm_axi_lite_req_o                      ),
         .pm_axi_lite_resp_i    (pm_axi_lite_resp_i                     )
     );
+    // Power-domain counters (observation only): cycles of each counted domain
+    // per clock level the PM applied, and cycles with an active slot (one that
+    // is neither waiting for a task, nor exited, nor fenced: the PM's idle
+    // view before the idle entry delay and the holds of bingo_hw_manager_ctrl)
+    if (PmCountDomains != 0) begin : gen_pm_counters
+        bingo_hw_manager_pm_counters #(
+            .NumCores    ( NUM_CORES_PER_CLUSTER    ),
+            .NumClusters ( NUM_CLUSTERS_PER_CHIPLET ),
+            .FirstDomain ( PmCountBase              ),
+            .NumDomains  ( PmCountDomains           )
+        ) i_pm_counters (
+            .clk_i          ( clk_i                                                 ),
+            .rst_ni         ( rst_ni                                                ),
+            .pm_i           ( pm_view                                               ),
+            .slot_domain_i  ( ctrl_slot_domain                                      ),
+            .slot_active_i  ( ~(core_status_waiting_task | exited_q | core_fenced) ),
+            .count_o        ( pm_count_o                                            )
+        );
+    end else begin : gen_no_pm_counters
+        assign pm_count_o = '0;
+    end
+
     //////////////////////////////////////////////////////////////////////
     // Watchdog for core heartbeat monitoring
     //////////////////////////////////////////////////////////////////////
@@ -1901,7 +1933,6 @@ module bingo_hw_manager_top #(
     ctrl_host_t  ctrl_host;
     type_cfg_t   type_cfg;
     ctrl_cfg_t   ctrl_cfg;
-    pm_view_t    ctrl_pm;
     assign slot_state = '{fenced:   core_fenced,
                           retired:  core_retired,
                           stuck:    replay_stuck_slot,
@@ -1928,11 +1959,6 @@ module bingo_hw_manager_top #(
                           boost_policy:   bingo_hw_manager_boost_policy_i[0],
                           boost_credit:   bingo_hw_manager_boost_policy_i[11:8],
                           boost_load_min: bingo_hw_manager_boost_policy_i[23:16]};
-    assign ctrl_pm    = '{enable:       bingo_hw_manager_enable_idle_pm_i[0],
-                          dvfs:         bingo_hw_manager_pm_mode_i[0],
-                          normal_level: bingo_hw_manager_normal_power_level_i[7:0],
-                          dvfs_level:   bingo_hw_manager_dvfs_ack_i[7:0],
-                          domain_level: pm_domain_level};
     bingo_hw_manager_ctrl #(
         .NumCores(NUM_CORES_PER_CLUSTER),
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
@@ -1962,7 +1988,7 @@ module bingo_hw_manager_top #(
         .host_i           ( ctrl_host                         ),
         .type_cfg_i       ( type_cfg                          ),
         .cfg_i            ( ctrl_cfg                          ),
-        .pm_i             ( ctrl_pm                           ),
+        .pm_i             ( pm_view                           ),
         .cluster_access_i ( bingo_hw_manager_cluster_access_i ),
         .cerf_fb_done_i   ( cerf_fb_done                      ),
         .view_o           ( ctrl_view                         ),

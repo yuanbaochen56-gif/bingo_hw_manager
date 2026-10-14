@@ -4,8 +4,8 @@
 
 // Constants that more than one bingo_hw_manager module, or the host software,
 // relies on: the task types of a descriptor, the device CSRs of the ready and
-// done queues, the number of power domains, and the port structs of fixed
-// width.
+// done queues, the power domains and their counters, the event log codes, and
+// the port structs of fixed width.
 package bingo_hw_manager_pkg;
     // Task type of a descriptor (two bits, written by the host compiler bingo_dfg.py)
     localparam logic [1:0] TaskNormal   = 2'b00; // runs on its core
@@ -19,6 +19,16 @@ package bingo_hw_manager_pkg;
     // Power domains 0 .. PmMaxDomains-1. A slot configured with a larger domain
     // (the host writes 99 for the host and tied-off slots) belongs to none.
     localparam int unsigned PmMaxDomains = 32;
+    // Power-domain counters (bingo_hw_manager_pm_counters), per counted domain,
+    // in this order. The host reads them by index: add new ones at the end.
+    typedef enum int unsigned {
+        PmcIdle,    // manager cycles at the idle level
+        PmcNormal,  //                at the normal level
+        PmcBoost,   //                at the boost level
+        PmcOther,   //                at any other level (access servo, derate)
+        PmcActive   // manager cycles in which a slot of the domain is active
+    } pm_counter_e;
+    localparam int unsigned PmCounters = 5;
 
     // Port structs of fixed width. The ones whose width depends on the
     // parameters of the top are macros in bingo_hw_manager/typedef.svh.
@@ -36,11 +46,15 @@ package bingo_hw_manager_pkg;
         logic [7:0]  boost_load_min; // minimum load of a capacity boost candidate
     } ctrl_cfg_t;
 
-    // Power state as the control plane reads it (bingo_hw_manager_pm)
+    // Power state and configured levels (clock dividers) of the PM
+    // (bingo_hw_manager_pm), as the control plane and the power-domain
+    // counters read them
     typedef struct packed {
         logic             enable;       // idle PM on
         logic             dvfs;         // DVFS mode: one chip level, acknowledged by the host
-        logic [7:0]       normal_level; // clock divider of the normal level
+        logic [7:0]       idle_level;   // the idle level
+        logic [7:0]       normal_level; // the normal level
+        logic [7:0]       boost_level;  // the boost level (0: off)
         logic [7:0]       dvfs_level;   // DVFS: the level the host acknowledged
         logic [31:0][7:0] domain_level; // DFS: the level last applied to each domain
     } pm_view_t;

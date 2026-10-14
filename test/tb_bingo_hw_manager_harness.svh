@@ -1050,7 +1050,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .SubstituteL2TypeEn                  ( `TB_SUBSTITUTE_L2_TYPE_EN           ),
         .SubstitutePolicy                    ( `TB_SUBSTITUTE_POLICY               ),
         .ForeignStuckDrain                   ( `TB_FOREIGN_STUCK_DRAIN             ),
-        .EventLogDepth                       ( `TB_EVLOG_DEPTH                     ),
+        .EventLogDepth                       ( `TB_EVLOG_DEPTH                     ), .PmCountBase ( 1 ), .PmCountDomains ( (`TB_PM_ENABLE != 0) ? NUM_CLUSTERS_PER_CHIPLET : 0 ),
         .RemoteNumPeers                      ( RL_NUM_PEERS                        ),
         .ImportSubstituteLevelMask           ( `TB_IMPORT_SUBSTITUTE_LEVEL_MASK    ),
         .CsrHeartbeatAddr                    ( `TB_CSR_HEARTBEAT_ADDR              ),

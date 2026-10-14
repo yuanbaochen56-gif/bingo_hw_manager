@@ -55,7 +55,7 @@ module tb_bingo_hw_manager_recovery_hold;
         .clk_i(clk), .rst_ni(rst), .slot_i('{fenced: fenced, retired: retired, default: '0}), .late_i('0),
         .queue_i('{waiting: waiting, checkout_empty: '1, ready_empty: '1, default: '0}), .host_i('{domain: domains, default: '0}),
         .type_cfg_i('0), .cfg_i('{access_hold: 32'd4, recovery_hold: hold_cycles, default: '0}), .cluster_access_i(access),
-        .pm_i('{enable: 1'b1, dvfs: 1'b0, normal_level: 8'd6, dvfs_level: 8'd6, domain_level: '0}), .cerf_fb_done_i(1'b0),
+        .pm_i('{enable: 1'b1, dvfs: 1'b0, normal_level: 8'd6, dvfs_level: 8'd6, domain_level: '0, default: '0}), .cerf_fb_done_i(1'b0),
         .view_o(view), .smt_o(smt), .smt_update_o(update), .park_o(), .cerf_fb_o(), .cerf_fb_evt_o()
     );
     logic [31:0] cycle = 0, count, pop = 0;
