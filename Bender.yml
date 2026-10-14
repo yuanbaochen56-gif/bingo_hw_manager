@@ -222,6 +222,7 @@ sources:
       - test/tb_bingo_hw_manager_task_queue_slave.sv      # task queue slave mode: the start reset outputs stay 0
       - test/tb_bingo_hw_manager_bus_error.sv             # bus errors: a failed descriptor read stops the fetch; PM write / read flags
       - test/tb_bingo_hw_manager_csr_unknown.sv           # CSR port: an unknown CSR reads 0 or is ignored, never stalls
+      - test/tb_bingo_hw_manager_done_mailbox.sv          # done mailbox: a done for a slot that does not exist is dropped, never blocks
       - test/tb_bingo_hw_manager_park_random.sv           # random graph, fault and park / move back (seeds in run_regression.sh)
       - test/tb_bingo_hw_manager_rlink_random.sv           # level 3 over remote_link: random (scripts/run_replay_random.sh)
       - test/tb_bingo_hw_manager_rlink_random_reject.sv    # level 3 over remote_link: random, a hang on each chiplet (rejects)

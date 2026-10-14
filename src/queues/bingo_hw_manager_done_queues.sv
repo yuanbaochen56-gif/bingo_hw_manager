@@ -125,8 +125,22 @@ module bingo_hw_manager_done_queues #(
             .mbox_flush_i(1'b0)
         );
         assign mbox_info = done_info_t'(mbox_data);
+        // The software names the slot: a done for a slot that does not exist
+        // belongs to no queue, so it is popped and dropped (it would otherwise
+        // read the full flag out of range and could block every later done)
+        logic mbox_slot_ok;
+        assign mbox_slot_ok = (int'(mbox_info.assigned_core_id) < NumCores) &&
+                              (int'(mbox_info.assigned_cluster_id) < NumClusters);
         // Pop the mailbox when the target per-(core,cluster) FIFO accepts it
-        assign mbox_pop = !mbox_empty && !full[mbox_info.assigned_core_id][mbox_info.assigned_cluster_id];
+        assign mbox_pop = !mbox_empty &&
+                          (!mbox_slot_ok || !full[mbox_info.assigned_core_id][mbox_info.assigned_cluster_id]);
+`ifndef SYNTHESIS
+        always @(posedge clk_i) begin
+            if (rst_ni && mbox_pop && !mbox_slot_ok)
+                $warning("[BINGO_DONE] %0t done of task %0d for core %0d cluster %0d: no such slot, dropped",
+                         $time, mbox_info.task_id, mbox_info.assigned_core_id, mbox_info.assigned_cluster_id);
+        end
+`endif
         always_comb begin
             for (int c = 0; c < NumCores; c++) begin
                 for (int cl = 0; cl < NumClusters; cl++) begin
