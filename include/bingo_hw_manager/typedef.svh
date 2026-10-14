@@ -208,15 +208,43 @@
 // The done queues of every slot (bingo_hw_manager_done_queues):
 //   push, push_data  a done is pushed this cycle (done_info_t: bingo_hw_manager_done_info_full_t of the top)
 //   head, empty      the head of each queue
-//   pop              the checkout queue retires the head together with it
 `define BINGO_HW_MANAGER_TYPEDEF_DONE_T(done_t, done_info_t, NumCores, NumClusters) \
   typedef struct packed {                                                           \
     logic       [(NumCores)-1:0][(NumClusters)-1:0] push;                           \
     done_info_t [(NumCores)-1:0][(NumClusters)-1:0] push_data;                      \
     done_info_t [(NumCores)-1:0][(NumClusters)-1:0] head;                           \
     logic       [(NumCores)-1:0][(NumClusters)-1:0] empty;                          \
-    logic       [(NumCores)-1:0][(NumClusters)-1:0] pop;                            \
   } done_t;
+
+// What the remote dones and rejects of exported tasks (level 3) do to the
+// done queues: push, a remote done enters the done queue of its proxy slot;
+// reject, a reject marks the proxy slot (it stops); stray, a remote done or
+// reject for a slot that is no proxy is dropped
+`define BINGO_HW_MANAGER_TYPEDEF_DONE_REMOTE_T(done_remote_t, NumCores, NumClusters) \
+  typedef struct packed {                                                            \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] push;                                  \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] reject;                                \
+    logic                                     stray;                                 \
+  } done_remote_t;
+
+// A done write of a core (bingo_hw_manager_csr_port) to the done queues:
+// valid, and the done info (done_info_t of the top)
+`define BINGO_HW_MANAGER_TYPEDEF_CSR_DONE_T(csr_done_t, done_info_t) \
+  typedef struct packed {                                            \
+    logic       valid;                                               \
+    done_info_t info;                                                \
+  } csr_done_t;
+
+// What the CSR requests of the cores say about them (bingo_hw_manager_csr_port):
+//   heartbeat  a heartbeat this cycle (ignored once fenced)
+//   waiting    the core waits for a task (its ready read stalls)
+//   exited     the core reported its exit (bit 31 of a heartbeat), until its next ready read
+`define BINGO_HW_MANAGER_TYPEDEF_CORE_STATUS_T(core_status_t, NumCores, NumClusters) \
+  typedef struct packed {                                                            \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] heartbeat;                             \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] waiting;                               \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] exited;                                \
+  } core_status_t;
 
 // One task pushed into the queue of one slot by one source (the router, the
 // replay, a level 3 import): valid, and the task

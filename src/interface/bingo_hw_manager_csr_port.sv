@@ -13,9 +13,9 @@
 // - The done writes of all cores are arbitrated into one stream (done_o);
 //   bingo_hw_manager_done_queues puts each into the done queue of the slot
 //   named in its done info.
-// - A core waits for a task while its ready read stalls (waiting_o), and has
-//   exited once it reports bit 31 in a heartbeat after its done write, until
-//   its next ready read (exited_o).
+// - A core waits for a task while its ready read stalls (core_o.waiting), and
+//   has exited once it reports bit 31 in a heartbeat after its done write,
+//   until its next ready read (core_o.exited).
 // Slots are indexed [core][cluster]; the CSR channels of csr_to_fifo are flat
 // (core + cluster * NumCores).
 module bingo_hw_manager_csr_port #(
@@ -26,13 +26,17 @@ module bingo_hw_manager_csr_port #(
     parameter type         csr_req_t = logic,
     parameter type         csr_rsp_t = logic,
     parameter type         data_t = logic,        // device AXI-Lite data word
-    parameter type         ready_desc_t = logic,  // bingo_hw_manager_ready_task_desc_full_t of the top
     parameter type         done_info_t = logic,   // bingo_hw_manager_done_info_full_t of the top
-    parameter type         chip_id_t = logic
+    parameter type         chip_id_t = logic,
+    // Port types (bingo_hw_manager/typedef.svh)
+    parameter type         slot_state_t = logic,
+    parameter type         ready_t = logic,
+    parameter type         core_status_t = logic,
+    parameter type         csr_done_t = logic
 ) (
-    input  logic                                 clk_i,
-    input  logic                                 rst_ni,
-    input  chip_id_t                             chip_id_i,
+    input  logic                                     clk_i,
+    input  logic                                     rst_ni,
+    input  chip_id_t                                 chip_id_i,
     // CSR requests and responses of the cores
     input  csr_req_t [NumCores-1:0][NumClusters-1:0] csr_req_i,
     input  logic     [NumCores-1:0][NumClusters-1:0] csr_req_valid_i,
@@ -40,22 +44,23 @@ module bingo_hw_manager_csr_port #(
     output csr_rsp_t [NumCores-1:0][NumClusters-1:0] csr_rsp_o,
     output logic     [NumCores-1:0][NumClusters-1:0] csr_rsp_valid_o,
     input  logic     [NumCores-1:0][NumClusters-1:0] csr_rsp_ready_i,
-    // Confirmed dead cores (bingo_hw_manager_watchdog)
-    input  logic     [NumCores-1:0][NumClusters-1:0] fenced_i,
-    // Ready queues: a ready read pops the head
-    input  ready_desc_t [NumCores-1:0][NumClusters-1:0] ready_data_i,
-    input  logic     [NumCores-1:0][NumClusters-1:0] ready_empty_i,
+    // Slot state: confirmed dead cores (bingo_hw_manager_watchdog)
+    input  slot_state_t                              slot_i,
+    // Ready queues (head, empty): a ready read pops the head
+    input  ready_t                                   ready_i,
     output logic     [NumCores-1:0][NumClusters-1:0] ready_pop_o,
     // Heartbeats, waiting and exited cores
-    output logic     [NumCores-1:0][NumClusters-1:0] heartbeat_o,
-    output logic     [NumCores-1:0][NumClusters-1:0] waiting_o,
-    output logic     [NumCores-1:0][NumClusters-1:0] exited_o,
+    output core_status_t                             core_o,
     // The done writes of the live cores, one at a time
-    output logic                                 done_valid_o,
-    output done_info_t                           done_o,
-    input  logic                                 done_ready_i
+    output csr_done_t                                done_o,
+    input  logic                                     done_ready_i
 );
     import bingo_hw_manager_pkg::*;
+
+    // Heartbeats, waiting and exited cores (core_o), the arbitrated done write (done_o)
+    logic [NumCores-1:0][NumClusters-1:0] heartbeat, waiting, exited_q;
+    logic                                 done_valid;
+    assign core_o = '{heartbeat: heartbeat, waiting: waiting, exited: exited_q};
 
     localparam int unsigned N_CORES_TOTAL = NumClusters * NumCores;
     // 1D CSR Requests
@@ -146,14 +151,14 @@ module bingo_hw_manager_csr_port #(
                 csr_rsp_ready_1d[core + cluster * NumCores] = csr_rsp_ready_i[core][cluster];
                 // A fenced core can no longer take tasks (its ready reads stall) or
                 // report heartbeats: its outstanding tasks are replayed elsewhere.
-                read_ready_queue_data_1d[core + cluster * NumCores] = data_t'(ready_data_i[core][cluster]);
-                read_ready_queue_valid_1d[core + cluster * NumCores] = !ready_empty_i[core][cluster] &&
-                                                                       !fenced_i[core][cluster];
+                read_ready_queue_data_1d[core + cluster * NumCores] = data_t'(ready_i.data[core][cluster]);
+                read_ready_queue_valid_1d[core + cluster * NumCores] = !ready_i.empty[core][cluster] &&
+                                                                       !slot_i.fenced[core][cluster];
                 ready_pop_o[core][cluster] = read_ready_queue_ready_1d[core + cluster * NumCores] &&
-                                             !ready_empty_i[core][cluster] && !fenced_i[core][cluster];
-                heartbeat_o[core][cluster] = heartbeat_valid_1d[core + cluster * NumCores] &&
-                                             !fenced_i[core][cluster];
-                core_fenced_1d[core + cluster * NumCores] = fenced_i[core][cluster];
+                                             !ready_i.empty[core][cluster] && !slot_i.fenced[core][cluster];
+                heartbeat[core][cluster] = heartbeat_valid_1d[core + cluster * NumCores] &&
+                                             !slot_i.fenced[core][cluster];
+                core_fenced_1d[core + cluster * NumCores] = slot_i.fenced[core][cluster];
             end
         end
     end
@@ -163,7 +168,7 @@ module bingo_hw_manager_csr_port #(
     always_comb begin : connect_core_status_waiting_task_signals
         for ( int core = 0; core < NumCores; core = core + 1) begin
             for ( int cluster = 0; cluster < NumClusters; cluster = cluster + 1) begin
-                waiting_o[core][cluster] = (csr_req_i[core][cluster].write == 1'b0) &&
+                waiting[core][cluster] = (csr_req_i[core][cluster].write == 1'b0) &&
                                            csr_req_valid_i[core][cluster] &&
                                            !csr_req_ready_o[core][cluster];
             end
@@ -173,7 +178,6 @@ module bingo_hw_manager_csr_port #(
     // A real exit reports bit 31 after its done write. It no longer polls,
     // but is idle for PM and boost. A new ready read starts the next offload,
     // including when a task is already available and the read never stalls.
-    logic [NumCores-1:0][NumClusters-1:0] exited_q;
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             exited_q <= '0;
@@ -183,7 +187,7 @@ module bingo_hw_manager_csr_port #(
                     if (csr_req_valid_i[core][cluster] && !csr_req_i[core][cluster].write &&
                         csr_req_i[core][cluster].addr[11:0] == CsrReady) begin
                         exited_q[core][cluster] <= 1'b0;
-                    end else if (heartbeat_o[core][cluster] &&
+                    end else if (heartbeat[core][cluster] &&
                                  heartbeat_data_1d[core + cluster * NumCores][31]) begin
                         exited_q[core][cluster] <= 1'b1;
 `ifndef SYNTHESIS
@@ -196,7 +200,6 @@ module bingo_hw_manager_csr_port #(
             end
         end
     end
-    assign exited_o = exited_q;
 
     // For the Done Queue, we arbitrate all cores' write requests; the done
     // queues route the result to the per-core FIFO named in the data.
@@ -210,10 +213,10 @@ module bingo_hw_manager_csr_port #(
         .inp_valid_i(write_done_arb_valid_1d),
         .inp_ready_o(write_done_arb_ready_1d),
         .oup_data_o (write_done_queue_data),
-        .oup_valid_o(done_valid_o),
+        .oup_valid_o(done_valid),
         .oup_ready_i(done_ready_i)
     );
-    assign done_o = done_info_t'(write_done_queue_data);
+    assign done_o = '{valid: done_valid, info: done_info_t'(write_done_queue_data)};
     // A fenced core's task is replayed on another core, so its own (late) done
     // must never retire the task a second time: accept the write and drop it.
     assign write_done_arb_valid_1d  = write_done_queue_valid_1d & ~core_fenced_1d;

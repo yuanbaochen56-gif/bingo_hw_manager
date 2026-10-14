@@ -739,8 +739,6 @@ module bingo_hw_manager_top #(
     // Checkout head imported from another chiplet: retires into the remote done stream
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_head_imported;
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] remote_head_mismatch;
-    // Remote done / reject for a slot that cannot be a proxy: accepted and dropped
-    logic                                                                                    remote_done_stray;
     // The head may retire this cycle (bingo_hw_manager_checkout_queue), and the
     // retiring head offered to the local dependency matrix or to another chiplet
     logic                          [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] checkout_retire_valid;
@@ -770,12 +768,10 @@ module bingo_hw_manager_top #(
     logic         [NUM_CORES_PER_CLUSTER*NUM_CLUSTERS_PER_CHIPLET-1:0] remote_done_arb_valid;
     logic         [NUM_CORES_PER_CLUSTER*NUM_CLUSTERS_PER_CHIPLET-1:0] remote_done_arb_ready;
     remote_done_t                                                      remote_done_out;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    remote_done_push;
     // Level 3 rejects: executor side (one pending reject), origin side (sticky
     // per proxy slot)
     logic                                                              reject_pending;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    remote_rejected_q;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    remote_reject_in;
 
     ///////////////////////////////////////
     // Per (Core, Cluster) Done Queue signals
@@ -834,6 +830,9 @@ module bingo_hw_manager_top #(
         cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER))
     `BINGO_HW_MANAGER_TYPEDEF_DONE_T(done_t, bingo_hw_manager_done_info_full_t,
         NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    `BINGO_HW_MANAGER_TYPEDEF_DONE_REMOTE_T(done_remote_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    `BINGO_HW_MANAGER_TYPEDEF_CSR_DONE_T(csr_done_t, bingo_hw_manager_done_info_full_t)
+    `BINGO_HW_MANAGER_TYPEDEF_CORE_STATUS_T(core_status_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
     // ... and of one slot's queues
     `BINGO_HW_MANAGER_TYPEDEF_TASK_PUSH_T(task_push_t, bingo_hw_manager_task_desc_t)
     `BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_ROUTE_T(checkout_route_t, bingo_hw_manager_task_desc_t)
@@ -973,11 +972,20 @@ module bingo_hw_manager_top #(
                               data:      ready_queue_data_out,
                               wd_class:  ready_class,
                               moved:     ready_moved};
-    assign done_queue     = '{push:      done_q_push,
-                              push_data: done_q_data_in,
-                              head:      done_q_info,
-                              empty:     done_q_empty,
-                              pop:       done_q_pop};
+    // The done queues drive done_queue; the nets of each field keep their names
+    assign done_q_push    = done_queue.push;
+    assign done_q_data_in = done_queue.push_data;
+    assign done_q_info    = done_queue.head;
+    assign done_q_empty   = done_queue.empty;
+    // Level 3: what the remote dones and rejects of exported tasks do to the
+    // done queues, and the remote done input as a remote_done_t (its chip is
+    // this one)
+    done_remote_t done_remote;
+    remote_done_t remote_done_in;
+    assign remote_done_in = '{chip:       '0,
+                              proxy_slot: remote_done_proxy_slot_i,
+                              task_id:    remote_done_task_id_i,
+                              reject:     remote_done_reject_i};
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//
@@ -1540,42 +1548,44 @@ module bingo_hw_manager_top #(
     // (bingo_hw_manager_done_queues), so the completions of different cores
     // and clusters drain independently; a done of an exported task comes back
     // into the done queue of its proxy slot.
-    logic                             csr_done_valid;
+    csr_done_t                        csr_done;
     logic                             csr_done_ready;
-    bingo_hw_manager_done_info_full_t csr_done;
     if (READY_AND_DONE_QUEUE_INTERFACE_TYPE==1) begin: gen_csr_to_fifo_intf
+        core_status_t core_status;
         bingo_hw_manager_csr_port #(
-            .NumCores         ( NUM_CORES_PER_CLUSTER                   ),
-            .NumClusters      ( NUM_CLUSTERS_PER_CHIPLET                ),
-            .TaskIdWidth      ( TaskIdWidth                             ),
-            .CsrHeartbeatAddr ( CsrHeartbeatAddr                        ),
-            .csr_req_t        ( csr_req_t                               ),
-            .csr_rsp_t        ( csr_rsp_t                               ),
-            .data_t           ( device_axi_lite_data_t                  ),
-            .ready_desc_t     ( bingo_hw_manager_ready_task_desc_full_t ),
-            .done_info_t      ( bingo_hw_manager_done_info_full_t       ),
-            .chip_id_t        ( chip_id_t                               )
+            .NumCores         ( NUM_CORES_PER_CLUSTER             ),
+            .NumClusters      ( NUM_CLUSTERS_PER_CHIPLET          ),
+            .TaskIdWidth      ( TaskIdWidth                       ),
+            .CsrHeartbeatAddr ( CsrHeartbeatAddr                  ),
+            .csr_req_t        ( csr_req_t                         ),
+            .csr_rsp_t        ( csr_rsp_t                         ),
+            .data_t           ( device_axi_lite_data_t            ),
+            .done_info_t      ( bingo_hw_manager_done_info_full_t ),
+            .chip_id_t        ( chip_id_t                         ),
+            .slot_state_t     ( slot_state_t                      ),
+            .ready_t          ( ready_t                           ),
+            .core_status_t    ( core_status_t                     ),
+            .csr_done_t       ( csr_done_t                        )
         ) i_csr_port (
-            .clk_i           ( clk_i                    ),
-            .rst_ni          ( rst_ni                   ),
-            .chip_id_i       ( chip_id_i                ),
-            .csr_req_i       ( csr_req_i                ),
-            .csr_req_valid_i ( csr_req_valid_i          ),
-            .csr_req_ready_o ( csr_req_ready_o          ),
-            .csr_rsp_o       ( csr_rsp_o                ),
-            .csr_rsp_valid_o ( csr_rsp_valid_o          ),
-            .csr_rsp_ready_i ( csr_rsp_ready_i          ),
-            .fenced_i        ( core_fenced              ),
-            .ready_data_i    ( ready_queue_data_out     ),
-            .ready_empty_i   ( ready_queue_empty        ),
-            .ready_pop_o     ( ready_queue_pop          ),
-            .heartbeat_o     ( heartbeat_valid          ),
-            .waiting_o       ( core_status_waiting_task ),
-            .exited_o        ( exited_q                 ),
-            .done_valid_o    ( csr_done_valid           ),
-            .done_o          ( csr_done                 ),
-            .done_ready_i    ( csr_done_ready           )
+            .clk_i           ( clk_i           ),
+            .rst_ni          ( rst_ni          ),
+            .chip_id_i       ( chip_id_i       ),
+            .csr_req_i       ( csr_req_i       ),
+            .csr_req_valid_i ( csr_req_valid_i ),
+            .csr_req_ready_o ( csr_req_ready_o ),
+            .csr_rsp_o       ( csr_rsp_o       ),
+            .csr_rsp_valid_o ( csr_rsp_valid_o ),
+            .csr_rsp_ready_i ( csr_rsp_ready_i ),
+            .slot_i          ( slot_state      ),
+            .ready_i         ( ready_queue     ),
+            .ready_pop_o     ( ready_queue_pop ),
+            .core_o          ( core_status     ),
+            .done_o          ( csr_done        ),
+            .done_ready_i    ( csr_done_ready  )
         );
+        assign heartbeat_valid          = core_status.heartbeat;
+        assign core_status_waiting_task = core_status.waiting;
+        assign exited_q                 = core_status.exited;
     end else begin: gen_no_csr_to_fifo_intf
         // A core waits for a task while its read of the ready mailbox is
         // pending (ar_valid high, r_ready low); the mailbox pops itself
@@ -1592,50 +1602,45 @@ module bingo_hw_manager_top #(
         assign csr_rsp_valid_o = '0;
         assign heartbeat_valid = '0;
         assign exited_q        = '0;
-        assign csr_done_valid  = 1'b0;
         assign csr_done        = '0;
     end
 
     bingo_hw_manager_done_queues #(
-        .NumCores      ( NUM_CORES_PER_CLUSTER                         ),
-        .NumClusters   ( NUM_CLUSTERS_PER_CHIPLET                      ),
-        .InterfaceType ( READY_AND_DONE_QUEUE_INTERFACE_TYPE           ),
-        .Depth         ( DoneQueueDepth                                ),
-        .RemoteEn      ( RemoteEn                                      ),
-        .TaskIdWidth   ( TaskIdWidth                                   ),
+        .NumCores      ( NUM_CORES_PER_CLUSTER                            ),
+        .NumClusters   ( NUM_CLUSTERS_PER_CHIPLET                         ),
+        .InterfaceType ( READY_AND_DONE_QUEUE_INTERFACE_TYPE              ),
+        .Depth         ( DoneQueueDepth                                   ),
+        .RemoteEn      ( RemoteEn                                         ),
+        .TaskIdWidth   ( TaskIdWidth                                      ),
         .CoreIdWidth   ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
         .ClusterIdWidth( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
-        .SlotIdWidth   ( RemoteSlotIdWidth                             ),
-        .ChipIdWidth   ( ChipIdWidth                                   ),
-        .AxiAddrWidth  ( DeviceAxiLiteAddrWidth                        ),
-        .AxiDataWidth  ( DeviceAxiLiteDataWidth                        ),
-        .done_info_t   ( bingo_hw_manager_done_info_full_t             ),
-        .req_lite_t    ( device_axi_lite_req_t                         ),
-        .resp_lite_t   ( device_axi_lite_resp_t                        )
+        .ChipIdWidth   ( ChipIdWidth                                      ),
+        .AxiAddrWidth  ( DeviceAxiLiteAddrWidth                           ),
+        .AxiDataWidth  ( DeviceAxiLiteDataWidth                           ),
+        .done_info_t   ( bingo_hw_manager_done_info_full_t                ),
+        .remote_done_t ( remote_done_t                                    ),
+        .req_lite_t    ( device_axi_lite_req_t                            ),
+        .resp_lite_t   ( device_axi_lite_resp_t                           ),
+        .slot_state_t  ( slot_state_t                                     ),
+        .csr_done_t    ( csr_done_t                                       ),
+        .done_remote_t ( done_remote_t                                    ),
+        .done_t        ( done_t                                           )
     ) i_done_queues (
-        .clk_i                    ( clk_i                      ),
-        .rst_ni                   ( rst_ni                     ),
-        .chip_id_i                ( chip_id_i                  ),
-        .csr_done_valid_i         ( csr_done_valid             ),
-        .csr_done_i               ( csr_done                   ),
-        .csr_done_ready_o         ( csr_done_ready             ),
-        .base_addr_i              ( done_queue_base_addr_i     ),
-        .axi_lite_req_i           ( done_queue_axi_lite_req_i  ),
-        .axi_lite_resp_o          ( done_queue_axi_lite_resp_o ),
-        .fenced_i                 ( core_fenced                ),
-        .remote_done_valid_i      ( remote_done_valid_i        ),
-        .remote_done_ready_o      ( remote_done_ready_o        ),
-        .remote_done_proxy_slot_i ( remote_done_proxy_slot_i   ),
-        .remote_done_task_id_i    ( remote_done_task_id_i      ),
-        .remote_done_reject_i     ( remote_done_reject_i       ),
-        .remote_push_o            ( remote_done_push           ),
-        .reject_o                 ( remote_reject_in           ),
-        .stray_o                  ( remote_done_stray          ),
-        .push_o                   ( done_q_push                ),
-        .push_data_o              ( done_q_data_in             ),
-        .head_o                   ( done_q_info                ),
-        .empty_o                  ( done_q_empty               ),
-        .pop_i                    ( done_q_pop                 )
+        .clk_i               ( clk_i                      ),
+        .rst_ni              ( rst_ni                     ),
+        .chip_id_i           ( chip_id_i                  ),
+        .csr_done_i          ( csr_done                   ),
+        .csr_done_ready_o    ( csr_done_ready             ),
+        .base_addr_i         ( done_queue_base_addr_i     ),
+        .axi_lite_req_i      ( done_queue_axi_lite_req_i  ),
+        .axi_lite_resp_o     ( done_queue_axi_lite_resp_o ),
+        .slot_i              ( slot_state                 ),
+        .remote_done_valid_i ( remote_done_valid_i        ),
+        .remote_done_ready_o ( remote_done_ready_o        ),
+        .remote_done_i       ( remote_done_in             ),
+        .remote_o            ( done_remote                ),
+        .done_o              ( done_queue                 ),
+        .pop_i               ( done_q_pop                 )
     );
 
     //////////////////////////////////////////////////////////////////////
@@ -2181,8 +2186,8 @@ module bingo_hw_manager_top #(
         .head_exec_i                   ( checkout_head_exec            ),
         .head_mismatch_i               ( remote_head_mismatch          ),
         .done_empty_i                  ( done_q_empty                  ),
-        .reject_i                      ( remote_reject_in              ),
-        .done_stray_i                  ( remote_done_stray             ),
+        .reject_i                      ( done_remote.reject            ),
+        .done_stray_i                  ( done_remote.stray             ),
         .timeout_cycles_i              ( 32'(remote_proxy_timeout_i)   ),
         .waiting_o                     ( proxy_waiting                 ),
         .timeout_o                     ( proxy_timeout                 ),
@@ -2462,11 +2467,11 @@ module bingo_hw_manager_top #(
                          checkout_remote_tag_out[replay_src_core][replay_src_cluster].origin_chip,
                          checkout_remote_tag_out[replay_src_core][replay_src_cluster].proxy_slot);
             end
-            if (remote_done_stray) begin
+            if (done_remote.stray) begin
                 $display("[BINGO_REMOTE_DONE_DROP] %0t chip=%0d task=%0d proxy_slot=%0d reject=%0b: no proxy slot, dropped",
                          $time, chip_id_i, remote_done_task_id_i, remote_done_proxy_slot_i, remote_done_reject_i);
             end
-            if (|remote_reject_in) begin
+            if (|done_remote.reject) begin
                 $display("[BINGO_REMOTE_REJECT_IN] %0t chip=%0d task=%0d proxy_slot=%0d: the proxy is stuck",
                          $time, chip_id_i, remote_done_task_id_i, remote_done_proxy_slot_i);
             end
@@ -2505,6 +2510,7 @@ module bingo_hw_manager_top #(
         .*,
         .remap_route_fire     ( route.fire                 ),
         .remap_route_src_core ( route.src_core             ),
+        .remote_done_push     ( done_remote.push           ),
         .exec_moved_q         ( i_replay_ctrl.exec_moved_q )
     );
 `endif
