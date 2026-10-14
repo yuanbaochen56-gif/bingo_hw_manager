@@ -59,11 +59,11 @@ module tb_bingo_hw_manager_recovery_hold_cold;
         end
         #1;
         if (fenced[0][0]) begin
-            if (ctrl.rec_hold_q[0][1] == 32 && load_cycle < 0) begin
+            if (ctrl.i_power_view.rec_hold_q[0][1] == 32 && load_cycle < 0) begin
                 load_cycle = cycle; next_update = 1;
             end
             if (level[2] == 6 && first_normal < 0) first_normal = cycle;
-            if (ctrl.rec_hold_q[0][1] != 0) begin
+            if (ctrl.i_power_view.rec_hold_q[0][1] != 0) begin
                 if (pm.target_power_level[2] == 25)
                     $fatal(1, "[REC_HOLD] cold target idle");
                 if (first_normal >= 0 && level[2] == 25)
@@ -72,7 +72,7 @@ module tb_bingo_hw_manager_recovery_hold_cold;
                     $fatal(1, "[REC_HOLD] cold exceeded L_wake");
             end
             $display("[P8_COLD] cycle=%0d hold=%0d target=%0d applied=%0d",
-                     cycle, ctrl.rec_hold_q[0][1], pm.target_power_level[2], level[2]);
+                     cycle, ctrl.i_power_view.rec_hold_q[0][1], pm.target_power_level[2], level[2]);
         end
     end
     initial begin
@@ -82,7 +82,7 @@ module tb_bingo_hw_manager_recovery_hold_cold;
         fenced[0][0] = 1; fence_cycle = cycle + 1;
         repeat (40) @(negedge clk);
         if (load_cycle != fence_cycle + 1 || first_normal - load_cycle != 5 ||
-            !update_seen || ctrl.rec_hold_q != 0)
+            !update_seen || ctrl.i_power_view.rec_hold_q != 0)
             $fatal(1, "[REC_HOLD] cold probe timing/update mismatch");
         $display("Cold probe passed: fence=%0d load=%0d first_normal=%0d L_wake=%0d",
                  fence_cycle, load_cycle, first_normal, L_WAKE);

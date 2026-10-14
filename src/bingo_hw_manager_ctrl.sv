@@ -67,22 +67,10 @@
 // slot leaves PARKED, park_fail_o is raised, and the table points back at the
 // slot so a replay of entries already on the dead substitute has a live core.
 //
-// Power and load view of the slots (fault-aware): a fenced slot is dead, so it
-// no longer keeps its power domain at the normal level (pm_idle_o: polling for a
-// task, or fenced) and no longer counts as load (load_clear_o). A slot that is
-// only dead_suspect may still be working and keeps both.
-// Idle entry delay (idle_delay_i, host-configured): a slot only counts as idle
-// for the PM once it has been idle for idle_delay_i cycles, so a domain only
-// drops to the idle level after all its slots were idle that long. Short gaps
-// between tasks then keep the normal level and avoid the wake-up cost; 0 =
-// at once (the PM's own behaviour).
-// External access wake (access_hold_i, host-configured): a cluster whose memory
-// is accessed from outside (cluster_access_i, e.g. the host reading its L1)
-// runs on its own clock, so while it is accessed, and for access_hold_i cycles
-// after the last access, none of its slots counts as idle, not even a fenced
-// one. The access path is not held at the idle level; 0 = off. This only ever
-// makes a slot idle later: the idle entry delay keeps counting the core's own
-// polling, so once the hold ends a long idle core lets its domain drop at once.
+// Power and load view (bingo_hw_manager_power_view): which slots the PM may
+// count as idle (pm_idle_o: polling or fenced, after the idle entry delay, not
+// while their cluster is accessed from outside or a recovery hold runs), and
+// which no longer count as load (fenced).
 //
 // Frequency-aware watchdog (bingo_hw_manager_wd_tick): a slot's watchdog timer
 // counts cycles of the normal clock while its domain runs slower (wd_tick_o),
@@ -490,89 +478,33 @@ module bingo_hw_manager_ctrl #(
     assign park_unpark_o = park_unpark_q;
     assign park_fail_o   = park_fail_q;
 
-    // A fence writes the SMT first. On the following edge, load its current
-    // live substitute, unless the logical slot has already retired. Include
-    // affected dead entries when their previous substitute is fenced again.
-    logic [NumCores-1:0][NumClusters-1:0] rec_pending_q, rec_load;
-    logic [NumCores-1:0][NumClusters-1:0][31:0] rec_hold_q, rec_hold_d;
-    always_comb begin
-        rec_load = '0;
-        for (int c = 0; c < NumCores; c++) begin
-            for (int cl = 0; cl < NumClusters; cl++) begin
-                if (rec_pending_q[c][cl] && !retired_i[c][cl] && smt_found_q[c][cl] &&
-                    !fenced_i[smt_core_q[c][cl]][smt_cluster_q[c][cl]])
-                    rec_load[smt_core_q[c][cl]][smt_cluster_q[c][cl]] = 1'b1;
-            end
-        end
-        for (int c = 0; c < NumCores; c++) begin
-            for (int cl = 0; cl < NumClusters; cl++) begin
-                rec_hold_d[c][cl] = rec_hold_q[c][cl];
-                if (fenced_i[c][cl]) rec_hold_d[c][cl] = '0;
-                else if (rec_load[c][cl] && recovery_hold_i != 0)
-                    rec_hold_d[c][cl] = recovery_hold_i;
-                else if (rec_hold_q[c][cl] != 0)
-                    rec_hold_d[c][cl] = rec_hold_q[c][cl] - 32'd1;
-                // The logger samples this on the very edge the count changes,
-                // so pending-event ages refer to load/zero, not one edge later.
-                rec_hold_o[c][cl] = rec_hold_d[c][cl] != 0;
-            end
-        end
-    end
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-            rec_pending_q <= '0;
-            rec_hold_q <= '0;
-        end else begin
-            rec_pending_q <= recompute & fenced_i & ~retired_i;
-            rec_hold_q <= rec_hold_d;
-        end
-    end
-
     // ------------------------------------------------------------------
-    // Fault-aware power and load view
+    // Power and load view, recovery hold
     // ------------------------------------------------------------------
-    // Clusters accessed from outside within the last access_hold_i cycles
-    logic [NumClusters-1:0]       cluster_awake;
-    logic [NumClusters-1:0][31:0] access_cnt_q;
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-            access_cnt_q <= '0;
-        end else begin
-            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                if (cluster_access_i[cl])        access_cnt_q[cl] <= access_hold_i;
-                else if (access_cnt_q[cl] != '0) access_cnt_q[cl] <= access_cnt_q[cl] - 32'd1;
-            end
-        end
-    end
-    for (genvar cl = 0; cl < NumClusters; cl++) begin : gen_cluster_awake
-        assign cluster_awake[cl] = (access_hold_i != '0) && (cluster_access_i[cl] || (access_cnt_q[cl] != '0));
-    end
-    logic [NumCores-1:0][NumClusters-1:0]       slot_idle;
-    logic [NumCores-1:0][NumClusters-1:0][31:0] idle_cnt_q;
-    assign slot_idle = waiting_i | fenced_i;
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-            idle_cnt_q <= '0;
-        end else begin
-            for (int unsigned c = 0; c < NumCores; c++) begin
-                for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                    if (!slot_idle[c][cl])                    idle_cnt_q[c][cl] <= '0;
-                    else if (idle_cnt_q[c][cl] != '1)         idle_cnt_q[c][cl] <= idle_cnt_q[c][cl] + 32'd1;
-                end
-            end
-        end
-    end
-    always_comb begin
-        for (int unsigned c = 0; c < NumCores; c++) begin
-            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                pm_idle_o[c][cl] = slot_idle[c][cl] && (idle_cnt_q[c][cl] >= idle_delay_i) && !cluster_awake[cl];
-                access_only_o[c][cl] = slot_idle[c][cl] && (idle_cnt_q[c][cl] >= idle_delay_i) &&
-                                       cluster_awake[cl] && rec_hold_q[c][cl] == 0;
-                pm_idle_o[c][cl] &= rec_hold_q[c][cl] == 0;
-            end
-        end
-    end
-    assign load_clear_o = fenced_i;
+    bingo_hw_manager_power_view #(
+        .NumCores(NumCores),
+        .NumClusters(NumClusters),
+        .CoreIdWidth(CoreIdWidth),
+        .ClusterIdWidth(ClusterIdWidth)
+    ) i_power_view (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
+        .fenced_i(fenced_i),
+        .waiting_i(waiting_i),
+        .retired_i(retired_i),
+        .smt_found_i(smt_found_q),
+        .smt_core_i(smt_core_q),
+        .smt_cluster_i(smt_cluster_q),
+        .smt_recompute_i(recompute),
+        .idle_delay_i(idle_delay_i),
+        .cluster_access_i(cluster_access_i),
+        .access_hold_i(access_hold_i),
+        .recovery_hold_i(recovery_hold_i),
+        .pm_idle_o(pm_idle_o),
+        .rec_hold_o(rec_hold_o),
+        .access_only_o(access_only_o),
+        .load_clear_o(load_clear_o)
+    );
 
     // ------------------------------------------------------------------
     // Frequency-aware watchdog ticks
@@ -631,9 +563,9 @@ module bingo_hw_manager_ctrl #(
         if (rst_ni) begin
             for (int c = 0; c < NumCores; c++)
                 for (int cl = 0; cl < NumClusters; cl++)
-                    if ((rec_hold_q[c][cl] != 0) != (rec_hold_d[c][cl] != 0))
+                    if ((i_power_view.rec_hold_q[c][cl] != 0) != (i_power_view.rec_hold_d[c][cl] != 0))
                         $display("[BINGO_RECOVERY_HOLD] %0t core=%0d cluster=%0d active=%0b",
-                                 $time, c, cl, rec_hold_d[c][cl] != 0);
+                                 $time, c, cl, i_power_view.rec_hold_d[c][cl] != 0);
         end
     end
     logic [NumCores-1:0][NumClusters-1:0] risk_seen_q;

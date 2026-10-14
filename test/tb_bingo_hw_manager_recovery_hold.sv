@@ -92,7 +92,7 @@ module tb_bingo_hw_manager_recovery_hold;
             next_update = '0; woke = '0; cold = '0;
         end
         else begin
-            automatic logic [3:0][0:0][31:0] previous = dut.rec_hold_q;
+            automatic logic [3:0][0:0][31:0] previous = dut.i_power_view.rec_hold_q;
             automatic logic [31:0] edge_cycle = cycle;
             automatic logic [31:0][7:0] previous_level = level;
             // Inspect the target latched by the unmodified PM FSM, not just
@@ -123,15 +123,15 @@ module tb_bingo_hw_manager_recovery_hold;
             for (int c = 0; c < 4; c++) begin
                 // A hot domain may need no update at all until hold ends.
                 // Its later idle request is outside the checked window.
-                if (dut.rec_hold_q[c][0] == 0) next_update[c] = 0;
-                if (previous[c][0] == 0 && dut.rec_hold_q[c][0] != 0) begin
+                if (dut.i_power_view.rec_hold_q[c][0] == 0) next_update[c] = 0;
+                if (previous[c][0] == 0 && dut.i_power_view.rec_hold_q[c][0] != 0) begin
                     loaded_at[c] = edge_cycle;
                     cold[c] = previous_level[c+1] == 25;
                     woke[c] = !cold[c];
                     next_update[c] = 1;
                     if (cold[c]) cold_windows++; else hot_windows++;
                 end
-                if (dut.rec_hold_q[c][0] != 0) begin
+                if (dut.i_power_view.rec_hold_q[c][0] != 0) begin
                     if (pm.target_power_level[c+1] == 25)
                         $fatal(1, "[REC_HOLD] target idle while count nonzero");
                     if (level[c+1] != 25) woke[c] = 1;
@@ -140,8 +140,8 @@ module tb_bingo_hw_manager_recovery_hold;
                     if (cold[c] && !woke[c] && edge_cycle - loaded_at[c] >= L_WAKE)
                         $fatal(1, "[REC_HOLD] cold wake exceeded L_wake");
                 end
-                if ((previous[c][0] == 0) != (dut.rec_hold_q[c][0] == 0)) begin
-                    automatic bit started = dut.rec_hold_q[c][0] != 0;
+                if ((previous[c][0] == 0) != (dut.i_power_view.rec_hold_q[c][0] == 0)) begin
+                    automatic bit started = dut.i_power_view.rec_hold_q[c][0] != 0;
                     expected.push_back({edge_cycle, 8'h0c, 8'(c), 16'(started)});
                     if (started) starts++; else ends++;
                 end
@@ -166,15 +166,15 @@ module tb_bingo_hw_manager_recovery_hold;
         if (level[1] != 25) $fatal(1, "[REC_HOLD] cold case not idle");
         // Fence slot 2 -> slot 0. The SMT commits before hold is loaded.
         fenced[2][0] = 1; step();
-        if (!idle[0][0] || dut.rec_hold_q[0][0] != 0)
+        if (!idle[0][0] || dut.i_power_view.rec_hold_q[0][0] != 0)
             $fatal(1, "[REC_HOLD] loaded before the post-SMT edge");
         move = 1; step(); move = 0;
-        if (dut.rec_hold_q[0][0] != 12 || idle[0][0] || !idle[2][0])
+        if (dut.i_power_view.rec_hold_q[0][0] != 12 || idle[0][0] || !idle[2][0])
             $fatal(1, "[REC_HOLD] missing substitute hold or held victim");
         repeat (3) step();
         // Another logical slot shares the substitute, reloading without start.
         fenced[1][0] = 1; step(); step();
-        if (dut.rec_hold_q[0][0] != 12 || starts != 1)
+        if (dut.i_power_view.rec_hold_q[0][0] != 12 || starts != 1)
             $fatal(1, "[REC_HOLD] reload missing or emitted another start");
         access = 1; step(); access = 0;
         if (access_only[0][0]) $fatal(1, "[REC_HOLD] hold misclassified as access-only");
@@ -183,7 +183,7 @@ module tb_bingo_hw_manager_recovery_hold;
             step();
         end
         step();
-        if (!idle[0][0] || dut.rec_hold_q[0][0] != 0 || ends != 1)
+        if (!idle[0][0] || dut.i_power_view.rec_hold_q[0][0] != 0 || ends != 1)
             $fatal(1, "[REC_HOLD] hold did not end at W");
         repeat (4) step();
         if (expected.size()) $fatal(1, "[REC_HOLD] events did not drain");
@@ -192,10 +192,10 @@ module tb_bingo_hw_manager_recovery_hold;
         // No substitute (type 0 / exhausted local type, including L3/CERF).
         fenced[3][0] = 1; step(); step();
         fenced[0][0] = 1; step(); step();
-        if (dut.rec_hold_q != 0) $fatal(1, "[REC_HOLD] held a missing substitute");
+        if (dut.i_power_view.rec_hold_q != 0) $fatal(1, "[REC_HOLD] held a missing substitute");
         hold_cycles = 0; reset_ctrl();
         fenced[2][0] = 1; repeat (16) step();
-        if (dut.rec_hold_q != 0 || idle !== '1 || expected.size())
+        if (dut.i_power_view.rec_hold_q != 0 || idle !== '1 || expected.size())
             $fatal(1, "[REC_HOLD] W=0 changed behavior");
         // Warm the substitute through existing access wake, then release it
         // only after recovery hold loads. Do not change product wake timing.
@@ -210,13 +210,13 @@ module tb_bingo_hw_manager_recovery_hold;
         // A logical slot retired by the post-SMT edge gets no hold.
         hold_cycles = '1; reset_ctrl();
         fenced[2][0] = 1; step(); retired[2][0] = 1; step();
-        if (dut.rec_hold_q != 0) $fatal(1, "[REC_HOLD] held a retired logical slot");
+        if (dut.i_power_view.rec_hold_q != 0) $fatal(1, "[REC_HOLD] held a retired logical slot");
         // Full 32-bit W loads without narrowing.
         fenced[1][0] = 1; step(); step();
-        if (dut.rec_hold_q[0][0] !== 32'hffffffff)
+        if (dut.i_power_view.rec_hold_q[0][0] !== 32'hffffffff)
             $fatal(1, "[REC_HOLD] W narrowed");
         fenced[0][0] = 1; step();
-        if (dut.rec_hold_q[0][0] != 0 || !idle[0][0])
+        if (dut.i_power_view.rec_hold_q[0][0] != 0 || !idle[0][0])
             $fatal(1, "[REC_HOLD] held a newly fenced substitute");
         repeat (5) step();
         if (expected.size()) $fatal(1, "[REC_HOLD] final events did not drain");
