@@ -132,7 +132,10 @@ module bingo_hw_manager_replay_ctrl #(
     output logic                      export_o,
     // Level 3: this MOVE step drops the (imported) head of the source without
     // a push; bingo_hw_manager_remote_import rejects it back to its origin
-    output logic                      bounce_o
+    output logic                      bounce_o,
+    // Fenced slot whose first executing entry was already moved (the one that
+    // may have started): read only by the checks of bingo_hw_manager_top_assert
+    output logic [NumCores-1:0][NumClusters-1:0] exec_moved_o
 );
 
     localparam bit RemoteEn = SubstituteLevelMask[2];
@@ -323,6 +326,7 @@ module bingo_hw_manager_replay_ctrl #(
     assign retired_o     = retired_q;
     assign stuck_o       = stuck_q;
     assign blocked_o     = blocked_q;
+    assign exec_moved_o  = exec_moved_q;
     always_comb begin
         for (int unsigned c = 0; c < NumCores; c++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin

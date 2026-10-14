@@ -923,6 +923,8 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_stuck_slot;
     logic                                  replay_stuck;
     bingo_hw_manager_task_desc_t           replay_data;
+    // Fenced slots whose first executing entry was moved (for top_assert)
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_exec_moved;
 
     // Placement of the waiting queue heads (bingo_hw_manager_router): per
     // logical core its physical slot, per physical slot the routed task
@@ -2046,7 +2048,8 @@ module bingo_hw_manager_top #(
         .blocked_o               ( replay_blocked_o       ),
         .rotate_o                ( replay_rotate          ),
         .export_o                ( replay_export          ),
-        .bounce_o                ( replay_bounce          )
+        .bounce_o                ( replay_bounce          ),
+        .exec_moved_o            ( replay_exec_moved      )
     );
     assign replay_stuck   = (|replay_stuck_slot) || (|remote_rejected_q);
     assign replay_stuck_o = replay_stuck;
@@ -2579,7 +2582,7 @@ module bingo_hw_manager_top #(
         .slot_log_i         ( slot_log_q                 ),
         .step_i             ( replay_step                ),
         .replay_op_i        ( replay_op                  ),
-        .exec_moved_i       ( i_replay_ctrl.exec_moved_q ),
+        .exec_moved_i       ( replay_exec_moved          ),
         .export_push_i      ( export_push                ),
         .export_i           ( export_in                  ),
         .waiting_i          ( waiting_heads              ),
