@@ -393,6 +393,56 @@
     logic [(NumCores)-1:0][(NumClusters)-1:0] push_ready;                                     \
   } replay_op_t;
 
+// A task exported to another chiplet (level 3), as the transport carries it:
+//   desc         the descriptor (bingo_hw_manager_task_desc_full_t of the top
+//                towards the transport, bingo_hw_manager_task_desc_t once imported)
+//   core_type    CoreTypeId of its logical slot on the origin chiplet
+//   origin_chip  the origin chiplet
+//   proxy_slot   its proxy slot on the origin chiplet (flat id), which takes its done
+`define BINGO_HW_MANAGER_TYPEDEF_REMOTE_DISPATCH_T(remote_dispatch_t, desc_t, chip_id_t, remote_slot_t, CoreTypeIdWidth) \
+  typedef struct packed { \
+    desc_t                      desc; \
+    logic [(CoreTypeIdWidth)-1:0] core_type; \
+    chip_id_t                   origin_chip; \
+    remote_slot_t               proxy_slot; \
+  } remote_dispatch_t;
+
+// The proxy slots of the exported tasks (bingo_hw_manager_remote_export), per slot:
+//   waiting      its exported head waits for its remote done
+//   timeout      ... for the proxy timeout: the done is taken as lost
+//   wait_cycles  how long it has waited
+//   rejected     it stopped: its export was rejected or timed out (sticky)
+// and for the chiplet: timeout_any, a proxy gave up waiting (sticky);
+// mismatch, a remote done that does not belong to an exported head (sticky)
+`define BINGO_HW_MANAGER_TYPEDEF_PROXY_T(proxy_t, NumCores, NumClusters) \
+  typedef struct packed { \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]       waiting; \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]       timeout; \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][31:0] wait_cycles; \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]       rejected; \
+    logic                                           timeout_any; \
+    logic                                           mismatch; \
+  } proxy_t;
+
+// The import taken this cycle (bingo_hw_manager_remote_import):
+//   fire, reject             pushed into one slot, or rejected back to its origin
+//   push                     the slot it is pushed into
+//   desc, tag                the task (of its home slot) and its side tag (its origin)
+//   home_core, home_cluster  its home slot: the lowest slot of its core type
+//   core, cluster            the slot it runs on: the home slot or its live stand-in
+`define BINGO_HW_MANAGER_TYPEDEF_IMPORT_T(import_t, task_desc_t, remote_tag_t, NumCores, NumClusters, CoreIdWidth, ClusterIdWidth) \
+  typedef struct packed { \
+    logic                                     fire; \
+    logic                                     reject; \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] push; \
+    task_desc_t                               desc; \
+    remote_tag_t                              tag; \
+    logic [(CoreIdWidth)-1:0]                 home_core; \
+    logic [(ClusterIdWidth)-1:0]              home_cluster; \
+    logic [(CoreIdWidth)-1:0]                 core; \
+    logic [(ClusterIdWidth)-1:0]              cluster; \
+  } import_t;
+
 // All port types of the control plane (bingo_hw_manager_ctrl), named as its
 // type parameters, for a module or testbench that instantiates it
 `define BINGO_HW_MANAGER_TYPEDEF_CTRL_ALL(NumCores, NumClusters, CoreIdWidth, ClusterIdWidth, CoreTypeIdWidth, LoadWidth) \

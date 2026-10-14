@@ -47,15 +47,15 @@ end
 int unsigned nt_imports [$];
 always @(posedge clk_i) begin
     if (rst_ni) begin
-        if (gen_dut[1].i_dut.import_fire) begin
-            nt_imports.push_back(gen_dut[1].i_dut.import_desc.task_id);
-            if ((gen_dut[1].i_dut.import_core != 0) || (gen_dut[1].i_dut.import_cluster != 0)) begin
+        if (gen_dut[1].i_dut.imported.fire) begin
+            nt_imports.push_back(gen_dut[1].i_dut.imported.desc.task_id);
+            if ((gen_dut[1].i_dut.imported.core != 0) || (gen_dut[1].i_dut.imported.cluster != 0)) begin
                 $error("[RLINK_NO_TARGET] task %0d imported to core %0d cluster %0d",
-                       gen_dut[1].i_dut.import_desc.task_id, gen_dut[1].i_dut.import_core,
-                       gen_dut[1].i_dut.import_cluster);
+                       gen_dut[1].i_dut.imported.desc.task_id, gen_dut[1].i_dut.imported.core,
+                       gen_dut[1].i_dut.imported.cluster);
             end
         end
-        if (gen_dut[0].i_dut.import_fire) $error("[RLINK_NO_TARGET] chiplet 0 imported a task");
+        if (gen_dut[0].i_dut.imported.fire) $error("[RLINK_NO_TARGET] chiplet 0 imported a task");
         if (rd_valid[0] && (rd_core_type[0] != 4'd1)) begin
             $error("[RLINK_NO_TARGET] chiplet 0 exports a task of type %0d", rd_core_type[0]);
         end

@@ -754,15 +754,6 @@ module bingo_hw_manager_top #(
     // Per core type: its export queue has room
     logic [2**CoreTypeIdWidth-1:0]         export_type_ready;
     // Level 3 import (executor side)
-    bingo_hw_manager_assigned_core_id_t    import_home_core;
-    bingo_hw_manager_assigned_cluster_id_t import_home_cluster;
-    bingo_hw_manager_assigned_core_id_t    import_core;
-    bingo_hw_manager_assigned_cluster_id_t import_cluster;
-    logic                                  import_fire;
-    logic                                  import_reject;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] import_push;
-    bingo_hw_manager_task_desc_t           import_desc;
-    remote_tag_t                           import_tag;
     // Level 3 remote dones
     remote_done_t [NUM_CORES_PER_CLUSTER*NUM_CLUSTERS_PER_CHIPLET-1:0] remote_done_arb_data;
     logic         [NUM_CORES_PER_CLUSTER*NUM_CLUSTERS_PER_CHIPLET-1:0] remote_done_arb_valid;
@@ -839,6 +830,14 @@ module bingo_hw_manager_top #(
         cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER), cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
     `BINGO_HW_MANAGER_TYPEDEF_REPLAY_OP_T(replay_op_t, bingo_hw_manager_task_desc_t,
         NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    `BINGO_HW_MANAGER_TYPEDEF_REMOTE_DISPATCH_T(remote_dispatch_out_t, bingo_hw_manager_task_desc_full_t,
+        chip_id_t, remote_slot_t, CoreTypeIdWidth)
+    `BINGO_HW_MANAGER_TYPEDEF_REMOTE_DISPATCH_T(remote_dispatch_in_t, bingo_hw_manager_task_desc_t,
+        chip_id_t, remote_slot_t, CoreTypeIdWidth)
+    `BINGO_HW_MANAGER_TYPEDEF_PROXY_T(proxy_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    `BINGO_HW_MANAGER_TYPEDEF_IMPORT_T(import_t, bingo_hw_manager_task_desc_t, remote_tag_t,
+        NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET,
+        cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER), cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
     // ... and of one slot's queues
     `BINGO_HW_MANAGER_TYPEDEF_TASK_PUSH_T(task_push_t, bingo_hw_manager_task_desc_t)
     `BINGO_HW_MANAGER_TYPEDEF_CHECKOUT_ROUTE_T(checkout_route_t, bingo_hw_manager_task_desc_t)
@@ -985,6 +984,8 @@ module bingo_hw_manager_top #(
     // done queues, and the remote done input as a remote_done_t (its chip is
     // this one)
     done_remote_t done_remote;
+    // Level 3, executor side: the import taken this cycle (bingo_hw_manager_remote_import)
+    import_t      imported;
     remote_done_t remote_done_in;
     assign remote_done_in = '{chip:       '0,
                               proxy_slot: remote_done_proxy_slot_i,
@@ -1388,7 +1389,7 @@ module bingo_hw_manager_top #(
             assign route_in  = '{valid: route.ready_push[core][cluster],
                                  desc:  waiting_dep_check_task_desc[route.src_core[core][cluster]]};
             assign replay_in = '{valid: replay_push_ready[core][cluster], desc: replay_data};
-            assign import_in = '{valid: import_push[core][cluster], desc: import_desc};
+            assign import_in = '{valid: imported.push[core][cluster], desc: imported.desc};
             bingo_hw_manager_ready_queue #(
                 .InterfaceType ( READY_AND_DONE_QUEUE_INTERFACE_TYPE     ),
                 .Depth         ( ReadyQueueDepth                         ),
@@ -1466,7 +1467,7 @@ module bingo_hw_manager_top #(
                                  exit_absorb: replay_exit_absorb,
                                  pop:         replay_pop[core][cluster],
                                  hold:        replay_hold_slot[core][cluster]};
-            assign import_in = '{valid: import_push[core][cluster], desc: import_desc, tag: import_tag};
+            assign import_in = '{valid: imported.push[core][cluster], desc: imported.desc, tag: imported.tag};
             assign retire_rsp = '{local_set:   stream_arbiter_dep_matrix_set_inp_ready[Slot],
                                   chiplet_set: stream_arbiter_chiplet_dep_set_inp_ready[Slot],
                                   remote_done: remote_done_arb_ready[Slot]};
@@ -2137,122 +2138,118 @@ module bingo_hw_manager_top #(
     // a task of the lowest slot of that type, and its done (or a reject) goes
     // back to its origin.
     bingo_hw_manager_task_desc_full_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] route_desc_full;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]       proxy_waiting;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]       proxy_timeout;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] proxy_wait;
+    // The proxy slots of the exported tasks, and the exports to the transport
+    proxy_t                                                               proxy;
+    remote_dispatch_out_t                                                 remote_dispatch_out;
+    remote_dispatch_in_t                                                  remote_dispatch_in;
     always_comb begin
         for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++)
             for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
                 route_desc_full[c][cl] = desc_to_full(waiting_dep_check_task_desc[route.src_core[c][cl]]);
     end
     bingo_hw_manager_remote_export #(
-        .NumCores         ( NUM_CORES_PER_CLUSTER             ),
-        .NumClusters      ( NUM_CLUSTERS_PER_CHIPLET          ),
-        .RemoteEn         ( RemoteEn                          ),
-        .CoreTypeIdWidth  ( CoreTypeIdWidth                   ),
-        .CoreTypeId       ( CoreTypeId                        ),
-        .CoreIdWidth      ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
-        .ClusterIdWidth   ( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
-        .NumPeers         ( RemoteNumPeers                    ),
-        .PeerIdWidth      ( RemotePeerIdWidth                 ),
-        .FifoDepth        ( RemoteExportFifoDepth             ),
-        .task_desc_full_t ( bingo_hw_manager_task_desc_full_t ),
-        .remote_slot_t    ( remote_slot_t                     ),
-        .remote_tag_t     ( remote_tag_t                      ),
-        .remote_export_t  ( remote_export_t                   ),
-        .chip_id_t        ( chip_id_t                         ),
-        .data_t           ( host_axi_lite_data_t              )
+        .NumCores          ( NUM_CORES_PER_CLUSTER                            ),
+        .NumClusters       ( NUM_CLUSTERS_PER_CHIPLET                         ),
+        .RemoteEn          ( RemoteEn                                         ),
+        .CoreTypeIdWidth   ( CoreTypeIdWidth                                  ),
+        .CoreTypeId        ( CoreTypeId                                       ),
+        .CoreIdWidth       ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
+        .ClusterIdWidth    ( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
+        .NumPeers          ( RemoteNumPeers                                   ),
+        .PeerIdWidth       ( RemotePeerIdWidth                                ),
+        .FifoDepth         ( RemoteExportFifoDepth                            ),
+        .task_desc_full_t  ( bingo_hw_manager_task_desc_full_t                ),
+        .remote_slot_t     ( remote_slot_t                                    ),
+        .remote_export_t   ( remote_export_t                                  ),
+        .chip_id_t         ( chip_id_t                                        ),
+        .replay_step_t     ( replay_step_t                                    ),
+        .route_t           ( route_t                                          ),
+        .checkout_t        ( checkout_t                                       ),
+        .done_t            ( done_t                                           ),
+        .done_remote_t     ( done_remote_t                                    ),
+        .remote_dispatch_t ( remote_dispatch_out_t                            ),
+        .proxy_t           ( proxy_t                                          )
     ) i_remote_export (
-        .clk_i                         ( clk_i                         ),
-        .rst_ni                        ( rst_ni                        ),
-        .chip_id_i                     ( chip_id_i                     ),
-        .replay_export_i               ( replay_export                 ),
-        .replay_desc_i                 ( desc_to_full(replay_data)     ),
-        .replay_src_core_i             ( replay_src_core               ),
-        .replay_src_cluster_i          ( replay_src_cluster            ),
-        .route_export_i                ( route.remote                  ),
-        .route_desc_i                  ( route_desc_full               ),
-        .route_fire_i                  ( route.fire              ),
-        .checkout_full_i               ( checkout_queue_full           ),
-        .route_grant_o                 ( route_remote_grant            ),
-        .type_ready_o                  ( export_type_ready             ),
-        .export_push_o                 ( export_push                   ),
-        .export_o                      ( export_in                     ),
-        .type_peer_i                   ( remote_export_type_peer_i     ),
-        .peer_ready_i                  ( remote_export_peer_ready_i    ),
-        .remote_dispatch_valid_o       ( remote_dispatch_valid_o       ),
-        .remote_dispatch_ready_i       ( remote_dispatch_ready_i       ),
-        .remote_dispatch_desc_o        ( remote_dispatch_desc_o        ),
-        .remote_dispatch_core_type_o   ( remote_dispatch_core_type_o   ),
-        .remote_dispatch_origin_chip_o ( remote_dispatch_origin_chip_o ),
-        .remote_dispatch_proxy_slot_o  ( remote_dispatch_proxy_slot_o  ),
-        .head_tag_i                    ( checkout_remote_tag_out       ),
-        .head_empty_i                  ( checkout_queue_empty          ),
-        .head_exec_i                   ( checkout_head_exec            ),
-        .head_mismatch_i               ( remote_head_mismatch          ),
-        .done_empty_i                  ( done_q_empty                  ),
-        .reject_i                      ( done_remote.reject            ),
-        .done_stray_i                  ( done_remote.stray             ),
-        .timeout_cycles_i              ( 32'(remote_proxy_timeout_i)   ),
-        .waiting_o                     ( proxy_waiting                 ),
-        .timeout_o                     ( proxy_timeout                 ),
-        .wait_cycles_o                 ( proxy_wait                    ),
-        .timeout_any_o                 ( remote_timeout_o              ),
-        .rejected_o                    ( remote_rejected_q             ),
-        .mismatch_o                    ( remote_done_mismatch_o        )
+        .clk_i            ( clk_i                         ),
+        .rst_ni           ( rst_ni                        ),
+        .chip_id_i        ( chip_id_i                     ),
+        .step_i           ( replay_step                   ),
+        .replay_desc_i    ( desc_to_full(replay_data)     ),
+        .route_i          ( route                         ),
+        .route_desc_i     ( route_desc_full               ),
+        .checkout_i       ( checkout_queue                ),
+        .route_grant_o    ( route_remote_grant            ),
+        .type_ready_o     ( export_type_ready             ),
+        .export_push_o    ( export_push                   ),
+        .export_o         ( export_in                     ),
+        .type_peer_i      ( remote_export_type_peer_i     ),
+        .peer_ready_i     ( remote_export_peer_ready_i    ),
+        .dispatch_valid_o ( remote_dispatch_valid_o       ),
+        .dispatch_ready_i ( remote_dispatch_ready_i       ),
+        .dispatch_o       ( remote_dispatch_out           ),
+        .head_mismatch_i  ( remote_head_mismatch          ),
+        .done_i           ( done_queue                    ),
+        .remote_i         ( done_remote                   ),
+        .timeout_cycles_i ( 32'(remote_proxy_timeout_i)   ),
+        .proxy_o          ( proxy                         )
     );
+    assign remote_dispatch_desc_o        = host_axi_lite_data_t'(remote_dispatch_out.desc);
+    assign remote_dispatch_core_type_o   = remote_dispatch_out.core_type;
+    assign remote_dispatch_origin_chip_o = remote_dispatch_out.origin_chip;
+    assign remote_dispatch_proxy_slot_o  = remote_dispatch_out.proxy_slot;
+    assign remote_rejected_q             = proxy.rejected;
+    assign remote_timeout_o              = proxy.timeout_any;
+    assign remote_done_mismatch_o        = proxy.mismatch;
 
+    assign remote_dispatch_in = '{desc:        full_to_desc(bingo_hw_manager_task_desc_full_t'(remote_dispatch_desc_i)),
+                                  core_type:   remote_dispatch_core_type_i,
+                                  origin_chip: remote_dispatch_origin_chip_i,
+                                  proxy_slot:  remote_dispatch_proxy_slot_i};
     bingo_hw_manager_remote_import #(
-        .NumCores                  ( NUM_CORES_PER_CLUSTER        ),
-        .NumClusters               ( NUM_CLUSTERS_PER_CHIPLET     ),
-        .RemoteEn                  ( RemoteEn                     ),
-        .CoreTypeIdWidth           ( CoreTypeIdWidth              ),
-        .CoreTypeId                ( CoreTypeId                   ),
-        .ImportSubstituteLevelMask ( ImportSubstituteLevelMask    ),
-        .SubstituteL2TypeEn        ( SubstituteL2TypeEn           ),
+        .NumCores                  ( NUM_CORES_PER_CLUSTER                            ),
+        .NumClusters               ( NUM_CLUSTERS_PER_CHIPLET                         ),
+        .RemoteEn                  ( RemoteEn                                         ),
+        .CoreTypeIdWidth           ( CoreTypeIdWidth                                  ),
+        .CoreTypeId                ( CoreTypeId                                       ),
+        .ImportSubstituteLevelMask ( ImportSubstituteLevelMask                        ),
+        .SubstituteL2TypeEn        ( SubstituteL2TypeEn                               ),
         .CoreIdWidth               ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
         .ClusterIdWidth            ( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
-        .task_desc_t               ( bingo_hw_manager_task_desc_t ),
-        .remote_slot_t             ( remote_slot_t                ),
-        .remote_tag_t              ( remote_tag_t                 ),
-        .remote_done_t             ( remote_done_t                ),
-        .chip_id_t                 ( chip_id_t                    )
+        .task_desc_t               ( bingo_hw_manager_task_desc_t                     ),
+        .remote_tag_t              ( remote_tag_t                                     ),
+        .remote_done_t             ( remote_done_t                                    ),
+        .chip_id_t                 ( chip_id_t                                        ),
+        .remote_dispatch_t         ( remote_dispatch_in_t                             ),
+        .slot_state_t              ( slot_state_t                                     ),
+        .replay_step_t             ( replay_step_t                                    ),
+        .route_t                   ( route_t                                          ),
+        .checkout_t                ( checkout_t                                       ),
+        .ready_t                   ( ready_t                                          ),
+        .import_t                  ( import_t                                         )
     ) i_remote_import (
-        .clk_i                         ( clk_i                                                     ),
-        .rst_ni                        ( rst_ni                                                    ),
-        .chip_id_i                     ( chip_id_i                                                 ),
-        .remote_dispatch_valid_i       ( remote_dispatch_valid_i                                   ),
-        .remote_dispatch_ready_o       ( remote_dispatch_ready_o                                   ),
-        .remote_dispatch_desc_i        ( full_to_desc(bingo_hw_manager_task_desc_full_t'(remote_dispatch_desc_i)) ),
-        .remote_dispatch_core_type_i   ( remote_dispatch_core_type_i                               ),
-        .remote_dispatch_origin_chip_i ( remote_dispatch_origin_chip_i                             ),
-        .remote_dispatch_proxy_slot_i  ( remote_dispatch_proxy_slot_i                              ),
-        .fenced_i                      ( core_fenced                                               ),
-        .replay_pending_i              ( replay_pending                                            ),
-        .replay_moving_i               ( |replay_move                                              ),
-        .route_valid_i                 ( route.valid                                         ),
-        .replay_push_i                 ( replay_push                                               ),
-        .checkout_full_i               ( checkout_queue_full                                       ),
-        .ready_full_i                  ( ready_queue_full                                          ),
-        .fire_o                        ( import_fire                                               ),
-        .reject_o                      ( import_reject                                             ),
-        .push_o                        ( import_push                                               ),
-        .desc_o                        ( import_desc                                               ),
-        .tag_o                         ( import_tag                                                ),
-        .home_core_o                   ( import_home_core                                          ),
-        .home_cluster_o                ( import_home_cluster                                       ),
-        .core_o                        ( import_core                                               ),
-        .cluster_o                     ( import_cluster                                            ),
-        .done_i                        ( remote_done_arb_data                                      ),
-        .done_valid_i                  ( remote_done_arb_valid                                     ),
-        .done_ready_o                  ( remote_done_arb_ready                                     ),
-        .bounce_i                      ( replay_bounce                                             ),
-        .bounce_tag_i                  ( checkout_remote_tag_out[replay_src_core][replay_src_cluster] ),
-        .bounce_desc_i                 ( replay_data                                               ),
-        .reject_pending_o              ( reject_pending                                            ),
-        .remote_done_valid_o           ( remote_done_valid_o                                       ),
-        .remote_done_ready_i           ( remote_done_ready_i                                       ),
-        .remote_done_o                 ( remote_done_out                                           )
+        .clk_i               ( clk_i                                                        ),
+        .rst_ni              ( rst_ni                                                       ),
+        .chip_id_i           ( chip_id_i                                                    ),
+        .dispatch_valid_i    ( remote_dispatch_valid_i                                      ),
+        .dispatch_ready_o    ( remote_dispatch_ready_o                                      ),
+        .dispatch_i          ( remote_dispatch_in                                           ),
+        .slot_i              ( slot_state                                                   ),
+        .replay_pending_i    ( replay_pending                                               ),
+        .step_i              ( replay_step                                                  ),
+        .replay_push_i       ( replay_push                                                  ),
+        .route_i             ( route                                                        ),
+        .checkout_i          ( checkout_queue                                               ),
+        .ready_i             ( ready_queue                                                  ),
+        .import_o            ( imported                                                     ),
+        .done_i              ( remote_done_arb_data                                         ),
+        .done_valid_i        ( remote_done_arb_valid                                        ),
+        .done_ready_o        ( remote_done_arb_ready                                        ),
+        .bounce_tag_i        ( checkout_remote_tag_out[replay_src_core][replay_src_cluster] ),
+        .bounce_desc_i       ( replay_data                                                  ),
+        .reject_pending_o    ( reject_pending                                               ),
+        .remote_done_valid_o ( remote_done_valid_o                                          ),
+        .remote_done_ready_i ( remote_done_ready_i                                          ),
+        .remote_done_o       ( remote_done_out                                              )
     );
     assign remote_done_chip_o       = remote_done_out.chip;
     assign remote_done_proxy_slot_o = remote_done_out.proxy_slot;
@@ -2447,11 +2444,11 @@ module bingo_hw_manager_top #(
                          $time, chip_id_i, export_in.desc.task_id, export_in.core_type,
                          export_in.proxy_slot, replay_export);
             end
-            if (import_fire) begin
+            if (imported.fire) begin
                 $display("[BINGO_IMPORT] %0t chip=%0d task=%0d from chip=%0d proxy_slot=%0d -> core=%0d cluster=%0d (home core=%0d cluster=%0d)",
-                         $time, chip_id_i, import_desc.task_id, remote_dispatch_origin_chip_i,
-                         remote_dispatch_proxy_slot_i, import_core, import_cluster,
-                         import_home_core, import_home_cluster);
+                         $time, chip_id_i, imported.desc.task_id, remote_dispatch_origin_chip_i,
+                         remote_dispatch_proxy_slot_i, imported.core, imported.cluster,
+                         imported.home_core, imported.home_cluster);
             end
             if (remote_done_valid_o && remote_done_ready_i && !remote_done_reject_o) begin
                 $display("[BINGO_REMOTE_DONE_OUT] %0t chip=%0d task=%0d -> chip=%0d proxy_slot=%0d",
@@ -2461,9 +2458,9 @@ module bingo_hw_manager_top #(
                 $display("[BINGO_REMOTE_DONE_IN] %0t chip=%0d task=%0d proxy_slot=%0d",
                          $time, chip_id_i, remote_done_task_id_i, remote_done_proxy_slot_i);
             end
-            if (import_reject) begin
+            if (imported.reject) begin
                 $display("[BINGO_REMOTE_REJECT_OUT] %0t chip=%0d task=%0d -> chip=%0d proxy_slot=%0d (no live core of its type)",
-                         $time, chip_id_i, import_desc.task_id, remote_dispatch_origin_chip_i,
+                         $time, chip_id_i, imported.desc.task_id, remote_dispatch_origin_chip_i,
                          remote_dispatch_proxy_slot_i);
             end
             if (replay_bounce) begin
@@ -2482,10 +2479,10 @@ module bingo_hw_manager_top #(
             end
             for (int unsigned c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin
                 for (int unsigned cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin
-                    if (proxy_timeout[c][cl]) begin
+                    if (proxy.timeout[c][cl]) begin
                         $display("[BINGO_REMOTE_TIMEOUT] %0t chip=%0d task=%0d proxy_slot=%0d: no remote done for %0d cycles, the proxy is stuck",
                                  $time, chip_id_i, checkout_queue_data_out[c][cl].task_id,
-                                 c + cl * NUM_CORES_PER_CLUSTER, proxy_wait[c][cl]);
+                                 c + cl * NUM_CORES_PER_CLUSTER, proxy.wait_cycles[c][cl]);
                     end
                 end
             end

@@ -39,12 +39,12 @@ end
 int unsigned lb_imports [$];
 always @(posedge clk_i) begin
     if (rst_ni) begin
-        if (gen_dut[0].i_dut.import_fire) begin
-            lb_imports.push_back(gen_dut[0].i_dut.import_desc.task_id);
-            if ((gen_dut[0].i_dut.import_core != 1) || (gen_dut[0].i_dut.import_cluster != 0)) begin
+        if (gen_dut[0].i_dut.imported.fire) begin
+            lb_imports.push_back(gen_dut[0].i_dut.imported.desc.task_id);
+            if ((gen_dut[0].i_dut.imported.core != 1) || (gen_dut[0].i_dut.imported.cluster != 0)) begin
                 $error("[RLINK_LOOPBACK] task %0d imported to core %0d cluster %0d",
-                       gen_dut[0].i_dut.import_desc.task_id, gen_dut[0].i_dut.import_core,
-                       gen_dut[0].i_dut.import_cluster);
+                       gen_dut[0].i_dut.imported.desc.task_id, gen_dut[0].i_dut.imported.core,
+                       gen_dut[0].i_dut.imported.cluster);
             end
             if (gen_dut[0].i_dut.remote_dispatch_origin_chip_i != 0 ||
                 gen_dut[0].i_dut.remote_dispatch_proxy_slot_i != 0) begin

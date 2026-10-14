@@ -794,7 +794,7 @@ for (genvar i = 0; i < NUM_CHIPLET; i++) begin : gen_remote_link
                     remote_max_outstanding[i] = remote_export_count[i] - remote_done_in_count[i];
                 end
             end
-            if (rd_in_valid[i] && rd_ready[i] && !rl_import_hold[i] && !gen_dut[i].i_dut.import_reject) remote_import_count[i]++;
+            if (rd_in_valid[i] && rd_ready[i] && !rl_import_hold[i] && !gen_dut[i].i_dut.imported.reject) remote_import_count[i]++;
             if (rdn_in_valid[i] && rdn_ready[i]) begin
                 remote_done_in_count[i]++;
                 if (rdn_in_reject[i]) begin
@@ -1431,11 +1431,11 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_sva
         ((gen_dut[gi].i_dut.replay_src_core == gen_dut[gi].i_dut.replay_dst_core) &&
          (gen_dut[gi].i_dut.replay_src_cluster == gen_dut[gi].i_dut.replay_dst_cluster) &&
          !gen_dut[gi].i_dut.replay_push_ready_q));
-    a_import_live: assert property ((fenced & gen_dut[gi].i_dut.import_push) == '0);
+    a_import_live: assert property ((fenced & gen_dut[gi].i_dut.imported.push) == '0);
 
     c_fence:       cover property ($rose(|fenced));
     c_rotate:      cover property (gen_dut[gi].i_dut.replay_rotate);
-    c_import:      cover property (|gen_dut[gi].i_dut.import_push);
+    c_import:      cover property (|gen_dut[gi].i_dut.imported.push);
     // Level 3: only an imported head is bounced (rejected back), and nothing
     // is pushed for it; a rejected proxy slot retires nothing more, except the
     // heads that run on no core (stuck_skip_ok, see a_stuck_skip_only)
@@ -1447,7 +1447,7 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_sva
         (gen_dut[gi].i_dut.remote_rejected_q & ~stuck_skip_ok & gen_dut[gi].i_dut.checkout_retire_valid) == '0);
     a_rejected_fenced: assert property ((gen_dut[gi].i_dut.remote_rejected_q & ~fenced) == '0);
     c_bounce:        cover property (gen_dut[gi].i_dut.replay_bounce);
-    c_import_reject: cover property (gen_dut[gi].i_dut.import_reject);
+    c_import_reject: cover property (gen_dut[gi].i_dut.imported.reject);
     c_reject_in:     cover property ($rose(|gen_dut[gi].i_dut.remote_rejected_q));
     c_retire:      cover property ($rose(|retired));
     c_stuck:       cover property ($rose(|stuck));
@@ -1564,8 +1564,8 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_fenced_export
     assign stuck_slot_export[gi]      = gen_dut[gi].i_dut.replay_stuck_slot;
     assign remote_rejected_export[gi] = gen_dut[gi].i_dut.remote_rejected_q;
     assign replay_stuck_export[gi]    = gen_dut[gi].i_dut.replay_stuck;
-    assign import_fire_export[gi]     = gen_dut[gi].i_dut.import_fire;
-    assign import_task_export[gi]     = gen_dut[gi].i_dut.import_desc.task_id;
+    assign import_fire_export[gi]     = gen_dut[gi].i_dut.imported.fire;
+    assign import_task_export[gi]     = gen_dut[gi].i_dut.imported.desc.task_id;
     assign replay_bounce_export[gi]   = gen_dut[gi].i_dut.replay_bounce;
 end
 

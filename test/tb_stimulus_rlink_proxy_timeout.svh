@@ -22,7 +22,7 @@ int unsigned pt_wait_start = 0;   // cycle the proxy started waiting (first expo
 int unsigned pt_cycle      = 0;
 always @(posedge clk_i) begin
     pt_cycle++;
-    if ((pt_wait_start == 0) && gen_dut[0].i_dut.proxy_waiting[0][0]) pt_wait_start = pt_cycle;
+    if ((pt_wait_start == 0) && gen_dut[0].i_dut.proxy.waiting[0][0]) pt_wait_start = pt_cycle;
 end
 
 initial begin : pt_hold_chip1

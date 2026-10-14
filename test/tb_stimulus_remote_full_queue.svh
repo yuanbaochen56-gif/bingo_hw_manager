@@ -34,11 +34,11 @@ int unsigned fq_imports [$];
 bit          fq_rotate_full = 1'b0;
 always @(posedge clk_i) begin
     if (rst_ni) begin
-        if (gen_dut[1].i_dut.import_fire) begin
-            fq_imports.push_back(gen_dut[1].i_dut.import_desc.task_id);
-            if (gen_dut[1].i_dut.import_core != 0) begin
-                $error("[REMOTE_FULL] task %0d imported to core %0d", gen_dut[1].i_dut.import_desc.task_id,
-                       gen_dut[1].i_dut.import_core);
+        if (gen_dut[1].i_dut.imported.fire) begin
+            fq_imports.push_back(gen_dut[1].i_dut.imported.desc.task_id);
+            if (gen_dut[1].i_dut.imported.core != 0) begin
+                $error("[REMOTE_FULL] task %0d imported to core %0d", gen_dut[1].i_dut.imported.desc.task_id,
+                       gen_dut[1].i_dut.imported.core);
             end
         end
         if (gen_dut[0].i_dut.replay_rotate && gen_dut[0].i_dut.checkout_queue_full[0][0]) fq_rotate_full = 1'b1;

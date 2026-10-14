@@ -59,15 +59,15 @@ end
 int unsigned rd_imports [$];
 always @(posedge clk_i) begin
     if (rst_ni) begin
-        if (gen_dut[1].i_dut.import_fire) begin
-            rd_imports.push_back(gen_dut[1].i_dut.import_desc.task_id);
-            if ((gen_dut[1].i_dut.import_core != 0) || (gen_dut[1].i_dut.import_cluster != 0)) begin
+        if (gen_dut[1].i_dut.imported.fire) begin
+            rd_imports.push_back(gen_dut[1].i_dut.imported.desc.task_id);
+            if ((gen_dut[1].i_dut.imported.core != 0) || (gen_dut[1].i_dut.imported.cluster != 0)) begin
                 $error("[REMOTE_DISPATCH] task %0d imported to core %0d cluster %0d",
-                       gen_dut[1].i_dut.import_desc.task_id, gen_dut[1].i_dut.import_core,
-                       gen_dut[1].i_dut.import_cluster);
+                       gen_dut[1].i_dut.imported.desc.task_id, gen_dut[1].i_dut.imported.core,
+                       gen_dut[1].i_dut.imported.cluster);
             end
         end
-        if (gen_dut[0].i_dut.import_fire) $error("[REMOTE_DISPATCH] chiplet 0 imported a task");
+        if (gen_dut[0].i_dut.imported.fire) $error("[REMOTE_DISPATCH] chiplet 0 imported a task");
         // Dependents start only after their producer completed
         if (task_completed_bitmap[4] && !task_completed_bitmap[1]) $error("[REMOTE_DISPATCH] task 4 before task 1");
         if (task_completed_bitmap[5] && !task_completed_bitmap[2]) $error("[REMOTE_DISPATCH] task 5 before task 2");
