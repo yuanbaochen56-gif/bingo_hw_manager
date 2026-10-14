@@ -162,7 +162,7 @@ module tb_bingo_hw_manager_bus_error;
         .clk_i                  ( clk_i              ),
         .rst_ni                 ( rst_ni             ),
         .cfg_i                  ( '{enable: 1'b1, dvfs: pm_mode[0], idle_level: 8'd25, normal_level: 8'd6,
-                                    dvfs_ack: dvfs_ack[7:0], default: '0} ),
+                                    dvfs_level: dvfs_ack[7:0], default: '0} ),
         .slot_i                 ( '{domain: slot_domain, idle: waiting, default: '0} ),
         .pm_base_addr_i         ( 48'h0000_0300_0000 ),
         .dvfs_clint_msip_addr_i ( 48'h0000_0400_0004 ),

@@ -8,8 +8,7 @@
 // Recovery boost: a live slot that is the substitute of a fenced core in the
 // slot mapping table does the work of two cores. While it is busy (not
 // polling), pm_boost_o asks the PM to run its domain at the boost level
-// (bingo_hw_manager_pm boost_power_level_i, a faster clock than the normal
-// level; 0 = off).
+// (the PM's boost_level, a faster clock than the normal level; 0 = off).
 // Capacity boost (cfg_i.boost_policy = 1) replaces that choice: a core type
 // has lost capacity while one of its slots is fenced, stuck, rejected or
 // parked at risk. Every busy live slot of such a type with a load of at least

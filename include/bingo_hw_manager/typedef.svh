@@ -84,7 +84,7 @@
 //   idle         the PM may count the slot as idle (bingo_hw_manager_power_view)
 //   access_only  otherwise idle, awake only because its cluster is accessed
 //   boost        the PM runs its domain at the boost level (bingo_hw_manager_level_policy)
-//   derate       the PM runs its domain at most at the derate level
+//   derate       the PM runs its domain no faster than the derate level
 //   rec_hold     recovery hold active (for the event log, not a PM input)
 //   load_clear   the load monitor clears its pending count
 //   wd_tick      its watchdog timer advances this cycle (bingo_hw_manager_wd_tick)
@@ -495,8 +495,9 @@
 //   domain       its power domain, decoded once by the top (PmMaxDomains: none)
 //   idle         it waits for a task, or is fenced (bingo_hw_manager_power_view)
 //   access_only  it is busy only with accesses from outside (DFS access level)
-//   boost        it runs a dead core's tasks (recovery boost)
-//   derate       it is at risk
+//   boost        its domain runs at the boost level (recovery or capacity boost,
+//                bingo_hw_manager_level_policy)
+//   derate       it is at risk: its domain runs no faster than the derate level
 `define BINGO_HW_MANAGER_TYPEDEF_PM_SLOT_T(pm_slot_t, NumCores, NumClusters) \
   typedef struct packed {                                                    \
     logic [(NumCores)-1:0][(NumClusters)-1:0][5:0] domain;                   \
@@ -585,7 +586,8 @@
 //   late             late threshold (0: late_global)
 //   late_adaptive    late is the learned one
 //   risk             the slot is at risk (bingo_hw_manager_ctrl)
-//   risk_valid       risk_confirm lies between the slot's own suspect and confirm
+//   risk_valid       confirming is on and risk_confirm lies strictly between
+//                    h_static and c_static
 //   risk_use         risk_valid, and the learned confirm is not shorter
 //   adapt_confirm    confirm is the learned one
 //   wd_class         class of the task the slot runs (for the log)

@@ -54,9 +54,9 @@ package bingo_hw_manager_pkg;
         logic [7:0] idle_level;   // a domain whose slots all wait for a task
         logic [7:0] normal_level; // a busy domain
         logic [7:0] access_level; // DFS: a domain busy only with accesses from outside (0: normal)
-        logic [7:0] boost_level;  // a domain that runs a dead core's tasks (0: off)
+        logic [7:0] boost_level;  // a domain with a boosted slot, recovery or capacity boost (0: off)
         logic [7:0] derate_level; // a domain with an at-risk slot runs no faster (0: off)
-        logic [7:0] dvfs_ack;     // DVFS: the level the host has applied
+        logic [7:0] dvfs_level;   // DVFS: the level the host has applied (its acknowledge register)
     } pm_cfg_t;
 
     // Power state and configured levels (clock dividers) of the PM
@@ -68,7 +68,7 @@ package bingo_hw_manager_pkg;
         logic [7:0]       idle_level;   // the idle level
         logic [7:0]       normal_level; // the normal level
         logic [7:0]       boost_level;  // the boost level (0: off)
-        logic [7:0]       dvfs_level;   // DVFS: the level the host acknowledged
+        logic [7:0]       dvfs_level;   // DVFS: the level the host has applied
         logic [31:0][7:0] domain_level; // DFS: the level last applied to each domain
     } pm_view_t;
 

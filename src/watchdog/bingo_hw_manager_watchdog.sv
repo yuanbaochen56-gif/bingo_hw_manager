@@ -29,7 +29,6 @@ module bingo_hw_manager_watchdog #(
     // that does not send heartbeats, or a tied-off slot).
     parameter logic [NumCores-1:0][NumClusters-1:0] CoreMask = '1,
     parameter int unsigned CoreTypeIdWidth = 4,
-    parameter int unsigned WdClassWidth = 3,
     parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId = '0,
     // Port types (bingo_hw_manager/typedef.svh)
     parameter type         wd_event_t = logic,

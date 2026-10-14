@@ -779,7 +779,7 @@ module bingo_hw_manager_top #(
                        idle_level:   pm_cfg.idle_level,
                        normal_level: pm_cfg.normal_level,
                        boost_level:  pm_cfg.boost_level,
-                       dvfs_level:   pm_cfg.dvfs_ack,
+                       dvfs_level:   pm_cfg.dvfs_level,
                        domain_level: pm_domain_level};
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][5:0] ctrl_slot_domain;
     // Power domain of each slot (PmMaxDomains: none), decoded once for the PM,
@@ -803,7 +803,7 @@ module bingo_hw_manager_top #(
                       access_level: pm_access_level[7:0],
                       boost_level:  bingo_hw_manager_boost_power_level_i[7:0],
                       derate_level: bingo_hw_manager_risk_policy_i[15:8],
-                      dvfs_ack:     bingo_hw_manager_dvfs_ack_i[7:0]};
+                      dvfs_level:   bingo_hw_manager_dvfs_ack_i[7:0]};
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect;
@@ -1432,7 +1432,6 @@ module bingo_hw_manager_top #(
         .ConfirmTimeoutCycles(WatchdogConfirmTimeoutCycles),
         .CoreMask(WatchdogCoreMask),
         .CoreTypeIdWidth(CoreTypeIdWidth),
-        .WdClassWidth(WdClassWidth),
         .CoreTypeId(CoreTypeId),
         .wd_event_t(wd_event_t),
         .wd_bound_t(wd_bound_t),
@@ -1715,6 +1714,9 @@ module bingo_hw_manager_top #(
         .step_o       ( replay_step   ),
         .status_o     ( replay_status )
     );
+    // The status and step fields under the names the rest of the top, the event
+    // log, the top checks and the testbenches use (replay_move and
+    // replay_push_ready_q: the testbenches only)
     assign core_retired        = replay_status.retired;
     assign replay_ready_flush  = replay_status.ready_flush;
     assign replay_hold_slot    = replay_status.hold;

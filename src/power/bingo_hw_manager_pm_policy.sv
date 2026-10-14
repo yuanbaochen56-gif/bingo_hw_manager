@@ -9,7 +9,7 @@
 
 // Level policy of the power manager (bingo_hw_manager_pm), combinational:
 //   DFS   the level every power domain should run at (idle, access servo,
-//         boost, normal, at most the derate level), and the lowest domain
+//         boost, normal, no faster than the derate level), and the lowest domain
 //         whose applied level (level_i) differs from it: the PM writes that
 //         one next
 //   DVFS  the one level of the chip (normal while any domain with a slot is
@@ -158,7 +158,7 @@ module bingo_hw_manager_pm_policy #(
     assign chip_all_idle  = &(domain_all_idle | ~domain_active_mask);
     assign chip_busy_o    = ~chip_all_idle;
     assign chip_level_o   = chip_busy_o ? cfg_i.normal_level : cfg_i.idle_level;
-    assign acked_level    = cfg_i.dvfs_ack;
+    assign acked_level    = cfg_i.dvfs_level;
     // Only meaningful when idle-PM is enabled and we are in DVFS mode.
     assign dvfs_pending_o = cfg_i.enable && cfg_i.dvfs &&
                             (chip_level_o != acked_level);
