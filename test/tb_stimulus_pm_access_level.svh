@@ -41,10 +41,10 @@ initial begin
     pm_access_level[0] = 12; servo_level(12);
     // Derate is max(servo, derate): test both sides of S.
     risk_policy[0] = (1 << 5) | (18 << 8) | 1;
-    force gen_dut[0].i_dut.i_ctrl.risk_q[1][0] = 1'b1;
+    force gen_dut[0].i_dut.i_ctrl.i_risk.risk_q[1][0] = 1'b1;
     servo_level(18);
     risk_policy[0] = (1 << 5) | (8 << 8) | 1; servo_level(12);
-    release gen_dut[0].i_dut.i_ctrl.risk_q[1][0];
+    release gen_dut[0].i_dut.i_ctrl.i_risk.risk_q[1][0];
     risk_policy[0] = 0;
     task_queue_master[0].write(task_queue_base[0], '0,
         pack_normal_task(2'b00, 1, 0, 0, 0, 1'b0, '0, 1'b0, 1'b0, 0, 0, '0), '1, resp);

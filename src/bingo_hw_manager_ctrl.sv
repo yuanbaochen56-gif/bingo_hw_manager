@@ -114,12 +114,9 @@
 // CERF degradation (bingo_hw_manager_cerf_fallback): while a core type has a
 // stuck or rejected slot, one host-configured CERF update per enabled type.
 //
-// Fault precursors (risk): every late beat of a slot (late_i, from the
-// watchdog: a heartbeat or done of a busy core whose timer had reached the
-// late threshold) adds one to a 4-bit saturating count. Every risk_epoch_i
-// cycles all counts are halved (0 = never), so only a high rate of late beats
-// adds up. A count at or above risk_thresh_i (0 = off) makes the slot at risk;
-// that is sticky until the host clears it (risk_clear_i) or the slot is fenced.
+// Fault precursors (risk, bingo_hw_manager_risk): a slot whose late beats
+// (late_i) add up faster than they decay is at risk until the host clears it
+// (risk_clear_i) or the slot is fenced.
 // risk_action_i[0]: an at-risk slot is parked as if the host had asked for it
 // (same path, same park_fail_o); clearing the risk moves it back.
 // risk_action_i[1]: an at-risk slot that is not parked asks the PM to run its
@@ -281,39 +278,31 @@ module bingo_hw_manager_ctrl #(
     // ------------------------------------------------------------------
     // Fault precursors: late-beat count per slot, halved every epoch
     // ------------------------------------------------------------------
+    // risk_cnt_q, risk_q and risk_epoch_end keep the names that the HeMAiA quad
+    // controller and the testbenches read here (i_ctrl.risk_cnt_q, ...).
     logic [NumCores-1:0][NumClusters-1:0][3:0] risk_cnt_q;
     logic [NumCores-1:0][NumClusters-1:0]      risk_q;
-    logic [31:0]                               risk_epoch_cnt_q;
     logic                                      risk_epoch_end;
     logic [NumCores-1:0][NumClusters-1:0]      park_req;
 
-    assign risk_epoch_end = (risk_epoch_i != '0) && (risk_epoch_cnt_q >= risk_epoch_i - 1);
+    bingo_hw_manager_risk #(
+        .NumCores(NumCores),
+        .NumClusters(NumClusters)
+    ) i_risk (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
+        .fenced_i(fenced_i),
+        .late_i(late_i),
+        .risk_thresh_i(risk_thresh_i),
+        .risk_epoch_i(risk_epoch_i),
+        .risk_clear_i(risk_clear_i),
+        .risk_o(risk_q),
+        .risk_cnt_o(risk_cnt_q),
+        .risk_epoch_end_o(risk_epoch_end)
+    );
+
     // Host request, or an at-risk slot with the park action
     assign park_req = park_req_i | (risk_q & {(NumCores * NumClusters){risk_action_i[0] && ParkSupported}});
-
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) begin
-            risk_epoch_cnt_q <= '0;
-            risk_cnt_q       <= '0;
-            risk_q           <= '0;
-        end else begin
-            risk_epoch_cnt_q <= ((risk_epoch_i == '0) || risk_epoch_end) ? '0 : risk_epoch_cnt_q + 1;
-            for (int unsigned c = 0; c < NumCores; c++) begin
-                for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                    automatic logic [3:0] cnt = risk_cnt_q[c][cl];
-                    if (fenced_i[c][cl] || risk_clear_i[c][cl]) begin
-                        risk_cnt_q[c][cl] <= '0;
-                        risk_q[c][cl]     <= 1'b0;
-                    end else begin
-                        if (risk_epoch_end) cnt = cnt >> 1;
-                        if (late_i[c][cl] && (cnt != 4'hf)) cnt = cnt + 1;
-                        risk_cnt_q[c][cl] <= cnt;
-                        if ((risk_thresh_i != '0) && (cnt >= risk_thresh_i)) risk_q[c][cl] <= 1'b1;
-                    end
-                end
-            end
-        end
-    end
     assign risk_o = risk_q;
 
     // ------------------------------------------------------------------
