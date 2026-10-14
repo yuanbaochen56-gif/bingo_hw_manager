@@ -175,22 +175,49 @@ module tb_bingo_hw_manager_bus_error;
 
     // Slave: takes every AW, W and AR at once, answers each W with a B and each
     // AR with an R in the next cycle; write number bad_write (from 0) and read
-    // number bad_pm_read get pm_bad_resp
-    int unsigned    writes, pm_reads, bad_write, bad_pm_read;
+    // number bad_pm_read get pm_bad_resp. It answers like the path of HeMAiA:
+    // the 64- to 32-bit converter splits a write into the 32-bit words from its
+    // address to the end of the 8-byte word (two at an 8-byte boundary, one at
+    // the upper half), and the registers take only full 32-bit writes, so a
+    // word written without all four strobes gets SLVERR.
+    int unsigned    writes, pm_reads, bad_write, bad_pm_read, partial_writes;
     axi_pkg::resp_t pm_bad_resp;
     logic           b_pending, pr_pending;
     logic [1:0]     b_resp_q, r_resp_q;
+    addr_t          aw_addr_q;
+    function automatic logic full_words(input addr_t addr, input strb_t strb);
+        return (addr[2] || strb[3:0] == 4'hf) && strb[7:4] == 4'hf;
+    endfunction
     always @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             b_pending  <= 1'b0;
             pr_pending <= 1'b0;
             b_resp_q   <= '0;
             r_resp_q   <= '0;
+            aw_addr_q  <= '0;
         end else begin
+            if (pm_req.aw_valid && pm_resp.aw_ready) aw_addr_q <= pm_req.aw.addr;
             if (pm_req.w_valid && pm_resp.w_ready) begin
                 if (b_pending && !pm_req.b_ready) $fatal(1, "[BUSERR] PM: second write before the B");
                 b_pending <= 1'b1;
-                b_resp_q  <= (writes == bad_write) ? pm_bad_resp : axi_pkg::RESP_OKAY;
+                b_resp_q  <= !full_words(aw_addr_q, pm_req.w.strb) ? axi_pkg::RESP_SLVERR :
+                             (writes == bad_write) ? pm_bad_resp : axi_pkg::RESP_OKAY;
+                if (!full_words(aw_addr_q, pm_req.w.strb)) partial_writes++;
+                // A division write: the whole 8-byte word of domains 0-7 at 0x08,
+                // the new level of domain 1 or 2 in its byte, the level applied
+                // so far in every other byte
+                if (aw_addr_q == 48'h0000_0300_0008) begin
+                    automatic int unsigned changed = 0;
+                    for (int i = 0; i < 8; i++)
+                        if (pm_req.w.data[8*i +: 8] != domain_level[i]) begin
+                            changed++;
+                            if (!(i inside {1, 2}) || !(pm_req.w.data[8*i +: 8] inside {8'd6, 8'd25}))
+                                $fatal(1, "[BUSERR] PM division write: byte %0d is %0d", i, pm_req.w.data[8*i +: 8]);
+                        end
+                    if (pm_req.w.strb != 8'hff || changed != 1)
+                        $fatal(1, "[BUSERR] PM division write: strobe %h data %h (levels %h)", pm_req.w.strb,
+                               pm_req.w.data, domain_level[7:0]);
+                end
                 writes++;
             end else if (b_pending && pm_req.b_ready) begin
                 b_pending <= 1'b0;
@@ -240,11 +267,13 @@ module tb_bingo_hw_manager_bus_error;
             for (int cl = 0; cl < Clusters; cl++)
                 slot_domain[c][cl] = 6'd32;   // no domain
         slot_domain[0][0] = 6'd1;
+        slot_domain[0][1] = 6'd2;             // always idle: its level sits next to domain 1's
         bad_write   = '1;
         bad_pm_read = '1;
         pm_bad_resp = axi_pkg::RESP_SLVERR;
         writes      = 0;
         pm_reads    = 0;
+        partial_writes = 0;
         repeat (3) @(negedge clk_i);
         rst_ni = 1'b1;
 
@@ -274,6 +303,7 @@ module tb_bingo_hw_manager_bus_error;
         if (pm_error !== 2'b01) $fatal(1, "[BUSERR] PM flag %b is not sticky", pm_error);
         if (domain_level[1] != (waiting[0][0] ? 8'd25 : 8'd6))
             $fatal(1, "[BUSERR] PM level %0d after the failed write", domain_level[1]);
+        if (partial_writes != 0) $fatal(1, "[BUSERR] PM: %0d writes without full 32-bit words", partial_writes);
         $display("[BUSERR] PM write error: flag %b after %0d writes", pm_error, writes);
 
         // PM, DVFS: the first doorbell read OKAY, the second DECERR

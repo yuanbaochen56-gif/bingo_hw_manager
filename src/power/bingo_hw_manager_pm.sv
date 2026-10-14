@@ -257,6 +257,17 @@ module bingo_hw_manager_pm #(
         endcase
     end
 
+    // The 8-byte word of division registers that holds the active domain: the
+    // new level of the active domain, the applied level of the other seven
+    logic [63:0] division_word;
+    always_comb begin
+        for (int i = 0; i < 8; i++) begin
+            automatic domain_id_t d = {active_domain_id_q[$bits(domain_id_t)-1:3], 3'(i)};
+            division_word[8*i +: 8] = (d == active_domain_id_q) ? active_target_level_q
+                                                                 : current_power_level_q[d];
+        end
+    end
+
     // 3. Output and Datapath Logic
     always_comb begin
         // Default Datapath Next Values
@@ -284,43 +295,23 @@ module bingo_hw_manager_pm #(
             end
 
             WRITE_FREQ_AW: begin
-                // C Code Reference:
-                // volatile uint32_t *hemaia_clk_rst_controller_clock_division_reg = 
-                //     (base + DIVISION_OFFSET) + (domain / 4 * 4);
-                //
-                // Verilog Implementation:
-                // - (active_domain_id_q >> 2) implements (domain / 4)
-                // - ( ... << 2) implements (* 4) to align to 32-bit word boundary
-                // 
-                // Example: active_domain_id_q = 5 (00101b)
-                // - 5 >> 2 = 1.
-                // - 1 << 2 = 4.
-                // - Offset added = 4 bytes. (Register for domains 4-7)
-                bus_addr = pm_base_addr_i + OFFSET_CLOCK_DIVISION_BASE + ((active_domain_id_q >> 2) << 2);
+                // The division registers hold the 8-bit levels of four domains each:
+                // 0x08 domains 0-3, 0x0c domains 4-7, and so on. The PM writes the
+                // whole 8-byte word that holds the active domain (domains 8k .. 8k+7
+                // at 0x08 + 8k). The clock/reset controller takes only full 32-bit
+                // writes: a 64-bit write with half of its strobes reaches it through
+                // the 64- to 32-bit converter as a second write without strobes,
+                // which it answers with SLVERR.
+                bus_addr = pm_base_addr_i + OFFSET_CLOCK_DIVISION_BASE + ((active_domain_id_q >> 3) << 3);
                 bus_aw_valid = 1'b1;
             end
 
             WRITE_FREQ_W: begin
-                // Replicate 32-bit data to both halves of the 64-bit bus
-                // logic [31:0] wdata_32 = 32'(active_target_level_q) << (active_domain_id_q[1:0] * 8);
-                bus_wdata = {2{32'(active_target_level_q) << (active_domain_id_q[1:0] * 8)}};
-                // The base addr of the frequency division registers is 0x08
-                // Each domain requires 8bits within a 32-bit reg
-                // 0x08 - 0x0c covers domains 0-3 
-                // 0x0c - 0x10 covers domains 4-7
-                // and so on...
-                // Each time we need to issue a 64bit write to one of these registers
-                // Actully we are issuing write to 0x08 - 0x10 at once but need to control the strobe
-                // Hence we need to determine which 32bit half of the 64bit bus to use
-                // Bit 2 of active_domain_id_q (value 4) determines if we are 
-                // targeting the Upper or Lower word of the 64-bit data bus.
-                // - If active_domain_id_q[2] == 0: Use Lower 32 bits (Strobe 0x0F)
-                // - If active_domain_id_q[2] == 1: Use Upper 32 bits (Strobe 0xF0)
-                if (active_domain_id_q[2]) begin
-                    bus_wstrb = 8'hf0; // Upper 32 bits
-                end else begin
-                    bus_wstrb = 8'h0f; // Lower 32 bits
-                end
+                // The other seven domains of the word keep the level the PM last
+                // applied to them (0: none yet); the controller loads a domain's
+                // level only with its valid bit (WRITE_VALID_*)
+                bus_wdata = division_word;
+                bus_wstrb = 8'hff;
                 bus_w_valid  = 1'b1;
             end
 
