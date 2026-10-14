@@ -42,7 +42,7 @@
 module bingo_hw_manager_wd_adapt #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
-    // Width of the watchdog timer (interval_i) and of M
+    // Width of the watchdog timer (status_i.interval) and of M
     parameter int unsigned CounterWidth = 24,
     // The table covers core types 0 .. 2**WdAdaptTypeBits-1
     parameter int unsigned WdAdaptTypeBits = 2,
@@ -52,7 +52,12 @@ module bingo_hw_manager_wd_adapt #(
     // A slot with CoreMask = 0 (e.g. the host) never learns, is not counted in
     // the load and gets no learned threshold
     parameter logic [NumCores-1:0][NumClusters-1:0] CoreMask = '1,
-    parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId = '0
+    parameter logic [NumCores-1:0][NumClusters-1:0][CoreTypeIdWidth-1:0] CoreTypeId = '0,
+    // Port types (bingo_hw_manager/typedef.svh)
+    parameter type         wd_event_t = logic,
+    parameter type         wd_status_t = logic,
+    parameter type         wd_task_t = logic,
+    parameter type         wd_learned_t = logic
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -63,44 +68,33 @@ module bingo_hw_manager_wd_adapt #(
     // BINGO_WD_LATE (reset 0: no Late, learning as without it):
     //   [0] EN (Late, and late executions are not learned)  [3:1] SH_L
     //   [6] LOCAL_ONLY  [8:7] MOVED_SH  [10:9] FRAC  [31:12] LFLOOR (ticks)
-    input logic [31:0] late_ctrl_i = '0,
-    // From the watchdog: a done, or a heartbeat outside a dispatch cycle, of a
-    // monitored, unfenced, busy slot; and the ticks since the slot's dispatch or
-    // last heartbeat
-    input logic [NumCores-1:0][NumClusters-1:0] progress_i,
-    input logic [NumCores-1:0][NumClusters-1:0][CounterWidth-1:0] interval_i,
-    // An execution starts (a done in the same cycle wins, as in the watchdog) /
-    // ends (it is learned in this cycle)
-    input logic [NumCores-1:0][NumClusters-1:0] dispatch_i,
-    input logic [NumCores-1:0][NumClusters-1:0] done_i,
-    input logic [NumCores-1:0][NumClusters-1:0] fenced_i,
-    input logic [NumCores-1:0][NumClusters-1:0] busy_i,
-    // Class of the slot's task, latched at dispatch (also for replayed,
-    // remapped and imported tasks)
-    input logic [NumCores-1:0][NumClusters-1:0][WdClassWidth-1:0] class_i,
-    // The slot's task runs away from its own logical slot (replayed, remapped
-    // or imported), latched at dispatch like class_i.
-    input logic [NumCores-1:0][NumClusters-1:0] moved_i = '0,
-    // The slot's power domain runs faster than the normal level this cycle.
-    input logic [NumCores-1:0][NumClusters-1:0] fast_i = '0,
+    input logic [31:0] late_ctrl_i,
+    // What the watchdog times: dispatch, an execution starts (a done in the same
+    // cycle wins, as in the watchdog); done, it ends and is learned in this cycle
+    input wd_event_t   event_i,
+    // What the watchdog reports: progress (a done, or a heartbeat outside a
+    // dispatch cycle, of a monitored, unfenced, busy slot), interval (ticks since
+    // the dispatch or the last heartbeat), busy, fenced
+    input wd_status_t  status_i,
+    // The task of every slot: class, moved, fast
+    input wd_task_t    task_i,
     // Static suspect and confirm thresholds of the slot (its core type's, or
     // the parameters): the caps of H and C; h_eff also bounds Late while H is
     // not valid
     input logic [NumCores-1:0][NumClusters-1:0][31:0] h_eff_i,
     input logic [NumCores-1:0][NumClusters-1:0][31:0] c_eff_i,
-    // H (valid: EN, a valid entry, H >= 1) and C (valid: H valid and C > H); the
+    // H (h_valid: EN, a valid entry, H >= 1), C (c_valid: H valid and C > H; the
     // top uses C only if it is shorter than the confirm threshold it would use
-    // otherwise
-    output logic [NumCores-1:0][NumClusters-1:0][31:0] h_ad_o,
-    output logic [NumCores-1:0][NumClusters-1:0][31:0] c_ad_o,
-    output logic [NumCores-1:0][NumClusters-1:0] h_valid_o,
-    output logic [NumCores-1:0][NumClusters-1:0] c_valid_o,
-    // Late (valid: late EN, a valid entry, below the suspect threshold): a
-    // heartbeat or done at or after it is a late beat, the fault precursor of
-    // the risk counter (bingo_hw_manager_risk)
-    output logic [NumCores-1:0][NumClusters-1:0][31:0] late_ad_o,
-    output logic [NumCores-1:0][NumClusters-1:0] late_valid_o
+    // otherwise), Late (late_valid: late EN, a valid entry, below the suspect
+    // threshold; a heartbeat or done at or after it is a late beat, the fault
+    // precursor of the risk counter, bingo_hw_manager_risk)
+    output wd_learned_t learned_o
 );
+    logic [NumCores-1:0][NumClusters-1:0][31:0] h_ad, c_ad, late_ad;
+    logic [NumCores-1:0][NumClusters-1:0]       h_valid, c_valid, late_valid;
+    assign learned_o = '{h: h_ad, c: c_ad, late: late_ad,
+                         h_valid: h_valid, c_valid: c_valid, late_valid: late_valid};
+
     localparam int unsigned Types = 2**WdAdaptTypeBits;
     localparam int unsigned Classes = 2**WdClassWidth;
     localparam int unsigned LoadWidth = $clog2(NumCores * NumClusters + 1);
@@ -127,9 +121,9 @@ module bingo_hw_manager_wd_adapt #(
         load_next = '0;
         for (int c = 0; c < NumCores; c++) begin
             for (int cl = 0; cl < NumClusters; cl++) begin
-                if (CoreMask[c][cl] && !fenced_i[c][cl]) begin
-                    if (busy_i[c][cl]) load_now = load_now + 1'b1;
-                    if (!done_i[c][cl] && (busy_i[c][cl] || dispatch_i[c][cl]))
+                if (CoreMask[c][cl] && !status_i.fenced[c][cl]) begin
+                    if (status_i.busy[c][cl]) load_now = load_now + 1'b1;
+                    if (!event_i.done[c][cl] && (status_i.busy[c][cl] || event_i.dispatch[c][cl]))
                         load_next = load_next + 1'b1;
                 end
             end
@@ -141,19 +135,19 @@ module bingo_hw_manager_wd_adapt #(
         for (int c = 0; c < NumCores; c++) begin
             for (int cl = 0; cl < NumClusters; cl++) begin
                 automatic int type_id = int'(CoreTypeId[c][cl]);
-                automatic int class_id = int'(class_i[c][cl]);
+                automatic int class_id = int'(task_i.wd_class[c][cl]);
                 automatic logic [LoadWidth-1:0] peak =
                     load_now > load_max_q[c][cl] ? load_now : load_max_q[c][cl];
                 automatic logic [CounterWidth-1:0] sample_max =
-                    interval_i[c][cl] > imax_q[c][cl] ? interval_i[c][cl] : imax_q[c][cl];
-                automatic logic fast_seen = fast_q[c][cl] || fast_i[c][cl];
+                    status_i.interval[c][cl] > imax_q[c][cl] ? status_i.interval[c][cl] : imax_q[c][cl];
+                automatic logic fast_seen = fast_q[c][cl] || task_i.fast[c][cl];
                 // BINGO_WD_LATE[6]: learn only executions comparable with the
                 // ones on their own slot at the normal level
-                if (CoreMask[c][cl] && !fenced_i[c][cl] && busy_i[c][cl] &&
-                    done_i[c][cl] && class_id != 0 && type_id < Types &&
-                    !(late_ctrl_i[0] && late_valid_o[c][cl] &&
-                      sample_max >= late_ad_o[c][cl]) &&
-                    !(late_ctrl_i[6] && (moved_i[c][cl] || fast_seen))) begin
+                if (CoreMask[c][cl] && !status_i.fenced[c][cl] && status_i.busy[c][cl] &&
+                    event_i.done[c][cl] && class_id != 0 && type_id < Types &&
+                    !(late_ctrl_i[0] && late_valid[c][cl] &&
+                      sample_max >= late_ad[c][cl]) &&
+                    !(late_ctrl_i[6] && (task_i.moved[c][cl] || fast_seen))) begin
                     // Each completed execution contributes its largest segment.
                     // Fold simultaneous completions in a fixed slot order.
                     if (sample_max > table_d[type_id][class_id].maximum)
@@ -164,19 +158,19 @@ module bingo_hw_manager_wd_adapt #(
                     if (peak > table_d[type_id][class_id].load)
                         table_d[type_id][class_id].load = peak;
                 end
-                if (CoreMask[c][cl] && !fenced_i[c][cl] && busy_i[c][cl]) begin
+                if (CoreMask[c][cl] && !status_i.fenced[c][cl] && status_i.busy[c][cl]) begin
                     load_max_d[c][cl] = peak;
                     fast_d[c][cl] = fast_seen;
-                    if (progress_i[c][cl] && !done_i[c][cl])
+                    if (status_i.progress[c][cl] && !event_i.done[c][cl])
                         imax_d[c][cl] = sample_max;
                 end
                 // Match watchdog priority: done wins over dispatch. Heartbeats,
                 // idle and fenced cycles never clear this execution's history.
-                if (CoreMask[c][cl] && !fenced_i[c][cl] &&
-                    dispatch_i[c][cl] && !done_i[c][cl]) begin
+                if (CoreMask[c][cl] && !status_i.fenced[c][cl] &&
+                    event_i.dispatch[c][cl] && !event_i.done[c][cl]) begin
                     imax_d[c][cl] = '0;
                     load_max_d[c][cl] = load_next;
-                    fast_d[c][cl] = fast_i[c][cl];
+                    fast_d[c][cl] = task_i.fast[c][cl];
                 end
             end
         end
@@ -184,16 +178,16 @@ module bingo_hw_manager_wd_adapt #(
 
     // Wide arithmetic precedes both caps; a large shift must never wrap.
     always_comb begin
-        h_ad_o = '0;
-        c_ad_o = '0;
-        h_valid_o = '0;
-        c_valid_o = '0;
-        late_ad_o = '0;
-        late_valid_o = '0;
+        h_ad = '0;
+        c_ad = '0;
+        h_valid = '0;
+        c_valid = '0;
+        late_ad = '0;
+        late_valid = '0;
         for (int c = 0; c < NumCores; c++) begin
             for (int cl = 0; cl < NumClusters; cl++) begin
                 automatic int type_id = int'(CoreTypeId[c][cl]);
-                automatic int class_id = int'(class_i[c][cl]);
+                automatic int class_id = int'(task_i.wd_class[c][cl]);
                 automatic logic [LoadWidth-1:0] peak =
                     load_now > load_max_q[c][cl] ? load_now : load_max_q[c][cl];
                 automatic logic [63:0] h, confirm;
@@ -201,7 +195,7 @@ module bingo_hw_manager_wd_adapt #(
                 automatic logic entry_valid;
                 // BINGO_WD_LATE[8:7]: an execution away from its own slot uses
                 // the learned maximum shifted left by this many more bits
-                automatic logic [1:0] moved_shift = moved_i[c][cl] ? late_ctrl_i[8:7] : 2'd0;
+                automatic logic [1:0] moved_shift = task_i.moved[c][cl] ? late_ctrl_i[8:7] : 2'd0;
                 h = '0;
                 confirm = '0;
                 late_bound = '0;
@@ -216,10 +210,10 @@ module bingo_hw_manager_wd_adapt #(
                     confirm = (64'(table_q[type_id][class_id].maximum) << moved_shift) << ctrl_i[7:5];
                     if (confirm < (h << 1)) confirm = h << 1;
                     if (confirm > c_eff_i[c][cl]) confirm = 64'(c_eff_i[c][cl]);
-                    h_ad_o[c][cl] = 32'(h);
-                    c_ad_o[c][cl] = 32'(confirm);
-                    h_valid_o[c][cl] = h >= 1;
-                    c_valid_o[c][cl] = h >= 1 && confirm > h;
+                    h_ad[c][cl] = 32'(h);
+                    c_ad[c][cl] = 32'(confirm);
+                    h_valid[c][cl] = h >= 1;
+                    c_valid[c][cl] = h >= 1 && confirm > h;
                 end
                 // Prediction shares history/guards, not the detection EN bit.
                 // Compare wide before narrowing; equality with suspect is invalid.
@@ -231,9 +225,9 @@ module bingo_hw_manager_wd_adapt #(
                                  late_ctrl_i[3:1];
                     if (late_bound < late_ctrl_i[31:12])
                         late_bound = LateMathWidth'(late_ctrl_i[31:12]);
-                    if (late_bound < (h_valid_o[c][cl] ? h : 64'(h_eff_i[c][cl]))) begin
-                        late_ad_o[c][cl] = 32'(late_bound);
-                        late_valid_o[c][cl] = 1'b1;
+                    if (late_bound < (h_valid[c][cl] ? h : 64'(h_eff_i[c][cl]))) begin
+                        late_ad[c][cl] = 32'(late_bound);
+                        late_valid[c][cl] = 1'b1;
                     end
                 end
             end
@@ -264,25 +258,25 @@ module bingo_hw_manager_wd_adapt #(
         if (rst_ni && execution_log) begin
             for (int c = 0; c < NumCores; c++) begin
                 for (int cl = 0; cl < NumClusters; cl++) begin
-                    if (CoreMask[c][cl] && !fenced_i[c][cl] &&
-                        (dispatch_i[c][cl] || progress_i[c][cl]))
+                    if (CoreMask[c][cl] && !status_i.fenced[c][cl] &&
+                        (event_i.dispatch[c][cl] || status_i.progress[c][cl]))
                         $display("[TRACE] A7_EXEC %0t core=%0d cluster=%0d type=%0d class=%0d event=%s interval=%0d imax=%0d load=%0d",
-                                 $time, c, cl, CoreTypeId[c][cl], class_i[c][cl],
-                                 done_i[c][cl] ? "done" :
-                                 dispatch_i[c][cl] ? "dispatch" : "heartbeat",
-                                 interval_i[c][cl], imax_q[c][cl], load_max_q[c][cl]);
+                                 $time, c, cl, CoreTypeId[c][cl], task_i.wd_class[c][cl],
+                                 event_i.done[c][cl] ? "done" :
+                                 event_i.dispatch[c][cl] ? "dispatch" : "heartbeat",
+                                 status_i.interval[c][cl], imax_q[c][cl], load_max_q[c][cl]);
                 end
             end
         end
         if (rst_ni && learn_log && late_ctrl_i[6]) begin
             for (int c = 0; c < NumCores; c++) begin
                 for (int cl = 0; cl < NumClusters; cl++) begin
-                    if (CoreMask[c][cl] && !fenced_i[c][cl] && busy_i[c][cl] && done_i[c][cl] &&
-                        class_i[c][cl] != 0 && int'(CoreTypeId[c][cl]) < Types &&
-                        (moved_i[c][cl] || fast_q[c][cl] || fast_i[c][cl]))
+                    if (CoreMask[c][cl] && !status_i.fenced[c][cl] && status_i.busy[c][cl] && event_i.done[c][cl] &&
+                        task_i.wd_class[c][cl] != 0 && int'(CoreTypeId[c][cl]) < Types &&
+                        (task_i.moved[c][cl] || fast_q[c][cl] || task_i.fast[c][cl]))
                         $display("[BINGO_ADAPT_SKIP] %0t core=%0d cluster=%0d type=%0d class=%0d moved=%0d fast=%0d",
-                                 $time, c, cl, CoreTypeId[c][cl], class_i[c][cl], moved_i[c][cl],
-                                 fast_q[c][cl] || fast_i[c][cl]);
+                                 $time, c, cl, CoreTypeId[c][cl], task_i.wd_class[c][cl], task_i.moved[c][cl],
+                                 fast_q[c][cl] || task_i.fast[c][cl]);
                 end
             end
         end

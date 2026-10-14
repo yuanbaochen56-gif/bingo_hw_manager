@@ -548,6 +548,19 @@
     logic [(NumCores)-1:0][(NumClusters)-1:0] tick;                            \
   } wd_event_t;
 
+// The task each slot runs, as the watchdog adaptation (bingo_hw_manager_wd_adapt)
+// reads it:
+//   wd_class  its class, latched at dispatch (0: never learned)
+//   moved     it runs away from its own logical slot (replayed, remapped or
+//             imported), latched at dispatch
+//   fast      the slot's power domain runs faster than the normal level this cycle
+`define BINGO_HW_MANAGER_TYPEDEF_WD_TASK_T(wd_task_t, NumCores, NumClusters, WdClassWidth) \
+  typedef struct packed {                                                              \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][(WdClassWidth)-1:0] wd_class;            \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                     moved;               \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]                     fast;                \
+  } wd_task_t;
+
 // The bounds the watchdog adaptation learned (bingo_hw_manager_wd_adapt), per
 // slot: suspect (h), confirm (c) and late threshold, each with its valid bit
 `define BINGO_HW_MANAGER_TYPEDEF_WD_LEARNED_T(wd_learned_t, NumCores, NumClusters) \

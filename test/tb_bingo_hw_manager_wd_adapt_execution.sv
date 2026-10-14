@@ -1,3 +1,4 @@
+`include "bingo_hw_manager/typedef.svh"
 `timescale 1ns/1ps
 module tb_bingo_hw_manager_wd_adapt_execution;
     logic clk = 0;
@@ -23,14 +24,27 @@ module tb_bingo_hw_manager_wd_adapt_execution;
         .core_busy_o(busy), .core_fenced_o(fenced), .core_dead_suspect_o(suspect),
         .core_available_o(), .late_o(), .progress_o(progress), .interval_o(interval)
     );
+    // Port structs of bingo_hw_manager_wd_adapt (bingo_hw_manager/typedef.svh)
+    `BINGO_HW_MANAGER_TYPEDEF_WD_EVENT_T(adapt_event_t, 2, 1)
+    `BINGO_HW_MANAGER_TYPEDEF_WD_STATUS_T(adapt_status_t, 2, 1, 16)
+    `BINGO_HW_MANAGER_TYPEDEF_WD_TASK_T(adapt_task_t, 2, 1, 3)
+    `BINGO_HW_MANAGER_TYPEDEF_WD_LEARNED_T(adapt_learned_t, 2, 1)
+    adapt_learned_t adapt_learned;
+    assign h_ad = adapt_learned.h;
+    assign c_ad = adapt_learned.c;
+    assign hv = adapt_learned.h_valid;
+    assign cv = adapt_learned.c_valid;
     bingo_hw_manager_wd_adapt #(
-        .NumCores(2), .NumClusters(1), .CounterWidth(16), .CoreTypeId({4'd1, 4'd1})
+        .NumCores(2), .NumClusters(1), .CounterWidth(16), .CoreTypeId({4'd1, 4'd1}),
+        .wd_event_t(adapt_event_t), .wd_status_t(adapt_status_t),
+        .wd_task_t(adapt_task_t), .wd_learned_t(adapt_learned_t)
     ) adapt (
-        .clk_i(clk), .rst_ni(rst), .ctrl_i(ctrl), .progress_i(progress),
-        .interval_i(interval), .dispatch_i(dispatch), .done_i(done),
-        .fenced_i(fenced), .busy_i(busy), .class_i({3'd1, 3'd1}),
-        .h_eff_i({32'd40000, 32'd40000}), .c_eff_i({32'd60000, 32'd60000}),
-        .h_ad_o(h_ad), .c_ad_o(c_ad), .h_valid_o(hv), .c_valid_o(cv)
+        .clk_i(clk), .rst_ni(rst), .ctrl_i(ctrl), .late_ctrl_i('0),
+        .event_i('{dispatch: dispatch, done: done, default: '0}),
+        .status_i('{progress: progress, interval: interval, busy: busy,
+                   fenced: fenced, default: '0}),
+        .task_i('{wd_class: {3'd1, 3'd1}, moved: '0, fast: '0}),
+        .h_eff_i({32'd40000, 32'd40000}), .c_eff_i({32'd60000, 32'd60000}), .learned_o(adapt_learned)
     );
     task automatic step();
         @(posedge clk); #1;
