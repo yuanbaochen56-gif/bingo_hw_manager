@@ -84,16 +84,9 @@
 // makes a slot idle later: the idle entry delay keeps counting the core's own
 // polling, so once the hold ends a long idle core lets its domain drop at once.
 //
-// Frequency-aware watchdog: the power levels are clock dividers. While a slot's
-// domain runs at level L above the normal level N (slower), its core makes
-// progress N/L times as fast, so its heartbeat gaps stretch by L/N in manager
-// cycles. wd_tick_o advances the slot's watchdog timer only N/L of the cycles
-// (a fractional accumulator), so the timeouts count cycles of the normal clock
-// and can be set for the normal level instead of the slowest one. The level is
-// the one the DFS path applied to the domain, or the one the host acknowledged
-// in DVFS mode (pm_mode_i[0]); without idle PM, or at or below the normal
-// level, the timer advances every cycle. wd_fast_o marks a slot whose domain
-// runs at a known level below the normal one (a faster clock, e.g. boost).
+// Frequency-aware watchdog (bingo_hw_manager_wd_tick): a slot's watchdog timer
+// counts cycles of the normal clock while its domain runs slower (wd_tick_o),
+// and wd_fast_o marks a domain that runs faster than the normal level.
 //
 // Recovery boost: a live slot that is the substitute of a fenced core in the
 // table does the work of two cores. While it is busy (not polling), pm_boost_o
@@ -604,35 +597,21 @@ module bingo_hw_manager_ctrl #(
     // ------------------------------------------------------------------
     // Frequency-aware watchdog ticks
     // ------------------------------------------------------------------
-    logic [NumCores-1:0][NumClusters-1:0][7:0] slot_level;
-    logic [NumCores-1:0][NumClusters-1:0]      slot_slow;
-    logic [NumCores-1:0][NumClusters-1:0][8:0] tick_acc_q, tick_acc_d;
-    always_comb begin
-        for (int unsigned c = 0; c < NumCores; c++) begin
-            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                slot_level[c][cl] = pm_dvfs_i ? dvfs_level_i :
-                                    (slot_domain_i[c][cl] < 32) ? domain_level_i[slot_domain_i[c][cl][4:0]] : 8'd0;
-                slot_slow[c][cl]  = pm_enable_i && (normal_level_i != '0) && (slot_level[c][cl] > normal_level_i);
-                wd_fast_o[c][cl]  = pm_enable_i && (normal_level_i != '0) && (slot_level[c][cl] != '0) &&
-                                    (slot_level[c][cl] < normal_level_i);
-                // Accumulate N per cycle, tick (and subtract L) once it reaches L
-                if (!slot_slow[c][cl]) begin
-                    wd_tick_o[c][cl]  = 1'b1;
-                    tick_acc_d[c][cl] = '0;
-                end else if ((tick_acc_q[c][cl] + 9'(normal_level_i)) >= 9'(slot_level[c][cl])) begin
-                    wd_tick_o[c][cl]  = 1'b1;
-                    tick_acc_d[c][cl] = tick_acc_q[c][cl] + 9'(normal_level_i) - 9'(slot_level[c][cl]);
-                end else begin
-                    wd_tick_o[c][cl]  = 1'b0;
-                    tick_acc_d[c][cl] = tick_acc_q[c][cl] + 9'(normal_level_i);
-                end
-            end
-        end
-    end
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) tick_acc_q <= '0;
-        else         tick_acc_q <= tick_acc_d;
-    end
+    bingo_hw_manager_wd_tick #(
+        .NumCores(NumCores),
+        .NumClusters(NumClusters)
+    ) i_wd_tick (
+        .clk_i(clk_i),
+        .rst_ni(rst_ni),
+        .pm_enable_i(pm_enable_i),
+        .pm_dvfs_i(pm_dvfs_i),
+        .normal_level_i(normal_level_i),
+        .dvfs_level_i(dvfs_level_i),
+        .domain_level_i(domain_level_i),
+        .slot_domain_i(slot_domain_i),
+        .wd_tick_o(wd_tick_o),
+        .wd_fast_o(wd_fast_o)
+    );
 
     // ------------------------------------------------------------------
     // Recovery boost: substitutes of fenced cores, or capacity (see above)

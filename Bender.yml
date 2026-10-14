@@ -35,6 +35,7 @@ sources:
   - src/bingo_hw_manager_replay_ctrl.sv        # Replay of a fenced core's outstanding tasks
   - src/bingo_hw_manager_replay_path.sv        # Data path of replay: checkout heads in, MOVE steps out
   - src/bingo_hw_manager_cerf_fallback.sv    # CERF degradation of a core type with a stuck or rejected slot
+  - src/bingo_hw_manager_wd_tick.sv          # Watchdog ticks in cycles of the normal clock (power levels)
   - src/bingo_hw_manager_ctrl.sv             # Control plane: slot mapping table (substitutes)
   - src/bingo_hw_manager_dep_matrix.sv         # Dependency Matrix Module
   - src/bingo_hw_manager_chiplet_dep_set.sv    # Chiplet DependencySetModule (The Master port to send chiplet dep set info to other chiplets)
