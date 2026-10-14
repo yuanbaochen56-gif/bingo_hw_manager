@@ -184,6 +184,7 @@ sources:
       - test/tb_bingo_hw_manager_remote_link.sv            # level 3 transport adapter unit test
       - test/tb_bingo_hw_manager_chiplet_mailbox_ro.sv     # chiplet done-queue mailbox: only MBOXW is writable remotely
       - test/tb_bingo_hw_manager_rlink_dispatch.sv         # level 3 over remote_link + xbar: remote_dispatch
+      - test/tb_bingo_hw_manager_rlink_moved.sv           # level 3 over remote_link: imported tasks are marked moved (ready queue, wd_moved_q)
       - test/tb_bingo_hw_manager_rlink_full_queue.sv       # level 3 over remote_link + xbar: remote_full_queue
       - test/tb_bingo_hw_manager_rlink_no_executor.sv      # level 3 over remote_link + xbar: remote_no_executor
       - test/tb_bingo_hw_manager_rlink_done_order.sv       # level 3 over remote_link: two proxy slots, done order
