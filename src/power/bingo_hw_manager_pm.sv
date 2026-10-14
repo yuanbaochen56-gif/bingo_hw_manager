@@ -55,8 +55,9 @@ module bingo_hw_manager_pm #(
     input  logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_derate_i = '0,
     // The power management base address
     input  addr_t       pm_base_addr_i,  
-    // The power domain information of each core
-    input  cfg_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    core_power_domain_i,
+    // The power domain of each slot, as the top decodes it once for the whole
+    // manager: MAX_DOMAINS (and above) for a slot in no domain
+    input  logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][5:0] slot_domain_i,
     // Idle signal from hw manager
     input  logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]   core_status_waiting_task_i,
     // Power management mode: 0 = DFS (autonomous clock scaling), 1 = DVFS (notify host)
@@ -131,10 +132,10 @@ module bingo_hw_manager_pm #(
         domain_id = '0;
         for (int core = 0; core < NUM_CORES_PER_CLUSTER; core++) begin
             for (int cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster++) begin
-                // We also support the case where some cores are not mapped to any power domain
-                // Set to a magic number like 99 to indicate no power domain
-                if (core_power_domain_i[core][cluster] < MAX_DOMAINS) begin
-                    domain_id[core][cluster] = core_power_domain_i[core][cluster][4:0];
+                // Some slots belong to no power domain (the host writes 99 for
+                // them, the top passes MAX_DOMAINS)
+                if (slot_domain_i[core][cluster] < MAX_DOMAINS) begin
+                    domain_id[core][cluster] = slot_domain_i[core][cluster][4:0];
                     domain_active_mask[domain_id[core][cluster]] = 1'b1;
                     if (core_status_waiting_task_i[core][cluster] == 1'b0) begin
                         domain_all_idle[domain_id[core][cluster]] = 1'b0;

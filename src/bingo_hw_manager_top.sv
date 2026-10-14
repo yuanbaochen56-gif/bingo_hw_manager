@@ -869,7 +869,8 @@ module bingo_hw_manager_top #(
                        dvfs_level:   bingo_hw_manager_dvfs_ack_i[7:0],
                        domain_level: pm_domain_level};
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][5:0] ctrl_slot_domain;
-    // Power domain of each slot (>= PmMaxDomains: none), as bingo_hw_manager_pm reads it
+    // Power domain of each slot (PmMaxDomains: none), decoded once for the PM,
+    // the control plane and the power-domain counters
     for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_slot_domain_core
         for (genvar cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin : gen_slot_domain_cluster
             assign ctrl_slot_domain[c][cl] = (bingo_hw_manager_core_power_domain_i[c][cl] < PmMaxDomains) ?
@@ -1686,7 +1687,7 @@ module bingo_hw_manager_top #(
         .derate_power_level_i  ( device_axi_lite_data_t'(bingo_hw_manager_risk_policy_i[15:8]) ),
         .core_derate_i         ( ctrl_view.derate                       ),
         .pm_base_addr_i        ( bingo_hw_manager_pm_base_addr_i        ),
-        .core_power_domain_i   ( bingo_hw_manager_core_power_domain_i   ),
+        .slot_domain_i         ( ctrl_slot_domain                       ),
         // Internal Core status: polling or fenced (bingo_hw_manager_power_view), so a
         // dead core does not keep its domain at the normal level
         .core_status_waiting_task_i ( ctrl_view.idle                   ),
