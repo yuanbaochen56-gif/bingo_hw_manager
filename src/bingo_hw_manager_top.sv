@@ -2485,6 +2485,11 @@ module bingo_hw_manager_top #(
     end
 
     // Invariants of the replay, remap and retire paths
+    slot_state_t slot_log_q;
+    assign slot_log_q = '{fenced:   core_fenced_log_q,
+                          retired:  core_retired_log_q,
+                          stuck:    replay_stuck_log_q,
+                          rejected: '0};
     bingo_hw_manager_top_assert #(
         .NumCores           ( NUM_CORES_PER_CLUSTER                            ),
         .NumClusters        ( NUM_CLUSTERS_PER_CHIPLET                         ),
@@ -2493,16 +2498,39 @@ module bingo_hw_manager_top #(
         .CoreIdWidth        ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
         .ClusterIdWidth     ( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
         .OutstandingWidth   ( RemapOutstandingWidth                            ),
-        .task_desc_t        ( bingo_hw_manager_task_desc_t                     ),
-        .done_info_t        ( bingo_hw_manager_done_info_full_t                ),
-        .remote_tag_t       ( remote_tag_t                                     ),
-        .remote_export_t    ( remote_export_t                                  )
+        .remote_export_t    ( remote_export_t                                  ),
+        .slot_state_t       ( slot_state_t                                     ),
+        .replay_step_t      ( replay_step_t                                    ),
+        .replay_op_t        ( replay_op_t                                      ),
+        .waiting_t          ( waiting_t                                        ),
+        .route_t            ( route_t                                          ),
+        .ready_t            ( ready_t                                          ),
+        .checkout_t         ( checkout_t                                       ),
+        .done_t             ( done_t                                           ),
+        .done_remote_t      ( done_remote_t                                    )
     ) i_top_assert (
-        .*,
-        .remap_route_fire     ( route.fire                 ),
-        .remap_route_src_core ( route.src_core             ),
-        .remote_done_push     ( done_remote.push           ),
-        .exec_moved_q         ( i_replay_ctrl.exec_moved_q )
+        .clk_i             ( clk_i                      ),
+        .rst_ni            ( rst_ni                     ),
+        .slot_i            ( slot_state                 ),
+        .blocked_i         ( replay_blocked_o           ),
+        .slot_log_i        ( slot_log_q                 ),
+        .step_i            ( replay_step                ),
+        .replay_op_i       ( replay_op                  ),
+        .exec_moved_i      ( i_replay_ctrl.exec_moved_q ),
+        .export_push_i     ( export_push                ),
+        .export_i          ( export_in                  ),
+        .waiting_i         ( waiting_heads              ),
+        .route_i           ( route                      ),
+        .park_block_i      ( park_block                 ),
+        .outstanding_i     ( remap_outstanding_q        ),
+        .moved_in_i        ( moved_in_q                 ),
+        .ready_i           ( ready_queue                ),
+        .checkout_i        ( checkout_queue             ),
+        .stuck_drain_i     ( stuck_drain                ),
+        .stuck_head_skip_i ( stuck_head_skip            ),
+        .done_i            ( done_queue                 ),
+        .done_pop_i        ( done_q_pop                 ),
+        .remote_i          ( done_remote                )
     );
 `endif
 
