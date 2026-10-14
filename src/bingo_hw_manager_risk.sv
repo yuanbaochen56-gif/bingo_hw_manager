@@ -8,8 +8,9 @@
 // count. Every risk_epoch_i cycles all counts are halved (0 = never), so only a
 // high rate of late beats adds up. A count at or above risk_thresh_i (0 = off)
 // makes the slot at risk; that is sticky until the host clears it
-// (risk_clear_i) or the slot is fenced. What an at-risk slot does (park or
-// derate) is decided in bingo_hw_manager_ctrl.
+// (risk_clear_i) or the slot is fenced. What an at-risk slot does is decided
+// elsewhere: the park request in bingo_hw_manager_ctrl, the derate level in
+// bingo_hw_manager_level_policy.
 module bingo_hw_manager_risk #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2

@@ -88,18 +88,9 @@
 // counts cycles of the normal clock while its domain runs slower (wd_tick_o),
 // and wd_fast_o marks a domain that runs faster than the normal level.
 //
-// Recovery boost: a live slot that is the substitute of a fenced core in the
-// table does the work of two cores. While it is busy (not polling), pm_boost_o
-// asks the PM to run its domain at the boost level (bingo_hw_manager_pm
-// boost_power_level_i, a faster clock than the normal level; 0 = off).
-// Capacity boost (boost_policy_i = 1) replaces that choice: a core type has
-// lost capacity while one of its slots is fenced, stuck, rejected or parked at
-// risk. Every busy live slot of such a type with a load of at least
-// boost_load_min_i is a candidate (type 0 substitutes for nobody and is never
-// one; neither is a slot in a derated domain). At most boost_credit_i domains
-// per lost slot run boosted
-// (0 = no limit), the lowest domain index first: the dead or parked cores no
-// longer draw power, and the survivors of their type get that budget.
+// Level requests to the PM (bingo_hw_manager_level_policy): the boost level for
+// the substitutes of fenced cores, or by capacity (boost_policy_i), and the
+// derate level for at-risk slots (risk_action_i[1], below).
 //
 // Fence fallback (fence_fb_i, host-configured per core type, 0 = off): a type
 // whose bit is set takes no substitute, as if it had no other slot. The table
@@ -603,84 +594,37 @@ module bingo_hw_manager_ctrl #(
     );
 
     // ------------------------------------------------------------------
-    // Recovery boost: substitutes of fenced cores, or capacity (see above)
+    // Level requests to the PM: boost and derate
     // ------------------------------------------------------------------
-    logic [NumCores-1:0][NumClusters-1:0] boost_sub, boost_cand, lost_slot;
-    logic [2**CoreTypeIdWidth-1:0]        type_lost;
-    logic [31:0]                          domain_cand, domain_pick, domain_derate;
-    logic [7:0]                           n_lost, picked;
-    logic [11:0]                          budget;
-    always_comb begin
-        boost_sub = '0;
-        for (int unsigned c = 0; c < NumCores; c++) begin
-            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                if (fenced_i[c][cl] && smt_found_q[c][cl] &&
-                    ((smt_core_q[c][cl] != c) || (smt_cluster_q[c][cl] != cl))) begin
-                    boost_sub[smt_core_q[c][cl]][smt_cluster_q[c][cl]] = 1'b1;
-                end
-            end
-        end
-        boost_sub = boost_sub & ~waiting_i & ~fenced_i;
-
-        lost_slot = fenced_i | stuck_i | rejected_i | (risk_q & park_parked_q);
-        type_lost = '0;
-        n_lost    = '0;
-        domain_derate = '0;
-        for (int unsigned c = 0; c < NumCores; c++) begin
-            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                if (lost_slot[c][cl]) begin
-                    n_lost = n_lost + 1;
-                    if (CoreTypeId[c][cl] != '0) type_lost[CoreTypeId[c][cl]] = 1'b1;
-                end
-                if (pm_derate_o[c][cl] && (slot_domain_i[c][cl] < 6'd32))
-                    domain_derate[slot_domain_i[c][cl][4:0]] = 1'b1;
-            end
-        end
-        boost_cand  = '0;
-        domain_cand = '0;
-        for (int unsigned c = 0; c < NumCores; c++) begin
-            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                if (!waiting_i[c][cl] && !lost_slot[c][cl] && !park_parked_q[c][cl] &&
-                    (CoreTypeId[c][cl] != '0) && type_lost[CoreTypeId[c][cl]] &&
-                    (32'(load_i[c][cl]) >= 32'(boost_load_min_i)) && (slot_domain_i[c][cl] < 6'd32)) begin
-                    boost_cand[c][cl] = 1'b1;
-                    domain_cand[slot_domain_i[c][cl][4:0]] = 1'b1;
-                end
-            end
-        end
-        // Derate applies to the whole domain. Do not spend a boost credit on
-        // a healthy candidate sharing that domain with an at-risk slot.
-        domain_cand = domain_cand & ~domain_derate;
-        budget      = 12'(boost_credit_i) * 12'(n_lost);
-        picked      = '0;
-        domain_pick = '0;
-        for (int unsigned d = 0; d < 32; d++) begin
-            if (domain_cand[d] && ((boost_credit_i == '0) || (12'(picked) < budget))) begin
-                domain_pick[d] = 1'b1;
-                picked = picked + 1;
-            end
-        end
-
-        for (int unsigned c = 0; c < NumCores; c++) begin
-            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                pm_boost_o[c][cl] = boost_policy_i ?
-                    (boost_cand[c][cl] && domain_pick[slot_domain_i[c][cl][4:0]]) : boost_sub[c][cl];
-            end
-        end
-    end
-
-    // ------------------------------------------------------------------
-    // Derate: at-risk slots that are not parked (with parking on: once it failed)
-    // ------------------------------------------------------------------
-    always_comb begin
-        for (int unsigned c = 0; c < NumCores; c++) begin
-            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                pm_derate_o[c][cl] = risk_q[c][cl] && risk_action_i[1] && !fenced_i[c][cl] &&
-                                     !park_parked_q[c][cl] &&
-                                     !(risk_action_i[0] && ParkSupported && !park_fail_q[c][cl]);
-            end
-        end
-    end
+    bingo_hw_manager_level_policy #(
+        .NumCores(NumCores),
+        .NumClusters(NumClusters),
+        .CoreIdWidth(CoreIdWidth),
+        .ClusterIdWidth(ClusterIdWidth),
+        .CoreTypeIdWidth(CoreTypeIdWidth),
+        .CoreTypeId(CoreTypeId),
+        .LoadWidth(LoadWidth),
+        .ParkSupported(ParkSupported)
+    ) i_level_policy (
+        .fenced_i(fenced_i),
+        .waiting_i(waiting_i),
+        .load_i(load_i),
+        .slot_domain_i(slot_domain_i),
+        .stuck_i(stuck_i),
+        .rejected_i(rejected_i),
+        .smt_found_i(smt_found_q),
+        .smt_core_i(smt_core_q),
+        .smt_cluster_i(smt_cluster_q),
+        .park_parked_i(park_parked_q),
+        .park_fail_i(park_fail_q),
+        .risk_i(risk_q),
+        .risk_action_i(risk_action_i),
+        .boost_policy_i(boost_policy_i),
+        .boost_credit_i(boost_credit_i),
+        .boost_load_min_i(boost_load_min_i),
+        .pm_boost_o(pm_boost_o),
+        .pm_derate_o(pm_derate_o)
+    );
 
 `ifndef SYNTHESIS
     always @(posedge clk_i) begin
