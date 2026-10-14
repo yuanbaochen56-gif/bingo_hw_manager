@@ -958,6 +958,7 @@ module bingo_hw_manager_top #(
     assign checkout_queue = '{push:          checkout_queue_push,
                               push_desc:     checkout_queue_data_in,
                               push_tag:      checkout_remote_tag_in,
+                              exit_absorb:   exit_absorb,
                               pop:           checkout_queue_pop,
                               full:          checkout_queue_full,
                               full_raw:      checkout_queue_full_raw,
@@ -2264,9 +2265,7 @@ module bingo_hw_manager_top #(
         localparam int unsigned Events = EvlogGroups * NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET + Types;
         logic [Events-1:0]       events;
         logic [Events-1:0][15:0] args;
-        logic                    move;
-        logic [7:0]              move_code, move_slot;
-        logic [15:0]             move_arg;
+        evlog_move_t             move;
         // The threshold that would confirm a fence of the slot now, the argument
         // of its fence record: 3 learned, 1 at risk, 2 type or parameter, 0 none
         logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][1:0] fence_reason;
@@ -2284,43 +2283,33 @@ module bingo_hw_manager_top #(
             .CoreIdWidth     ( cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER)    ),
             .ClusterIdWidth  ( cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET) ),
             .CoreTypeIdWidth ( CoreTypeIdWidth                                  ),
-            .task_desc_t     ( bingo_hw_manager_task_desc_t                     )
+            .task_desc_t     ( bingo_hw_manager_task_desc_t                     ),
+            .slot_state_t    ( slot_state_t                                     ),
+            .ctrl_view_t     ( ctrl_view_t                                      ),
+            .park_t          ( park_t                                           ),
+            .checkout_t      ( checkout_t                                       ),
+            .type_cfg_t      ( type_cfg_t                                       ),
+            .cerf_fb_t       ( cerf_fb_t                                        ),
+            .replay_step_t   ( replay_step_t                                    )
         ) i_events (
-            .clk_i              ( clk_i                  ),
-            .rst_ni             ( rst_ni                 ),
-            .suspect_i          ( core_dead_suspect      ),
-            .fenced_i           ( core_fenced            ),
-            .stuck_i            ( replay_stuck_slot      ),
-            .blocked_i          ( replay_blocked_o       ),
-            .risk_i             ( ctrl_view.risk         ),
-            .parked_i           ( park.parked            ),
-            .park_fail_i        ( park.fail              ),
-            .retired_i          ( core_retired           ),
-            .rec_hold_i         ( ctrl_view.rec_hold     ),
-            .fence_reason_i     ( fence_reason           ),
-            .exit_absorb_i      ( exit_absorb            ),
-            .exit_desc_i        ( checkout_queue_data_in ),
-            .cerf_fb_req_i      ( cerf_fb.req            ),
-            .cerf_fb_type_i     ( cerf_fb.core_type      ),
-            .cerf_fb_done_i     ( cerf_fb_done           ),
-            .cerf_fb_en_i       ( cerf_fb_en_i           ),
-            .cerf_fb_evt_i      ( cerf_fb_evt_o          ),
-            .cerf_fb_clear_i    ( cerf_fb_clear_i        ),
-            .cerf_fb_set_i      ( cerf_fb_set_i          ),
-            .move_fire_i        ( replay_move_fire       ),
-            .bounce_i           ( replay_bounce          ),
-            .rotate_i           ( replay_rotate          ),
-            .move_desc_i        ( replay_data            ),
-            .move_src_core_i    ( replay_src_core        ),
-            .move_src_cluster_i ( replay_src_cluster     ),
-            .move_dst_core_i    ( replay_dst_core        ),
-            .move_dst_cluster_i ( replay_dst_cluster     ),
-            .events_o           ( events                 ),
-            .args_o             ( args                   ),
-            .move_o             ( move                   ),
-            .move_code_o        ( move_code              ),
-            .move_slot_o        ( move_slot              ),
-            .move_arg_o         ( move_arg               )
+            .clk_i          ( clk_i             ),
+            .rst_ni         ( rst_ni            ),
+            .slot_i         ( slot_state        ),
+            .suspect_i      ( core_dead_suspect ),
+            .blocked_i      ( replay_blocked_o  ),
+            .view_i         ( ctrl_view         ),
+            .park_i         ( park              ),
+            .fence_reason_i ( fence_reason      ),
+            .checkout_i     ( checkout_queue    ),
+            .cerf_fb_i      ( cerf_fb           ),
+            .cerf_fb_done_i ( cerf_fb_done      ),
+            .type_cfg_i     ( type_cfg          ),
+            .cerf_fb_evt_i  ( cerf_fb_evt_o     ),
+            .step_i         ( replay_step       ),
+            .move_desc_i    ( replay_data       ),
+            .events_o       ( events            ),
+            .args_o         ( args              ),
+            .move_o         ( move              )
         );
         bingo_hw_manager_evlog #(
             .NumCores(NUM_CORES_PER_CLUSTER),
@@ -2332,7 +2321,7 @@ module bingo_hw_manager_top #(
             .clk_i, .rst_ni, .enable_i(evlog_enable_i),
             .clear_i(evlog_clear_i), .pop_i(evlog_pop_i),
             .event_i(events), .arg_i(args),
-            .move_i(move), .move_code_i(move_code), .move_slot_i(move_slot), .move_arg_i(move_arg),
+            .move_i(move.valid), .move_code_i(move.code), .move_slot_i(move.slot), .move_arg_i(move.arg),
             .head_o(evlog_head_o), .count_o(evlog_count_o), .dropped_o(evlog_dropped_o)
         );
     end else begin : gen_no_evlog

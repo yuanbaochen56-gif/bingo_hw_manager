@@ -113,6 +113,16 @@ package bingo_hw_manager_pkg;
         endcase
     endfunction
 
+    // A move record of the log: the replay moved, bounced or rotated a task
+    // (code EvMove, EvMoveDummy or EvBounce), from slot {cluster, core}, arg
+    // {destination slot (4'hf: rotated, 0: bounced), task id}
+    typedef struct packed {
+        logic        valid;
+        logic [7:0]  code;
+        logic [7:0]  slot;
+        logic [15:0] arg;
+    } evlog_move_t;
+
     // Position of a pulse in the event vector of the log
     function automatic int unsigned evlog_idx(
         input evlog_group_e group, input int unsigned slot,

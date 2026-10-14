@@ -140,6 +140,7 @@
 
 // The checkout queues of every slot (bingo_hw_manager_checkout_queue):
 //   push, push_desc, push_tag  an entry is pushed this cycle, and the entry with its side tag
+//   exit_absorb                ... and it is an exit that enters as a dummy
 //   pop                        the head leaves (retired, or moved by the replay)
 //   full                       no room for a new task (level 3 keeps a spare entry)
 //   full_raw, usage, empty     occupancy of the FIFO
@@ -151,6 +152,7 @@
     logic        [(NumCores)-1:0][(NumClusters)-1:0]                 push;                                            \
     task_desc_t  [(NumCores)-1:0][(NumClusters)-1:0]                 push_desc;                                       \
     remote_tag_t [(NumCores)-1:0][(NumClusters)-1:0]                 push_tag;                                        \
+    logic        [(NumCores)-1:0][(NumClusters)-1:0]                 exit_absorb;                                     \
     logic        [(NumCores)-1:0][(NumClusters)-1:0]                 pop;                                             \
     logic        [(NumCores)-1:0][(NumClusters)-1:0]                 full;                                            \
     logic        [(NumCores)-1:0][(NumClusters)-1:0]                 full_raw;                                        \
@@ -400,11 +402,11 @@
 //   origin_chip  the origin chiplet
 //   proxy_slot   its proxy slot on the origin chiplet (flat id), which takes its done
 `define BINGO_HW_MANAGER_TYPEDEF_REMOTE_DISPATCH_T(remote_dispatch_t, desc_t, chip_id_t, remote_slot_t, CoreTypeIdWidth) \
-  typedef struct packed { \
-    desc_t                      desc; \
-    logic [(CoreTypeIdWidth)-1:0] core_type; \
-    chip_id_t                   origin_chip; \
-    remote_slot_t               proxy_slot; \
+  typedef struct packed {                                                                                                \
+    desc_t                      desc;                                                                                    \
+    logic [(CoreTypeIdWidth)-1:0] core_type;                                                                             \
+    chip_id_t                   origin_chip;                                                                             \
+    remote_slot_t               proxy_slot;                                                                              \
   } remote_dispatch_t;
 
 // The proxy slots of the exported tasks (bingo_hw_manager_remote_export), per slot:
@@ -415,13 +417,13 @@
 // and for the chiplet: timeout_any, a proxy gave up waiting (sticky);
 // mismatch, a remote done that does not belong to an exported head (sticky)
 `define BINGO_HW_MANAGER_TYPEDEF_PROXY_T(proxy_t, NumCores, NumClusters) \
-  typedef struct packed { \
-    logic [(NumCores)-1:0][(NumClusters)-1:0]       waiting; \
-    logic [(NumCores)-1:0][(NumClusters)-1:0]       timeout; \
-    logic [(NumCores)-1:0][(NumClusters)-1:0][31:0] wait_cycles; \
-    logic [(NumCores)-1:0][(NumClusters)-1:0]       rejected; \
-    logic                                           timeout_any; \
-    logic                                           mismatch; \
+  typedef struct packed {                                                \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]       waiting;             \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]       timeout;             \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][31:0] wait_cycles;         \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]       rejected;            \
+    logic                                           timeout_any;         \
+    logic                                           mismatch;            \
   } proxy_t;
 
 // The import taken this cycle (bingo_hw_manager_remote_import):
@@ -431,16 +433,16 @@
 //   home_core, home_cluster  its home slot: the lowest slot of its core type
 //   core, cluster            the slot it runs on: the home slot or its live stand-in
 `define BINGO_HW_MANAGER_TYPEDEF_IMPORT_T(import_t, task_desc_t, remote_tag_t, NumCores, NumClusters, CoreIdWidth, ClusterIdWidth) \
-  typedef struct packed { \
-    logic                                     fire; \
-    logic                                     reject; \
-    logic [(NumCores)-1:0][(NumClusters)-1:0] push; \
-    task_desc_t                               desc; \
-    remote_tag_t                              tag; \
-    logic [(CoreIdWidth)-1:0]                 home_core; \
-    logic [(ClusterIdWidth)-1:0]              home_cluster; \
-    logic [(CoreIdWidth)-1:0]                 core; \
-    logic [(ClusterIdWidth)-1:0]              cluster; \
+  typedef struct packed {                                                                                                          \
+    logic                                     fire;                                                                                \
+    logic                                     reject;                                                                              \
+    logic [(NumCores)-1:0][(NumClusters)-1:0] push;                                                                                \
+    task_desc_t                               desc;                                                                                \
+    remote_tag_t                              tag;                                                                                 \
+    logic [(CoreIdWidth)-1:0]                 home_core;                                                                           \
+    logic [(ClusterIdWidth)-1:0]              home_cluster;                                                                        \
+    logic [(CoreIdWidth)-1:0]                 core;                                                                                \
+    logic [(ClusterIdWidth)-1:0]              cluster;                                                                             \
   } import_t;
 
 // All port types of the control plane (bingo_hw_manager_ctrl), named as its
