@@ -589,33 +589,13 @@ module bingo_hw_manager_top #(
 
 
     /////////////////////////////////////////////////////////
-    // Chiplet Dep Set Issue
+    // Dependency sets between chiplets (bingo_hw_manager_chiplet_link)
     /////////////////////////////////////////////////////////
-    // This module is to send the chiplet dep set signal to other chiplets
-    // It will receive the chiplet dep set task from the wait dep check queues
-    bingo_hw_manager_task_desc_full_t chiplet_dep_set_task_desc;
-    logic                             chiplet_dep_set_task_desc_valid;
-    logic                             chiplet_dep_set_task_desc_ready;
-
-    //////////////////////////////////////////////////////////
-    // Stream Arbiter Chiplet Dep Set Issue Signals
-    //////////////////////////////////////////////////////////
-    // The inputs are from the checkout queues of all cores in the chiplet
-    bingo_hw_manager_task_desc_full_t [NUM_CORES_PER_CLUSTER*NUM_CLUSTERS_PER_CHIPLET-1:0] stream_arbiter_chiplet_dep_set_inp_task_desc;
-    logic                             [NUM_CORES_PER_CLUSTER*NUM_CLUSTERS_PER_CHIPLET-1:0] stream_arbiter_chiplet_dep_set_inp_valid;
-    logic                             [NUM_CORES_PER_CLUSTER*NUM_CLUSTERS_PER_CHIPLET-1:0] stream_arbiter_chiplet_dep_set_inp_ready;
-    bingo_hw_manager_task_desc_full_t                                                      stream_arbiter_chiplet_dep_set_oup_task_desc;
-    logic                                                                                  stream_arbiter_chiplet_dep_set_oup_valid;
-    logic                                                                                  stream_arbiter_chiplet_dep_set_oup_ready;
-
-
-    //////////////////////////////////////////////////////////
-    // Chiplet Done Queue
-    //////////////////////////////////////////////////////////
-    logic [HostAxiLiteDataWidth-1:0]   chiplet_done_queue_mbox_data;
-    logic                              chiplet_done_queue_mbox_empty;
-    logic                              chiplet_done_queue_mbox_pop;
-    bingo_hw_manager_task_desc_full_t  cur_chiplet_done_queue_task_desc;
+    // The link takes the dep set of a retiring checkout head for another
+    // chiplet; the head of the chiplet mailbox (dep sets of other chiplets)
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] chiplet_set_ready;
+    bingo_hw_manager_task_desc_full_t                               remote_set;
+    logic                                                           remote_set_valid;
     /////////////////////////////////////////////////////////
     // Dependency unit (bingo_hw_manager_dep_unit)
     /////////////////////////////////////////////////////////
@@ -1038,92 +1018,38 @@ module bingo_hw_manager_top #(
     assign cur_task_desc = full_to_desc(cur_task_desc_full);
 
 
-    /////////////////////////////////////////////////////////
-    // H2H Dep Set Interface
-    /////////////////////////////////////////////////////////       
-    bingo_hw_manager_chiplet_dep_set #(
-        .ChipIdWidth                                  (ChipIdWidth            ),
-        .HostAxiLiteAddrWidth                         (HostAxiLiteAddrWidth   ),
-        .HostAxiLiteDataWidth                         (HostAxiLiteDataWidth   ),
-        .host_axi_lite_req_t                          (host_axi_lite_req_t    ),
-        .host_axi_lite_resp_t                         (host_axi_lite_resp_t   ),
-        .bingo_hw_manager_task_desc_full_t            (bingo_hw_manager_task_desc_full_t)
-    ) i_bingo_hw_manager_chiplet_dep_set (
-        .clk_i                             (clk_i                              ),
-        .rst_ni                            (rst_ni                             ),
-        .chiplet_mailbox_base_addr_i       (chiplet_mailbox_base_addr_i        ),
-        .to_remote_chiplet_axi_lite_req_o  (to_remote_chiplet_axi_lite_req_o   ),
-        .to_remote_chiplet_axi_lite_resp_i (to_remote_chiplet_axi_lite_resp_i  ),
-        .chiplet_dep_set_task_desc_i       (chiplet_dep_set_task_desc          ),
-        .chiplet_dep_set_task_desc_valid_i (chiplet_dep_set_task_desc_valid    ),
-        .chiplet_dep_set_task_desc_ready_o (chiplet_dep_set_task_desc_ready    )
-    );
-    assign chiplet_dep_set_task_desc = stream_arbiter_chiplet_dep_set_oup_task_desc;
-    assign chiplet_dep_set_task_desc_valid = stream_arbiter_chiplet_dep_set_oup_valid;
-
-    /////////////////////////////////////////////////////////
-    // Stream Arbiter for Chiplet Dep Set
-    /////////////////////////////////////////////////////////     
-    stream_arbiter #(
-        .DATA_T (bingo_hw_manager_task_desc_full_t                             ),
-        .N_INP  (NUM_CORES_PER_CLUSTER * NUM_CLUSTERS_PER_CHIPLET              )
-    ) i_stream_arbiter_chiplet_dep_set (
-        .clk_i      ( clk_i                                        ),
-        .rst_ni     ( rst_ni                                       ),
-        .inp_data_i ( stream_arbiter_chiplet_dep_set_inp_task_desc ),
-        .inp_valid_i( stream_arbiter_chiplet_dep_set_inp_valid     ),
-        .inp_ready_o( stream_arbiter_chiplet_dep_set_inp_ready     ),
-        .oup_data_o ( stream_arbiter_chiplet_dep_set_oup_task_desc ),
-        .oup_valid_o( stream_arbiter_chiplet_dep_set_oup_valid     ),
-        .oup_ready_i( stream_arbiter_chiplet_dep_set_oup_ready     )
-    );
-    assign stream_arbiter_chiplet_dep_set_oup_ready = chiplet_dep_set_task_desc_ready;
-    always_comb begin : compose_stream_arbiter_chiplet_dep_set_signals
-        for (int unsigned cluster = 0; cluster < NUM_CLUSTERS_PER_CHIPLET; cluster = cluster + 1) begin
-            for (int unsigned core = 0; core < NUM_CORES_PER_CLUSTER; core = core + 1) begin
-                // The whole head descriptor, without the class in the reserved
-                // bits: the chiplet dep-set master sends it as its write data, and
-                // the other chiplet reads only the dep-set fields and the core id
-                stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER] = desc_to_full(checkout_queue_data_out[core][cluster]);
-                stream_arbiter_chiplet_dep_set_inp_task_desc[core + cluster * NUM_CORES_PER_CLUSTER].reserved_bits = '0;
-                stream_arbiter_chiplet_dep_set_inp_valid[core + cluster * NUM_CORES_PER_CLUSTER] = checkout_chiplet_set_valid[core][cluster];
-            end           
-        end
-    end
-
-
     //////////////////////////////////////////////////////////////////////
-    // Chiplet from remote Done Queue
+    // Dependency sets between chiplets: out, the retiring checkout heads whose
+    // dep set names another chiplet; in, the chiplet mailbox
     //////////////////////////////////////////////////////////////////////
-    // Other chiplets write this port: only the mailbox write register is
-    // writable, so a remote write cannot flush the FIFO (CTRL) or change its
-    // thresholds and lose dependency signals (SLVERR, no effect)
-    bingo_hw_manager_write_mailbox #(
-        .MailboxDepth(ChipletDoneQueueDepth                    ),
-        .IrqEdgeTrig (1'b0                                     ),
-        .IrqActHigh  (1'b1                                     ),
-        .AxiAddrWidth(HostAxiLiteAddrWidth                     ),
-        .AxiDataWidth(HostAxiLiteDataWidth                     ),
-        .ChipIdWidth (ChipIdWidth                              ),
-        .RegWriteEn  (1'b0                                     ),
-        .req_lite_t  (host_axi_lite_req_t                      ),
-        .resp_lite_t (host_axi_lite_resp_t                     )
-    ) i_bingo_hw_manager_chiplet_done_queue (
-        .clk_i       (clk_i                             ),
-        .rst_ni      (rst_ni                            ),
-        .chip_id_i   (chip_id_i                         ),
-        .test_i      (1'b0                              ),
-        .req_i       (from_remote_axi_lite_req_i        ),
-        .resp_o      (from_remote_axi_lite_resp_o       ),
-        .irq_o       (/*not used*/                      ),
-        .base_addr_i (chiplet_mailbox_base_addr_i       ),
-        .mbox_data_o (chiplet_done_queue_mbox_data      ),
-        .mbox_pop_i  (chiplet_done_queue_mbox_pop       ),
-        .mbox_empty_o(chiplet_done_queue_mbox_empty     ),
-        .mbox_flush_i('0                                )
+    bingo_hw_manager_chiplet_link #(
+        .NumCores             ( NUM_CORES_PER_CLUSTER             ),
+        .NumClusters          ( NUM_CLUSTERS_PER_CHIPLET          ),
+        .ChipIdWidth          ( ChipIdWidth                       ),
+        .HostAxiLiteAddrWidth ( HostAxiLiteAddrWidth              ),
+        .HostAxiLiteDataWidth ( HostAxiLiteDataWidth              ),
+        .MailboxDepth         ( ChipletDoneQueueDepth             ),
+        .host_axi_lite_req_t  ( host_axi_lite_req_t               ),
+        .host_axi_lite_resp_t ( host_axi_lite_resp_t              ),
+        .task_desc_t          ( bingo_hw_manager_task_desc_t      ),
+        .task_desc_full_t     ( bingo_hw_manager_task_desc_full_t )
+    ) i_chiplet_link (
+        .clk_i                       ( clk_i                             ),
+        .rst_ni                      ( rst_ni                            ),
+        .chip_id_i                   ( chip_id_i                         ),
+        .mailbox_base_addr_i         ( chiplet_mailbox_base_addr_i       ),
+        .set_i                       ( checkout_queue_data_out           ),
+        .set_valid_i                 ( checkout_chiplet_set_valid        ),
+        .set_ready_o                 ( chiplet_set_ready                 ),
+        .to_remote_axi_lite_req_o    ( to_remote_chiplet_axi_lite_req_o  ),
+        .to_remote_axi_lite_resp_i   ( to_remote_chiplet_axi_lite_resp_i ),
+        .from_remote_axi_lite_req_i  ( from_remote_axi_lite_req_i        ),
+        .from_remote_axi_lite_resp_o ( from_remote_axi_lite_resp_o       ),
+        .remote_set_o                ( remote_set                        ),
+        .remote_set_valid_o          ( remote_set_valid                  ),
+        .remote_set_ready_i          ( remote_set_ready                  )
     );
-    assign cur_chiplet_done_queue_task_desc = bingo_hw_manager_task_desc_full_t'(chiplet_done_queue_mbox_data);
-    assign chiplet_done_queue_mbox_pop = remote_set_ready && !chiplet_done_queue_mbox_empty;
+
     //////////////////////////////////////////////////////////////////////
     // Dependency unit: the waiting queue of each core, the dependency check
     // of its head, the dependency matrices and the dependency sets into them
@@ -1150,8 +1076,8 @@ module bingo_hw_manager_top #(
         .set_i              ( checkout_queue_data_out          ),
         .set_valid_i        ( checkout_local_set_valid         ),
         .set_ready_o        ( local_set_ready                  ),
-        .remote_set_i       ( cur_chiplet_done_queue_task_desc ),
-        .remote_set_valid_i ( !chiplet_done_queue_mbox_empty   ),
+        .remote_set_i       ( remote_set                       ),
+        .remote_set_valid_i ( remote_set_valid                 ),
         .remote_set_ready_o ( remote_set_ready                 )
     );
 
@@ -1249,7 +1175,7 @@ module bingo_hw_manager_top #(
                                  hold:        replay_hold_slot[core][cluster]};
             assign import_in = '{valid: imported.push[core][cluster], desc: imported.desc, tag: imported.tag};
             assign retire_rsp = '{local_set:   local_set_ready[core][cluster],
-                                  chiplet_set: stream_arbiter_chiplet_dep_set_inp_ready[Slot],
+                                  chiplet_set: chiplet_set_ready[core][cluster],
                                   remote_done: remote_done_arb_ready[Slot]};
             bingo_hw_manager_checkout_queue #(
                 .NumCores          ( NUM_CORES_PER_CLUSTER                            ),

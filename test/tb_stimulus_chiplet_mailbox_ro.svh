@@ -26,14 +26,14 @@ bingo_hw_manager_task_desc_full_t chip1_set_chip0 = pack_dummy_set_task(
 initial begin : probe
     automatic axi_pkg::resp_t resp;
     automatic host_axi_lite_addr_t base;
-    force gen_dut[0].i_dut.chiplet_done_queue_mbox_pop = 1'b0;
+    force gen_dut[0].i_dut.i_chiplet_link.chiplet_done_queue_mbox_pop = 1'b0;
     wait (rst_ni);
     @(posedge clk_i);
     base = {chip_id[0], H2H_DONE_QUEUE_BASE[HOST_AW-ChipIdWidth-1:0]};
     task_queue_master[0].write(task_queue_base[0], '0, chip0_consumer, '1, resp);
     task_queue_master[1].write(task_queue_base[1], '0, chip1_set_chip0, '1, resp);
     fork : wait_dep_set
-        wait (!gen_dut[0].i_dut.chiplet_done_queue_mbox_empty);
+        wait (!gen_dut[0].i_dut.i_chiplet_link.chiplet_done_queue_mbox_empty);
         begin
             repeat (2000) @(posedge clk_i);
             $error("[MBOX_RO] the dep set of chiplet 1 never reached chiplet 0's done queue");
@@ -47,7 +47,7 @@ initial begin : probe
         if (resp != axi_pkg::RESP_SLVERR) $error("[MBOX_RO] register %0d write answered %0d", r, resp);
     end
     h2h_probe_en = 1'b0;
-    if (gen_dut[0].i_dut.chiplet_done_queue_mbox_empty) $error("[MBOX_RO] the held dep set was flushed");
-    release gen_dut[0].i_dut.chiplet_done_queue_mbox_pop;
+    if (gen_dut[0].i_dut.i_chiplet_link.chiplet_done_queue_mbox_empty) $error("[MBOX_RO] the held dep set was flushed");
+    release gen_dut[0].i_dut.i_chiplet_link.chiplet_done_queue_mbox_pop;
     $display("[MBOX_RO] %0t probe writes done", $time);
 end
