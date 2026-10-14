@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: SHL-0.51
 
 // Simulation-only invariants of bingo_hw_manager_top: replay, remap, parking
-// and the retirement of checkout heads. Each violation is an $error with the
+// and the retirement of checkout heads, and the task descriptors the hardware
+// relies on without checking them. Each violation is an $error with the
 // [BINGO_ASSERT] tag; nothing here drives the design.
 //
 // It reads the structs of the top (slot state, queues, route, replay step)
@@ -21,7 +22,9 @@ module bingo_hw_manager_top_assert #(
     parameter int unsigned CoreIdWidth = 2,
     parameter int unsigned ClusterIdWidth = 1,
     parameter int unsigned OutstandingWidth = 1,
+    parameter type         task_desc_t = logic,      // bingo_hw_manager_task_desc_t of the top
     parameter type         remote_export_t = logic,
+    parameter type         chip_id_t = logic,
     // Port types (bingo_hw_manager/typedef.svh)
     parameter type         slot_state_t = logic,
     parameter type         replay_step_t = logic,
@@ -35,6 +38,12 @@ module bingo_hw_manager_top_assert #(
 ) (
     input logic                                 clk_i,
     input logic                                 rst_ni,
+    input chip_id_t                             chip_id_i,
+    // Head of the task queue (valid unless empty), taken into the waiting
+    // queue of its core on pop
+    input logic                                 task_queue_empty_i,
+    input logic                                 task_queue_pop_i,
+    input task_desc_t                           task_head_i,
     // Watchdog and replay: slot state and blocked slots, and their values one
     // cycle earlier (the top's simulation log)
     input slot_state_t                          slot_i,
@@ -64,6 +73,42 @@ module bingo_hw_manager_top_assert #(
     input done_remote_t                         remote_i
 );
     import bingo_hw_manager_pkg::*;
+
+    // Task descriptors at the head of the task queue, once per descriptor. The
+    // compiler (bingo_dfg.py) writes them; the hardware does not check them,
+    // and each of these breaks it silently: a core out of range is never taken
+    // from the task queue (a cluster out of range never leaves its waiting
+    // queue); a dummy that both checks and sets is dropped after its check
+    // and never sets, one that does neither runs on a core but retires
+    // without its done, so the next task of that core retires on it; a local
+    // set names a dependency matrix that does not exist.
+    logic desc_head_seen_q;  // the head was there last cycle and not taken
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) desc_head_seen_q <= 1'b0;
+        else         desc_head_seen_q <= !task_queue_empty_i && (task_queue_pop_i !== 1'b1);
+    end
+    always @(posedge clk_i) begin : descriptor_assertions
+        if (rst_ni && !task_queue_empty_i && !desc_head_seen_q) begin
+            if ((int'(task_head_i.assigned_core_id) >= NumCores) ||
+                (int'(task_head_i.assigned_cluster_id) >= NumClusters)) begin
+                $error("[BINGO_ASSERT] task %0d: core %0d cluster %0d out of range",
+                       task_head_i.task_id, task_head_i.assigned_core_id,
+                       task_head_i.assigned_cluster_id);
+            end
+            if ((task_head_i.task_type == TaskDummy) &&
+                (task_head_i.dep_check_info.dep_check_en == task_head_i.dep_set_info.dep_set_en)) begin
+                $error("[BINGO_ASSERT] dummy task %0d: dep check %0b and dep set %0b (exactly one expected)",
+                       task_head_i.task_id, task_head_i.dep_check_info.dep_check_en,
+                       task_head_i.dep_set_info.dep_set_en);
+            end
+            if (task_head_i.dep_set_info.dep_set_en && !task_head_i.dep_set_info.dep_set_all_chiplet &&
+                (task_head_i.dep_set_info.dep_set_chiplet_id == chip_id_i) &&
+                (int'(task_head_i.dep_set_info.dep_set_cluster_id) >= NumClusters)) begin
+                $error("[BINGO_ASSERT] task %0d: local dep set to cluster %0d out of range",
+                       task_head_i.task_id, task_head_i.dep_set_info.dep_set_cluster_id);
+            end
+        end
+    end
 
     // Replay invariants
     always @(posedge clk_i) begin : replay_assertions
