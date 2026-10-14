@@ -410,6 +410,19 @@ module bingo_hw_manager_top #(
         $finish;
         end
     end
+
+    // Every queue holds at least one entry: a fifo_v3 of depth 0 passes its
+    // input straight through, and push, pop and empty could form a loop
+    if (TaskQueueDepth < 1 || ChipletDoneQueueDepth < 1 || DoneQueueDepth < 1 ||
+        CheckoutQueueDepth < 1 || ReadyQueueDepth < 1 || WaitingQueueDepth < 1 ||
+        RemoteExportFifoDepth < 1) begin : gen_queue_depth_check
+        initial begin
+        $error("Queue depths must be at least 1 (task %0d, chiplet done %0d, done %0d, checkout %0d, ready %0d, waiting %0d, remote export %0d)",
+               TaskQueueDepth, ChipletDoneQueueDepth, DoneQueueDepth, CheckoutQueueDepth, ReadyQueueDepth,
+               WaitingQueueDepth, RemoteExportFifoDepth);
+        $finish;
+        end
+    end
     // 64bit Task Descriptor with reserved bits
     typedef struct packed{
         logic [ReservedBitsForTaskDesc-1:0]          reserved_bits;
