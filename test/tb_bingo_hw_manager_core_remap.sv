@@ -1,4 +1,5 @@
 `timescale 1ns/1ps
+`include "bingo_hw_manager/typedef.svh"
 
 // Combinational slot mapping table for the unit test (bingo_hw_manager_slot_table
 // keeps the same choice in a register)
@@ -63,6 +64,19 @@ module tb_bingo_hw_manager_core_remap;
     logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_fenced_i;
     logic [NUM_CORES-1:0][NUM_CLUSTERS-1:0] core_retired_i;
 
+    // Port structs of bingo_hw_manager_core_remap: the request, the slot state
+    // (fenced and retired, never stuck or rejected), the table, no parking
+    `BINGO_HW_MANAGER_TYPEDEF_REMAP_REQ_T(remap_req_t, CORE_ID_WIDTH, CLUSTER_ID_WIDTH)
+    `BINGO_HW_MANAGER_TYPEDEF_REMAP_SEL_T(remap_sel_t, CORE_ID_WIDTH, CLUSTER_ID_WIDTH)
+    `BINGO_HW_MANAGER_TYPEDEF_SLOT_STATE_T(slot_state_t, NUM_CORES, NUM_CLUSTERS)
+    `BINGO_HW_MANAGER_TYPEDEF_SMT_T(smt_t, NUM_CORES, NUM_CLUSTERS, CORE_ID_WIDTH, CLUSTER_ID_WIDTH)
+    `BINGO_HW_MANAGER_TYPEDEF_PARK_T(park_t, NUM_CORES, NUM_CLUSTERS)
+    remap_req_t  remap_req;
+    slot_state_t slot_state;
+    assign remap_req  = '{valid: req_valid_i, core: logical_core_i, cluster: logical_cluster_i,
+                          remappable: remappable_i, no_replay: 1'b0};
+    assign slot_state = '{fenced: core_fenced_i, retired: core_retired_i, stuck: '0, rejected: '0};
+
     logic select_valid_o;
     logic [CORE_ID_WIDTH-1:0] physical_core_o;
     logic [CLUSTER_ID_WIDTH-1:0] physical_cluster_o;
@@ -106,55 +120,61 @@ module tb_bingo_hw_manager_core_remap;
     );
 
     // Levels 1 and 2 (substitutes in other clusters allowed)
+    remap_sel_t sel_dut;
+    assign select_valid_o = sel_dut.valid;
+    assign physical_core_o = sel_dut.core;
+    assign physical_cluster_o = sel_dut.cluster;
     bingo_hw_manager_core_remap #(
         .NumCores(NUM_CORES),
         .NumClusters(NUM_CLUSTERS),
         .CoreIdWidth(CORE_ID_WIDTH),
         .ClusterIdWidth(CLUSTER_ID_WIDTH),
-        .SubstituteLevelMask(3'b011)
+        .SubstituteLevelMask(3'b011),
+        .remap_req_t(remap_req_t),
+        .remap_sel_t(remap_sel_t),
+        .slot_state_t(slot_state_t),
+        .smt_t(smt_t),
+        .park_t(park_t)
     ) dut (
-        .req_valid_i(req_valid_i),
-        .smt_found_i(smt_d_found),
-        .smt_core_i(smt_d_core),
-        .smt_cluster_i(smt_d_cluster),
-        .smt_update_i(1'b0),
+        .req_i(remap_req),
+        .slot_i(slot_state),
         .remote_type_en_i('1),
-        .remote_rejected_i('0),
-        .logical_core_i(logical_core_i),
-        .logical_cluster_i(logical_cluster_i),
-        .remappable_i(remappable_i),
-        .core_fenced_i(core_fenced_i),
-        .core_retired_i(core_retired_i),
-        .select_valid_o(select_valid_o),
-        .physical_core_o(physical_core_o),
-        .physical_cluster_o(physical_cluster_o)
+        .smt_i('{found: smt_d_found, core: smt_d_core, cluster: smt_d_cluster}),
+        .smt_update_i(1'b0),
+        .park_i('0),
+        .sel_o(sel_dut)
     );
 
+    remap_sel_t sel_dut_restricted;
+    assign select_valid_r = sel_dut_restricted.valid;
+    assign physical_core_r = sel_dut_restricted.core;
+    assign physical_cluster_r = sel_dut_restricted.cluster;
     bingo_hw_manager_core_remap #(
         .NumCores(NUM_CORES),
         .NumClusters(NUM_CLUSTERS),
         .CoreIdWidth(CORE_ID_WIDTH),
         .ClusterIdWidth(CLUSTER_ID_WIDTH),
         .CoreTypeIdWidth(4),
-        .CoreTypeId(RESTRICTED_TYPES)
+        .CoreTypeId(RESTRICTED_TYPES),
+        .remap_req_t(remap_req_t),
+        .remap_sel_t(remap_sel_t),
+        .slot_state_t(slot_state_t),
+        .smt_t(smt_t),
+        .park_t(park_t)
     ) dut_restricted (
-        .req_valid_i(req_valid_i),
-        .smt_found_i(smt_r_found),
-        .smt_core_i(smt_r_core),
-        .smt_cluster_i(smt_r_cluster),
-        .smt_update_i(1'b0),
+        .req_i(remap_req),
+        .slot_i(slot_state),
         .remote_type_en_i('1),
-        .remote_rejected_i('0),
-        .logical_core_i(logical_core_i),
-        .logical_cluster_i(logical_cluster_i),
-        .remappable_i(remappable_i),
-        .core_fenced_i(core_fenced_i),
-        .core_retired_i(core_retired_i),
-        .select_valid_o(select_valid_r),
-        .physical_core_o(physical_core_r),
-        .physical_cluster_o(physical_cluster_r)
+        .smt_i('{found: smt_r_found, core: smt_r_core, cluster: smt_r_cluster}),
+        .smt_update_i(1'b0),
+        .park_i('0),
+        .sel_o(sel_dut_restricted)
     );
 
+    remap_sel_t sel_dut_cross;
+    assign select_valid_x = sel_dut_cross.valid;
+    assign physical_core_x = sel_dut_cross.core;
+    assign physical_cluster_x = sel_dut_cross.cluster;
     bingo_hw_manager_core_remap #(
         .NumCores(NUM_CORES),
         .NumClusters(NUM_CLUSTERS),
@@ -162,49 +182,47 @@ module tb_bingo_hw_manager_core_remap;
         .ClusterIdWidth(CLUSTER_ID_WIDTH),
         .CoreTypeIdWidth(4),
         .CoreTypeId(CROSS_TYPES),
-        .SubstituteLevelMask(3'b011)
+        .SubstituteLevelMask(3'b011),
+        .remap_req_t(remap_req_t),
+        .remap_sel_t(remap_sel_t),
+        .slot_state_t(slot_state_t),
+        .smt_t(smt_t),
+        .park_t(park_t)
     ) dut_cross (
-        .req_valid_i(req_valid_i),
-        .smt_found_i(smt_x_found),
-        .smt_core_i(smt_x_core),
-        .smt_cluster_i(smt_x_cluster),
-        .smt_update_i(1'b0),
+        .req_i(remap_req),
+        .slot_i(slot_state),
         .remote_type_en_i('1),
-        .remote_rejected_i('0),
-        .logical_core_i(logical_core_i),
-        .logical_cluster_i(logical_cluster_i),
-        .remappable_i(remappable_i),
-        .core_fenced_i(core_fenced_i),
-        .core_retired_i(core_retired_i),
-        .select_valid_o(select_valid_x),
-        .physical_core_o(physical_core_x),
-        .physical_cluster_o(physical_cluster_x)
+        .smt_i('{found: smt_x_found, core: smt_x_core, cluster: smt_x_cluster}),
+        .smt_update_i(1'b0),
+        .park_i('0),
+        .sel_o(sel_dut_cross)
     );
 
     // Same types, level 1 only (default): never leaves the cluster
+    remap_sel_t sel_dut_l1;
+    assign select_valid_l1 = sel_dut_l1.valid;
+    assign physical_core_l1 = sel_dut_l1.core;
+    assign physical_cluster_l1 = sel_dut_l1.cluster;
     bingo_hw_manager_core_remap #(
         .NumCores(NUM_CORES),
         .NumClusters(NUM_CLUSTERS),
         .CoreIdWidth(CORE_ID_WIDTH),
         .ClusterIdWidth(CLUSTER_ID_WIDTH),
         .CoreTypeIdWidth(4),
-        .CoreTypeId(CROSS_TYPES)
+        .CoreTypeId(CROSS_TYPES),
+        .remap_req_t(remap_req_t),
+        .remap_sel_t(remap_sel_t),
+        .slot_state_t(slot_state_t),
+        .smt_t(smt_t),
+        .park_t(park_t)
     ) dut_l1 (
-        .req_valid_i(req_valid_i),
-        .smt_found_i(smt_l1_found),
-        .smt_core_i(smt_l1_core),
-        .smt_cluster_i(smt_l1_cluster),
-        .smt_update_i(1'b0),
+        .req_i(remap_req),
+        .slot_i(slot_state),
         .remote_type_en_i('1),
-        .remote_rejected_i('0),
-        .logical_core_i(logical_core_i),
-        .logical_cluster_i(logical_cluster_i),
-        .remappable_i(remappable_i),
-        .core_fenced_i(core_fenced_i),
-        .core_retired_i(core_retired_i),
-        .select_valid_o(select_valid_l1),
-        .physical_core_o(physical_core_l1),
-        .physical_cluster_o(physical_cluster_l1)
+        .smt_i('{found: smt_l1_found, core: smt_l1_core, cluster: smt_l1_cluster}),
+        .smt_update_i(1'b0),
+        .park_i('0),
+        .sel_o(sel_dut_l1)
     );
 
     task automatic expect_l1(

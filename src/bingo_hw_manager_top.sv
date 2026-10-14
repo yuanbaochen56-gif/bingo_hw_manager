@@ -830,6 +830,10 @@ module bingo_hw_manager_top #(
         cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER), cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
     `BINGO_HW_MANAGER_TYPEDEF_ROUTE_T(route_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET,
         cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER))
+    `BINGO_HW_MANAGER_TYPEDEF_REMAP_REQ_T(remap_req_t, cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER),
+                                          cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
+    `BINGO_HW_MANAGER_TYPEDEF_REMAP_SEL_T(remap_sel_t, cf_math_pkg::idx_width(NUM_CORES_PER_CLUSTER),
+                                          cf_math_pkg::idx_width(NUM_CLUSTERS_PER_CHIPLET))
     `BINGO_HW_MANAGER_TYPEDEF_DONE_T(done_t, bingo_hw_manager_done_info_full_t,
         NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
     `BINGO_HW_MANAGER_TYPEDEF_DONE_REMOTE_T(done_remote_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
@@ -2111,7 +2115,9 @@ module bingo_hw_manager_top #(
         .checkout_t          ( checkout_t                                       ),
         .ready_t             ( ready_t                                          ),
         .select_t            ( select_t                                         ),
-        .route_t             ( route_t                                          )
+        .route_t             ( route_t                                          ),
+        .remap_req_t         ( remap_req_t                                      ),
+        .remap_sel_t         ( remap_sel_t                                      )
     ) i_router (
         .waiting_i             ( waiting_heads                            ),
         .offer_valid_i         ( demux_ready_and_checkout_queue_oup_valid ),

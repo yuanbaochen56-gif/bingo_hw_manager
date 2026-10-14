@@ -45,7 +45,10 @@ module bingo_hw_manager_router #(
     parameter type         checkout_t = logic,
     parameter type         ready_t = logic,
     parameter type         select_t = logic,
-    parameter type         route_t = logic
+    parameter type         route_t = logic,
+    // The request and answer of bingo_hw_manager_core_remap
+    parameter type         remap_req_t = logic,
+    parameter type         remap_sel_t = logic
 ) (
     // Waiting queue heads, one per logical core: the head, empty, CERF skip
     input  waiting_t                             waiting_i,
@@ -116,6 +119,13 @@ module bingo_hw_manager_router #(
                               waiting_i.desc[core].dep_set_info.dep_set_en;
         assign remap_remappable[core] = !is_dummy_set && !waiting_i.skip[core];
 
+        remap_req_t remap_req;
+        remap_sel_t remap_sel;
+        assign remap_req = '{valid:      !waiting_i.empty[core],
+                             core:       CoreIdWidth'(core),
+                             cluster:    waiting_i.desc[core].assigned_cluster_id,
+                             remappable: remap_remappable[core],
+                             no_replay:  waiting_i.desc[core].task_type == TaskNoReplay};
         bingo_hw_manager_core_remap #(
             .NumCores(NumCores),
             .NumClusters(NumClusters),
@@ -123,29 +133,25 @@ module bingo_hw_manager_router #(
             .ClusterIdWidth(ClusterIdWidth),
             .CoreTypeIdWidth(CoreTypeIdWidth),
             .CoreTypeId(CoreTypeId),
-            .SubstituteLevelMask(SubstituteLevelMask)
+            .SubstituteLevelMask(SubstituteLevelMask),
+            .remap_req_t(remap_req_t),
+            .remap_sel_t(remap_sel_t),
+            .slot_state_t(slot_state_t),
+            .smt_t(smt_t),
+            .park_t(park_t)
         ) i_core_remap (
-            .req_valid_i(!waiting_i.empty[core]),
-            .logical_core_i(CoreIdWidth'(core)),
-            .logical_cluster_i(waiting_i.desc[core].assigned_cluster_id),
-            .remappable_i(remap_remappable[core]),
-            .no_replay_i(waiting_i.desc[core].task_type == TaskNoReplay),
-            .core_fenced_i(slot_i.fenced),
-            .core_retired_i(slot_i.retired),
-            .core_stuck_i(slot_i.stuck),
+            .req_i(remap_req),
+            .slot_i(slot_i),
             .remote_type_en_i(remote_type_en_i),
-            .remote_rejected_i(slot_i.rejected),
-            .smt_found_i(smt_i.found),
-            .smt_core_i(smt_i.core),
-            .smt_cluster_i(smt_i.cluster),
+            .smt_i(smt_i),
             .smt_update_i(smt_update_i),
-            .park_hold_i(park_i.hold | park_i.unpark),
-            .park_parked_i(park_i.parked),
-            .select_valid_o(remap_select_valid_raw[core]),
-            .physical_core_o(physical_core[core]),
-            .physical_cluster_o(physical_cluster[core]),
-            .remote_o(remap_remote[core])
+            .park_i(park_i),
+            .sel_o(remap_sel)
         );
+        assign remap_select_valid_raw[core] = remap_sel.valid;
+        assign physical_core[core]          = remap_sel.core;
+        assign physical_cluster[core]       = remap_sel.cluster;
+        assign remap_remote[core]           = remap_sel.remote;
 
         // A dummy-set / skipped task stays on its logical core, but earlier tasks of
         // that core may have been remapped (or replayed) elsewhere. Hold it back

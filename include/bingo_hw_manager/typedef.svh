@@ -445,6 +445,33 @@
     logic [(ClusterIdWidth)-1:0]              cluster;                                                                             \
   } import_t;
 
+// A waiting queue head asking bingo_hw_manager_core_remap for its slot:
+//   valid               there is a head
+//   core, cluster       its logical slot
+//   remappable          it runs on a core (not a dummy set, not CERF-skipped)
+//   no_replay           task_type 11: never exported to another chiplet
+`define BINGO_HW_MANAGER_TYPEDEF_REMAP_REQ_T(remap_req_t, CoreIdWidth, ClusterIdWidth) \
+  typedef struct packed {                                                              \
+    logic                        valid;                                                \
+    logic [(CoreIdWidth)-1:0]    core;                                                 \
+    logic [(ClusterIdWidth)-1:0] cluster;                                              \
+    logic                        remappable;                                           \
+    logic                        no_replay;                                            \
+  } remap_req_t;
+
+// The answer of bingo_hw_manager_core_remap:
+//   valid               the head may go now
+//   core, cluster       to this physical slot
+//   remote              level 3: the slot is the logical one, as the proxy of a
+//                       remote chiplet (the router exports the task)
+`define BINGO_HW_MANAGER_TYPEDEF_REMAP_SEL_T(remap_sel_t, CoreIdWidth, ClusterIdWidth) \
+  typedef struct packed {                                                              \
+    logic                        valid;                                                \
+    logic [(CoreIdWidth)-1:0]    core;                                                 \
+    logic [(ClusterIdWidth)-1:0] cluster;                                              \
+    logic                        remote;                                               \
+  } remap_sel_t;
+
 // What the watchdog (bingo_hw_manager_watchdog) times, per slot:
 //   dispatch   the core took its next task (busy, the timer restarts)
 //   done       its done reached the done queue (idle)
