@@ -574,23 +574,29 @@
     logic [(NumCores)-1:0][(NumClusters)-1:0]       late_valid;                    \
   } wd_learned_t;
 
-// The thresholds of the watchdog (bingo_hw_manager_wd_bounds), in timer ticks:
-//   late_global      late-beat threshold of the host (0: off)
-//   risk_confirm     confirm threshold of an at-risk slot (the host's, narrowed)
-// and per slot:
-//   h_static, c_static  suspect and confirm threshold of its core type (A5),
-//                    or the parameters (the limits of the adaptation)
-//   suspect          suspect threshold; with suspect_valid clear, 0 means the parameter
-//   suspect_valid    suspect is the learned one
-//   confirm          confirm threshold (0: the parameter)
-//   late             late threshold (0: late_global)
-//   late_adaptive    late is the learned one
-//   risk             the slot is at risk (bingo_hw_manager_ctrl)
-//   risk_valid       confirming is on and risk_confirm lies strictly between
-//                    h_static and c_static
-//   risk_use         risk_valid, and the learned confirm is not shorter
-//   adapt_confirm    confirm is the learned one
-//   wd_class         class of the task the slot runs (for the log)
+// Watchdog thresholds (bingo_hw_manager_wd_bounds), in timer ticks:
+//   late_global             host late-beat threshold, shared by all slots (0: off)
+//   risk_confirm            host confirm threshold for a slot at risk
+//   h_static                static suspect threshold: the core type's H (type_h_i)
+//                           if nonzero and no longer than the parameter, else the
+//                           parameter; caps the learned suspect threshold
+//   c_static                static confirm threshold: the core type's C (type_c_i)
+//                           if fencing is on and it is longer than h_static but no
+//                           longer than the parameter, else the parameter (0:
+//                           fencing off); caps the learned confirm threshold
+//   suspect, suspect_valid  suspect threshold in use: learned if suspect_valid, else
+//                           h_static (0 when !suspect_valid means the parameter)
+//   confirm, adapt_confirm  confirm threshold in use: learned if adapt_confirm, else
+//                           the core type's (0: the parameter)
+//   late, late_adaptive     late-beat threshold in use: learned if late_adaptive,
+//                           else late_global (0: off)
+//   risk                    the slot is at risk (bingo_hw_manager_ctrl)
+//   risk_valid              confirming is on and risk_confirm lies strictly between
+//                           h_static and c_static
+//   risk_use                risk_confirm replaces confirm: risk_valid, and no
+//                           learned confirm is shorter than risk_confirm; the
+//                           watchdog applies it while the slot is at risk
+//   wd_class                class of the task the slot runs (for the log only)
 `define BINGO_HW_MANAGER_TYPEDEF_WD_BOUND_T(wd_bound_t, NumCores, NumClusters, CounterWidth, WdClassWidth) \
   typedef struct packed {                                                                               \
     logic [(CounterWidth)-1:0]                                     late_global;                         \

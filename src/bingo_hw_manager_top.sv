@@ -1512,8 +1512,10 @@ module bingo_hw_manager_top #(
                         wd_moved_q[c][cl] <= ready_moved[c][cl];
         end
     end
-    // The task of every slot as the adaptation reads it: class and moved,
-    // latched at dispatch; whether its domain runs faster than normal
+    // Per-slot task info for the watchdog adaptation (wd_adapt):
+    // wd_class:           class of the task the slot runs
+    // wd_moved:           whether the task moved to another slot
+    // fast:               live flag, set while the slot's clock domain runs faster than normal
     assign wd_task = '{wd_class: wd_class_q, moved: wd_moved_q, fast: ctrl_view.wd_fast};
     bingo_hw_manager_wd_adapt #(
         .NumCores(NUM_CORES_PER_CLUSTER), .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
