@@ -2,30 +2,32 @@
 // Solderpad Hardware License, Version 0.51, see LICENSE for details.
 // SPDX-License-Identifier: SHL-0.51
 
-// Placement of new tasks: which physical slot each waiting queue head enters,
-// and in what form.
+// Placement of new tasks: into which physical slot the head of each waiting
+// queue goes, and in which form.
 //
-// Each logical core has a waiting queue; its head, once its dependencies are
-// checked, is offered to the physical cluster chosen for it (offer_valid_i,
-// the top's demux). The slot is the logical one, unless the control plane
-// moved the logical slot's tasks to a substitute (retired or parked, see
-// bingo_hw_manager_core_remap), or level 3 exports them (remote): then the
-// task stays on its proxy slot and is only copied to another chiplet.
-// A dummy-set or CERF-skipped task never executes on a core, so it stays on
-// its logical core and must drain through that core's checkout queue, which
-// orders it after the core's earlier tasks; it is held back until none of
-// those is left in another slot. A fenced logical core (or one with tasks in
-// another slot) is also held while a replay is pending: its older tasks may
-// sit in the slot being replayed and must reach their new core first.
+// Each logical core has a waiting queue. Once its head has passed the dependency
+// check, it is sent to the physical cluster chosen for it. The target slot is
+// the logical slot, unless the control plane has moved the tasks of this logical
+// slot to a substitute (retired or parked, see bingo_hw_manager_core_remap), or
+// level 3 exports them (remote): then the task stays on its proxy slot and is
+// only copied to another chiplet.
+// Dummy set tasks and tasks skipped by CERF do not execute on any core, so they
+// stay on their own logical core. They must be drained from that core's checkout
+// queue, which orders them behind the earlier tasks of that core; as long as one
+// of those earlier tasks is still in another slot, they are held back. A fenced
+// logical core (or one with a task in another slot) is also held back while a
+// replay is pending: its earlier tasks may still be in the slot being replayed
+// and must arrive at the new core first.
 //
-// Per destination slot, one offer is taken per cycle (the lowest logical
-// core), never while a replay MOVE may push into its cluster. The routed task
-// enters the slot's checkout queue and, if it runs on a core, its ready queue
-// (route_o.ready_push). It runs on no core when it is a dummy set, the CERF
-// skips it (waiting_i.skip), it is exported (route_o.remote, once granted) or
-// it is an exit absorbed into a dummy (route_o.exit_absorb): an exit task
-// that does not run on its own logical slot, so that slot's core still sees
-// its own exit.
+// Each target slot accepts only one offer per cycle (the one from the logical
+// core with the lowest index); it accepts none while a replay MOVE may push into
+// its cluster. A routed task enters the checkout queue of that slot; if it is to
+// execute on the core, it also enters its ready queue (route_o.ready_push). The
+// following tasks do not execute on any core: dummy set; tasks skipped by CERF
+// (waiting_i.skip); exported tasks (route_o.remote, after the grant); and exits
+// absorbed into a dummy (route_o.exit_absorb), i.e. exit tasks that do not run
+// on their own logical slot. They are absorbed so that the core on the target
+// slot does not execute someone else's exit and still waits for its own exit.
 module bingo_hw_manager_router #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
