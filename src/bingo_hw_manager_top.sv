@@ -1667,8 +1667,8 @@ module bingo_hw_manager_top #(
     ) i_ctrl (
         .clk_i            ( clk_i                             ),
         .rst_ni           ( rst_ni                            ),
-        .slot_i           ( slot_state                        ),
-        .late_i           ( wd_late                           ),
+        .slot_i           ( slot_state                        ),//cores status,from watchdog
+        .late_i           ( wd_late                           ),//late of cores,from watchdog
         .queue_i          ( ctrl_queue                        ),
         .host_i           ( ctrl_host                         ),
         .type_cfg_i       ( type_cfg                          ),
@@ -1676,7 +1676,7 @@ module bingo_hw_manager_top #(
         .pm_i             ( pm_view                           ),
         .cluster_access_i ( bingo_hw_manager_cluster_access_i ),
         .cerf_fb_done_i   ( cerf_fb_done                      ),
-        .view_o           ( ctrl_view                         ),
+        .view_o           ( ctrl_view                         ),//Per slot: idle, boost and derate for the PM, watchdog tick, risk, ...
         .smt_o            ( smt                               ),
         .smt_update_o     ( smt_update                        ),
         .park_o           ( park                              ),

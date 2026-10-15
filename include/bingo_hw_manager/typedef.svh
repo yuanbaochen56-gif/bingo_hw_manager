@@ -69,7 +69,7 @@
     logic [(NumCores)-1:0][(NumClusters)-1:0][(LoadWidth)-1:0] load;                          \
   } ctrl_queue_t;
 
-// What the host sets per slot for the control plane:
+// What the host(CVA6 core) sets per slot for the control plane:
 //   park_req    park the slot (see bingo_hw_manager_slot_table)
 //   risk_clear  keep the slot's late-beat count at 0 (bingo_hw_manager_risk)
 //   domain      power domain of the slot (>= 32: none, see bingo_hw_manager_pkg PmMaxDomains)

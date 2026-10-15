@@ -53,11 +53,11 @@ module bingo_hw_manager_done_queues #(
     input  addr_t                                base_addr_i,
     input  req_lite_t                            axi_lite_req_i,
     output resp_lite_t                           axi_lite_resp_o,
-    // Level 3: dones and rejects of exported tasks, for their (fenced) proxy slots
+    // Level 3: dones and rejects of exported tasks(across chiplet task), for their (fenced) proxy slots
     input  slot_state_t                          slot_i,
     input  logic                                 remote_done_valid_i,
     output logic                                 remote_done_ready_o,
-    input  remote_done_t                         remote_done_i,
+    input  remote_done_t                         remote_done_i, // reject: 0: done, 1: reject
     output done_remote_t                         remote_o,
     // Per slot: the done pushed this cycle, and the queue head
     output done_t                                done_o,
