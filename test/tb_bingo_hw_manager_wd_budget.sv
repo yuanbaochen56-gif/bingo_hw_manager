@@ -7,7 +7,8 @@
 // thresholds H 200 / C 250 ticks, out of reach of the budgets below. A second
 // watchdog without the budget (ref) sees the same events.
 //   1. EN = 0, random events and estimates: dut == ref every cycle, no late beat.
-//   2. Heartbeats do not restart the elapsed time: fence at the budget.
+//   2. Heartbeats do not restart the elapsed time: fence at the budget; with EN = 0
+//      neither a fence nor a late beat.
 //   3. Idle cycles do not count, the done holds the count, ticks only count.
 //   4. Saturation at 255 (budget beyond the counter: no fence).
 //   5. MOVED_SH widens the budget of a moved task; BFLOOR; no estimate, no budget;
@@ -121,21 +122,23 @@ module tb_bingo_hw_manager_wd_budget;
 
     initial begin
         reset_all();
-        // 1. random events, estimates and every control word but EN
+        // 1. random events, estimates and every control word but EN; estimates and budgets
+        //    mostly short against the executions, so that EN = 1 would fence or flag often
         compare_on = 1;
         for (int i = 0; i < 6000; i++) begin
             for (int s = 0; s < Cores; s++) begin
-                ev.dispatch[s] = ($urandom_range(0, 15) == 0);
-                ev.done[s] = ($urandom_range(0, 15) == 0);
+                ev.dispatch[s] = ($urandom_range(0, 47) == 0);
+                ev.done[s] = ($urandom_range(0, 47) == 0);
                 ev.heartbeat[s] = ($urandom_range(0, 7) == 0);
                 ev.tick[s] = $urandom_range(0, 1);
                 tk.moved[s] = $urandom_range(0, 1);
-                est.valid[s] = $urandom_range(0, 1);
-                est.e_tot[s] = 20'($urandom_range(0, 300));
+                est.valid[s] = $urandom_range(0, 3) != 0;
+                est.e_tot[s] = 20'($urandom_range(0, 9) == 0 ? $urandom_range(0, 300) : $urandom_range(0, 12));
             end
             if ($urandom_range(0, 99) == 0)
-                ctrl = budget(0, $urandom_range(0, 1), $urandom_range(0, 7), $urandom_range(0, 3),
-                              $urandom_range(0, 100));
+                ctrl = budget(0, $urandom_range(0, 1),
+                              $urandom_range(0, 4) == 0 ? $urandom_range(0, 7) : $urandom_range(0, 1),
+                              $urandom_range(0, 3), $urandom_range(0, 4) == 0 ? $urandom_range(0, 100) : 0);
             late_ctrl = 32'($urandom_range(0, 3)) << 7;
             step();
         end
@@ -155,6 +158,21 @@ module tb_bingo_hw_manager_wd_budget;
             if (st.fenced[0]) check($sformatf("fence after %0d ticks, not 20", i), i == 21);
         end
         check("heartbeating task fenced by the budget", st.fenced[0] && !ref_st.fenced[0]);
+        // the same with EN = 0, ACTION 1 and 0: neither a fence nor a late beat
+        for (int action = 1; action >= 0; action--) begin
+            reset_all();
+            ctrl = budget(0, action, 0, 0, 0);
+            set_est(0, 20);
+            ev.tick = '1;
+            dispatch(0);
+            for (int i = 1; i <= 40; i++) begin
+                ev.heartbeat[0] = (i % 5 == 0);
+                step();
+                ev.heartbeat[0] = 0;
+                check($sformatf("EN = 0, ACTION %0d: budget output after %0d ticks", action, i),
+                      fence_req[0] == 0 && late[0] == 0 && !st.fenced[0]);
+            end
+        end
 
         // 3. idle ticks do not count; the done holds; only ticks count
         reset_all();
