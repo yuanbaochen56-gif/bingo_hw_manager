@@ -18,6 +18,10 @@
 //            its tasks (bingo_hw_manager_replay_ctrl)
 //   late     a heartbeat or done at timer_q >= late pulses status_o.late for
 //            one cycle (fault precursor for bingo_hw_manager_risk)
+//   budget   fence_req_i (bingo_hw_manager_wd_budget: the execution ran over its
+//            total-time budget) fences a busy slot when fencing is on. Heartbeats
+//            do not restart that budget, so a heartbeat in the same cycle does not
+//            delay this fence; a done or dispatch in that cycle wins.
 //
 // 3. Threshold selection
 //   HeartbeatTimeoutCycles and ConfirmTimeoutCycles give the fallback defaults;
@@ -47,6 +51,8 @@ module bingo_hw_manager_watchdog #(
     input  logic       rst_ni,
     input  wd_event_t  event_i,   // dispatch, done, heartbeat, waiting, tick of every slot
     input  wd_bound_t  bound_i,   // thresholds (0 or not valid: the parameters)
+    // Fence requests of the total-time budget (bingo_hw_manager_wd_budget); 0: none
+    input  logic [NumCores-1:0][NumClusters-1:0] fence_req_i = '0,
     output wd_status_t status_o
 );
     localparam int unsigned MaxTimeoutCycles =
@@ -127,6 +133,16 @@ module bingo_hw_manager_watchdog #(
                     end else if(event_i.dispatch[c][cl]) begin
                         busy_q[c][cl] <= 1'b1;
                         timer_q[c][cl] <= '0;
+                    end else if ((ConfirmTimeoutCycles != 0) && CoreMask[c][cl] && busy_q[c][cl] &&
+                                 fence_req_i[c][cl]) begin
+                        // Over the total-time budget: before a heartbeat of this cycle
+                        fenced_q[c][cl] <= 1'b1;
+                        busy_q[c][cl] <= 1'b0;
+                        timer_q[c][cl] <= '0;
+`ifndef SYNTHESIS
+                        $display("[BINGO_BUDGET_FENCE] %0t core=%0d cluster=%0d type=%0d class=%0d",
+                                 $time, c, cl, CoreTypeId[c][cl], bound_i.wd_class[c][cl]);
+`endif
                     end else if (event_i.heartbeat[c][cl]) begin
                         timer_q[c][cl] <= '0; // Reset timer on heartbeat
                     end else if ((ConfirmTimeoutCycles != 0) && CoreMask[c][cl] && busy_q[c][cl] &&

@@ -46,7 +46,7 @@ module bingo_hw_manager_evlog_events
     input  park_t                                     park_i,
     // The threshold that would confirm a fence of the slot now (argument of
     // the fence record: kept from the edge the watchdog commits the fence)
-    input  logic [NumCores-1:0][NumClusters-1:0][1:0] fence_reason_i,
+    input  logic [NumCores-1:0][NumClusters-1:0][2:0] fence_reason_i,
     // An exit absorbed into a dummy, and the entry it enters as (checkout queues)
     input  checkout_t                                 checkout_i,
     // CERF fallback of a core type (bingo_hw_manager_cerf_fallback), committed
@@ -79,7 +79,7 @@ module bingo_hw_manager_evlog_events
     // Last value of the level behind each of the first nine groups
     logic [EvlogGroupsBeforeTypes-1:0][NumCores-1:0][NumClusters-1:0] seen_q;
     logic [NumCores-1:0][NumClusters-1:0] rec_seen_q;
-    logic [NumCores-1:0][NumClusters-1:0][1:0] reason_q;
+    logic [NumCores-1:0][NumClusters-1:0][2:0] reason_q;
 
     // The watchdog commits fenced one edge before the existing top print.
     // Keep that edge's reason, without reading or changing its control.
@@ -114,7 +114,7 @@ module bingo_hw_manager_evlog_events
                 events_o[ev(EvgClear, s)] = !suspect_i[c][cl] &&
                     seen_q[EvgClear][c][cl] && !slot_i.fenced[c][cl];
                 events_o[ev(EvgFence, s)] = slot_i.fenced[c][cl] && !seen_q[EvgFence][c][cl];
-                args_o[ev(EvgFence, s)] = {14'b0, reason_q[c][cl]};
+                args_o[ev(EvgFence, s)] = {13'b0, reason_q[c][cl]};
                 events_o[ev(EvgStuck, s)] = slot_i.stuck[c][cl] && !seen_q[EvgStuck][c][cl];
                 events_o[ev(EvgBlocked, s)] = blocked_i[c][cl] && !seen_q[EvgBlocked][c][cl];
                 events_o[ev(EvgRisk, s)] = view_i.risk[c][cl] && !seen_q[EvgRisk][c][cl];

@@ -229,6 +229,10 @@ module bingo_hw_manager_top #(
     // class is learned, the learned bounds start from its estimate. 0: none.
     input  logic                               wd_est_we_i = 1'b0,
     input  logic [31:0]                        wd_est_data_i = '0,
+    // Total-time budget against those estimates (bingo_hw_manager_wd_budget,
+    // BINGO_WD_BUDGET): [0] EN, [1] ACTION (0 late beat, 1 fence), [4:2] SH_B,
+    // [6:5] FRAC_B, [31:12] BFLOOR. 0: off.
+    input  logic [31:0]                        wd_budget_i = '0,
     output device_axi_lite_data_t               bingo_hw_manager_risk_o,
     input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
     input device_axi_lite_data_t                bingo_hw_manager_normal_power_level_i,
@@ -902,6 +906,9 @@ module bingo_hw_manager_top #(
     wd_learned_t wd_learned;
     // The compile-time estimate of each slot's task (bingo_hw_manager_wd_est)
     wd_est_t     wd_est;
+    // The total-time budget of each slot (bingo_hw_manager_wd_budget): a fence
+    // request for the watchdog and a late beat for the fault precursors
+    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_budget_fence, wd_budget_late;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] wd_h_ad, wd_c_ad;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_h_ad_valid, wd_c_ad_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] wd_late_ad;
@@ -1457,17 +1464,18 @@ module bingo_hw_manager_top #(
         .wd_bound_t(wd_bound_t),
         .wd_status_t(wd_status_t)
     ) i_watchdog (
-        .clk_i    ( clk_i     ),
-        .rst_ni   ( rst_ni    ),
-        .event_i  ( wd_event  ),
-        .bound_i  ( wd_bound  ),
-        .status_o ( wd_status )
+        .clk_i       ( clk_i           ),
+        .rst_ni      ( rst_ni          ),
+        .event_i     ( wd_event        ),
+        .bound_i     ( wd_bound        ),
+        .fence_req_i ( wd_budget_fence ),
+        .status_o    ( wd_status       )
     );
     assign core_busy         = wd_status.busy;
     assign core_available    = wd_status.available;
     assign core_dead_suspect = wd_status.dead_suspect;
     assign core_fenced       = wd_status.fenced;
-    assign wd_late           = wd_status.late;              // fault precursor
+    assign wd_late           = wd_status.late | wd_budget_late;  // fault precursor
     assign core_fenced_o = core_fenced;
     assign core_dead_suspect_o = core_dead_suspect;
     assign ready_queue_pending_o = (READY_AND_DONE_QUEUE_INTERFACE_TYPE == 0) ? '0 : ~ready_queue_empty;
@@ -1553,6 +1561,17 @@ module bingo_hw_manager_top #(
         .h_eff_i(wd_bound.h_static), .c_eff_i(wd_bound.c_static),
         .est_i(wd_est),
         .learned_o(wd_learned)
+    );
+    bingo_hw_manager_wd_budget #(
+        .NumCores(NUM_CORES_PER_CLUSTER), .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
+        .CounterWidth(WatchdogCounterWidth), .CoreMask(WatchdogCoreMask),
+        .wd_event_t(wd_event_t), .wd_status_t(wd_status_t), .wd_task_t(wd_task_t),
+        .wd_est_t(wd_est_t)
+    ) i_wd_budget (
+        .clk_i(clk_i), .rst_ni(rst_ni), .ctrl_i(wd_budget_i),
+        .late_ctrl_i(bingo_hw_manager_wd_late_i),
+        .event_i(wd_event), .status_i(wd_status), .task_i(wd_task), .est_i(wd_est),
+        .fence_o(wd_budget_fence), .late_o(wd_budget_late)
     );
 
 `ifndef SYNTHESIS
@@ -2032,15 +2051,17 @@ module bingo_hw_manager_top #(
         logic [Events-1:0][15:0] args;
         evlog_move_t             move;
         // The threshold that would confirm a fence of the slot now, the argument
-        // of its fence record: 3 learned, 1 at risk, 2 type or parameter, 0 none
-        logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][1:0] fence_reason;
+        // of its fence record: 4 the total-time budget, 3 learned, 1 at risk, 2 type
+        // or parameter, 0 none
+        logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][2:0] fence_reason;
         always_comb begin
             for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
-                    fence_reason[c][cl] = wd_bound.adapt_confirm[c][cl] ? 2'd3 :
+                    fence_reason[c][cl] = wd_budget_fence[c][cl] ? 3'd4 : {1'b0,
+                        wd_bound.adapt_confirm[c][cl] ? 2'd3 :
                         (ctrl_view.risk[c][cl] && wd_bound.risk_valid[c][cl] &&
                         bingo_hw_manager_risk_confirm_i != 0) ? 2'd1 :
-                        ((wd_bound.confirm[c][cl] != 0) ? 2'd2 : 2'd0);
+                        ((wd_bound.confirm[c][cl] != 0) ? 2'd2 : 2'd0)};
         end
         bingo_hw_manager_evlog_events #(
             .NumCores        ( NUM_CORES_PER_CLUSTER                            ),
