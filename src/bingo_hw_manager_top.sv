@@ -1422,12 +1422,17 @@ module bingo_hw_manager_top #(
     end
 
     //////////////////////////////////////////////////////////////////////
-    // Watchdog for core heartbeat monitoring
+    // Watchdog, threshold selection, and adaptive learning
     //////////////////////////////////////////////////////////////////////
-    // core_available is kept for observability only; routing no longer uses it
-    // (a healthy core keeps its tasks whether it is busy or polling).
-    assign wd_event = '{dispatch:  ready_queue_pop,          // ready pop: busy, timer cleared
-                        done:      done_q_push,              // done reached the done FIFO: idle
+    // Three submodules monitor core progress in normal-clock ticks:
+    //   i_watchdog   times each busy slot from dispatch or heartbeat to done,
+    //                raising dead_suspect, fenced, and late-beat pulses
+    //                (core_available is kept for observation only)
+    //   i_wd_bounds  selects each slot's suspect, confirm, and late thresholds
+    //                from parameters, per-type CSRs, risk_confirm, and wd_learned
+    //   i_wd_adapt   learns per-(type, class) bounds from completed tasks
+    assign wd_event = '{dispatch:  ready_queue_pop,          
+                        done:      done_q_push,             
                         heartbeat: heartbeat_valid,          // clears the timer (ignored once fenced)
                         waiting:   core_status_waiting_task, // only feeds core_available
                         tick:      ctrl_view.wd_tick};       // slowed down in a slow power domain
@@ -1512,8 +1517,10 @@ module bingo_hw_manager_top #(
                         wd_moved_q[c][cl] <= ready_moved[c][cl];
         end
     end
-    // The task of every slot as the adaptation reads it: class and moved,
-    // latched at dispatch; whether its domain runs faster than normal
+    // Per-slot task info for the watchdog adaptation (wd_adapt):
+    // wd_class:           class of the task the slot runs
+    // wd_moved:           whether the task moved to another slot
+    // fast:               live flag, set while the slot's clock domain runs faster than normal
     assign wd_task = '{wd_class: wd_class_q, moved: wd_moved_q, fast: ctrl_view.wd_fast};
     bingo_hw_manager_wd_adapt #(
         .NumCores(NUM_CORES_PER_CLUSTER), .NumClusters(NUM_CLUSTERS_PER_CHIPLET),

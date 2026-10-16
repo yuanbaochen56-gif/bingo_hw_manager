@@ -2,20 +2,28 @@
 // Solderpad Hardware License, Version 0.51, see LICENSE for details.
 // SPDX-License-Identifier: SHL-0.51
 
-// Heartbeat watchdog of every (core, cluster) slot. A slot is busy from the
-// dispatch of a task to its done; while busy, its timer counts ticks (cycles of
-// the normal clock, bingo_hw_manager_wd_tick) since the dispatch or the last
-// heartbeat. Two thresholds act on the timer:
-//   suspect  the slot is reported dead_suspect (reversible: a heartbeat or done
-//            clears the timer)
-//   confirm  the slot is fenced, for good (sticky until reset): the manager
-//            stops using it and replays its tasks (bingo_hw_manager_replay_ctrl)
-// A heartbeat or done that comes after the late threshold is a late beat, a
-// fault precursor for the risk counter of bingo_hw_manager_ctrl.
-// The parameters give the default thresholds; bound_i may replace them per
-// slot (bingo_hw_manager_wd_bounds: per core type, learned by
-// bingo_hw_manager_wd_adapt, or shorter for an at-risk slot). This module only
-// compares; every choice of threshold is made there.
+// Per-slot heartbeat watchdog.
+//
+// 1. Timer and busy state (priority: fenced > done > dispatch > heartbeat)
+//   A slot becomes busy on event_i.dispatch and idle on event_i.done. While
+//   busy, timer_q counts event_i.tick pulses (normal-clock cycles from
+//   bingo_hw_manager_wd_tick, saturating at all ones) and resets to 0 on
+//   dispatch, heartbeat, or done.
+//
+// 2. Threshold comparisons (for monitored slots, CoreMask = 1)
+//   suspect  timer_q >= suspect raises status_o.dead_suspect (reversible: a
+//            later heartbeat or done resets timer_q; stays set once fenced)
+//   confirm  timer_q >= confirm (with ConfirmTimeoutCycles != 0) latches
+//            fenced_q until reset; the manager stops using the slot and replays
+//            its tasks (bingo_hw_manager_replay_ctrl)
+//   late     a heartbeat or done at timer_q >= late pulses status_o.late for
+//            one cycle (fault precursor for bingo_hw_manager_risk)
+//
+// 3. Threshold selection
+//   HeartbeatTimeoutCycles and ConfirmTimeoutCycles give the fallback defaults;
+//   bingo_hw_manager_wd_bounds selects the active per-slot thresholds in
+//   bound_i (per core type, learned by bingo_hw_manager_wd_adapt, or
+//   risk_confirm for an at-risk slot). This module only compares.
 module bingo_hw_manager_watchdog #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,

@@ -2,43 +2,50 @@
 // Solderpad Hardware License, Version 0.51, see LICENSE for details.
 // SPDX-License-Identifier: SHL-0.51
 
-// Learned watchdog thresholds. For every (core type, task class) the module
-// learns how long a healthy execution runs without progress, and gives every
-// slot thresholds derived from it, which can only be shorter than the slot's
-// static ones (h_eff_i, c_eff_i: those of its core type, or the parameters).
-// Times are ticks of the watchdog timer (bingo_hw_manager_watchdog), so they
-// count cycles of the normal clock.
+// Adaptive watchdog thresholds. For each (core type, task class), this module
+// learns the longest progress interval of healthy executions and derives
+// per-slot thresholds (H, C, Late) in watchdog timer ticks (normal-clock
+// cycles). Learned H and C are capped by the slot's static thresholds
+// (h_eff_i, c_eff_i).
 //
-// Table table_q[type][class], type = CoreTypeId of the slot, class = class of
-// the task it runs (class 0 is never learned and gets no threshold):
-//   maximum  M  the longest progress interval of a learned execution
-//   samples  N  learned executions, saturating at 15
-//   load     L  the highest load during a learned execution (load: monitored,
-//               unfenced, busy slots)
-// An execution is learned in the cycle of its done, with the longest of its
-// progress intervals (from the dispatch or a heartbeat to the next heartbeat
-// or the done); completions in the same cycle are folded in slot order, and a
-// new entry applies from the next cycle. Not learned: a fenced slot, class 0,
-// a type beyond the table, a late execution (below), and with LOCAL_ONLY an
-// execution that ran away from its own slot (replayed, remapped or imported)
-// or at a level faster than normal at any time. Learning does not depend on
-// the enables; only reset clears the table.
+// 1. Per-execution tracking (while a slot is busy)
+//   imax_q       longest interval between dispatch/heartbeat and the next
+//                heartbeat/done
+//   load_max_q   peak load since dispatch (monitored, unfenced, busy slots)
+//   fast_q       the slot ran faster than the normal level during this task
 //
-// An entry is valid for a slot when M >= 1, N >= WARMUP and, with LOAD_GUARD,
-// the highest load since the slot's dispatch is at most L. With a valid entry,
-// and M' = M << MOVED_SH while the slot runs a task away from its own slot
-// (else M' = M):
-//   ctrl_i EN:       H = min(max(M' << SH_H, FLOOR), h_eff)
-//                    C = min(max(M' << SH_C, 2 H), c_eff)
-//   late_ctrl_i EN:  Late = max((M' + M'/4 * FRAC) << SH_L, LFLOOR), used only
-//                    below the slot's suspect threshold (H if valid, else h_eff)
-// An execution whose longest interval reaches Late is late and is not learned,
-// so a step slowdown does not raise M; a gradual one is still learned.
+// 2. History table: table_q[type][class] (type = CoreTypeId, class 0 unused)
+//   maximum (M)  longest progress interval across learned executions
+//   samples (N)  learned execution count, saturating at 15
+//   load    (L)  highest peak load seen across learned executions
 //
-// Simulation only: +bingo_adapt_log prints [BINGO_ADAPT_LEARN] when M grows or
-// N reaches WARMUP, and with LOCAL_ONLY [BINGO_ADAPT_SKIP] for an execution it
-// keeps out; +bingo_adapt_trace prints [TRACE] A7_EXEC per dispatch and
-// progress, and with both and the late enable [TRACE] P9_TABLE per table change.
+// 3. Learning (at event_i.done, folded in slot order, active from next cycle)
+//   Table updates run regardless of the EN bits and reset only on rst_ni.
+//   An execution is skipped when:
+//   - the slot is unmonitored (CoreMask = 0), fenced, class 0, or out of range
+//   - late_ctrl_i.EN is set and its longest interval reached Late (stops a step
+//     slowdown from raising M, while gradual drift is still learned)
+//   - late_ctrl_i.LOCAL_ONLY is set and the task ran away from its home slot
+//     (moved: replayed, remapped, or imported) or faster than normal (fast_q)
+//
+// 4. Threshold derivation (per slot, combinational)
+//   Entry valid: monitored slot, in-range type and class != 0, M >= 1,
+//                N >= WARMUP, and (!LOAD_GUARD || peak_load <= L).
+//   Base interval: M' = task_i.moved ? (M << MOVED_SH) : M.
+//   When Entry valid and ctrl_i.EN:
+//     H    = min(max(M' << SH_H, FLOOR), h_eff_i)       (h_valid: H >= 1)
+//     C    = min(max(M' << SH_C, 2 * H), c_eff_i)       (c_valid: h_valid && C > H)
+//   When Entry valid and late_ctrl_i.EN:
+//     Late = max((M' + (M' >> 2) * FRAC) << SH_L, LFLOOR)
+//                                                       (late_valid: Late < suspect)
+//     where suspect = h_valid ? H : h_eff_i.
+//
+// 5. Simulation logging
+//   +bingo_adapt_log    [BINGO_ADAPT_LEARN] when M grows or N reaches WARMUP;
+//                       [BINGO_ADAPT_SKIP] when LOCAL_ONLY rejects moved/fast
+//   +bingo_adapt_trace  [TRACE] A7_EXEC on dispatch/progress; with
+//                       +bingo_adapt_log and late_ctrl_i.EN, [TRACE] P9_TABLE
+//                       on any table change
 module bingo_hw_manager_wd_adapt #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
@@ -61,33 +68,31 @@ module bingo_hw_manager_wd_adapt #(
 ) (
     input logic clk_i,
     input logic rst_ni,
-    // BINGO_WD_ADAPT (reset 0: no learned H and C):
-    //   [0] EN  [1] LOAD_GUARD  [4:2] SH_H  [7:5] SH_C
-    //   [11:8] WARMUP (0 counts as 1)  [31:12] FLOOR (ticks)
+    // BINGO_WD_ADAPT (reset 0: learned H and C disabled):
+    //   [0]     EN          [1]    LOAD_GUARD  [4:2]  SH_H    [7:5] SH_C
+    //   [11:8]  WARMUP (0 -> 1)                [31:12] FLOOR (ticks)
     input logic [31:0] ctrl_i,
-    // BINGO_WD_LATE (reset 0: no Late, learning as without it):
-    //   [0] EN (Late, and late executions are not learned)  [3:1] SH_L
-    //   [6] LOCAL_ONLY  [8:7] MOVED_SH  [10:9] FRAC  [31:12] LFLOOR (ticks)
+    // BINGO_WD_LATE (reset 0: Late disabled, late executions still learned):
+    //   [0]     EN          [3:1]  SH_L        [6]    LOCAL_ONLY
+    //   [8:7]   MOVED_SH    [10:9] FRAC        [31:12] LFLOOR (ticks)
     input logic [31:0] late_ctrl_i,
-    // What the watchdog times: dispatch, an execution starts (a done in the same
-    // cycle wins, as in the watchdog); done, it ends and is learned in this cycle
+    // Watchdog events: dispatch starts an execution (done in the same cycle
+    // wins); done ends and learns it in this cycle
     input wd_event_t   event_i,
-    // What the watchdog reports: progress (a done, or a heartbeat outside a
-    // dispatch cycle, of a monitored, unfenced, busy slot), interval (ticks since
-    // the dispatch or the last heartbeat), busy, fenced
+    // Watchdog status: progress (done or non-dispatch heartbeat of a monitored,
+    // unfenced, busy slot), interval (ticks since dispatch/heartbeat), busy, fenced
     input wd_status_t  status_i,
-    // The task of every slot: class, moved, fast
+    // Per-slot task state: wd_class, moved, fast
     input wd_task_t    task_i,
-    // Static suspect and confirm thresholds of the slot (its core type's, or
-    // the parameters): the caps of H and C; h_eff also bounds Late while H is
-    // not valid
+    // Static suspect and confirm thresholds per slot (core type's or parameter):
+    // upper bounds of H and C; h_eff_i also bounds Late when !h_valid
     input logic [NumCores-1:0][NumClusters-1:0][31:0] h_eff_i,
     input logic [NumCores-1:0][NumClusters-1:0][31:0] c_eff_i,
-    // H (h_valid: EN, a valid entry, H >= 1), C (c_valid: H valid and C > H; the
-    // top uses C only if it is shorter than the confirm threshold it would use
-    // otherwise), Late (late_valid: late EN, a valid entry, below the suspect
-    // threshold; a heartbeat or done at or after it is a late beat, the fault
-    // precursor of the risk counter, bingo_hw_manager_risk)
+    // Per-slot learned thresholds and valid bits:
+    //   h, h_valid        suspect threshold (replaces h_eff_i when h_valid)
+    //   c, c_valid        confirm threshold (used by wd_bounds when c_valid and
+    //                     shorter than the active risk/static confirm threshold)
+    //   late, late_valid  late-beat threshold for bingo_hw_manager_risk
     output wd_learned_t learned_o
 );
     logic [NumCores-1:0][NumClusters-1:0][31:0] h_ad, c_ad, late_ad;
