@@ -29,13 +29,19 @@
 //     (moved: replayed, remapped, or imported) or faster than normal (fast_q)
 //
 // 4. Threshold derivation (per slot, combinational)
-//   Entry valid: monitored slot, in-range type and class != 0, M >= 1,
-//                N >= WARMUP, and (!LOAD_GUARD || peak_load <= L).
+//   Learned:     monitored slot, in-range type and class != 0, M >= 1 and
+//                N >= WARMUP.
+//   Entry valid: learned and (!LOAD_GUARD || peak_load <= L).
+//   Estimate:    not learned yet (warm-up) and the compile-time estimate of the
+//                slot's (type, class) is valid (est_i, bingo_hw_manager_wd_est):
+//                its E_int takes the place of M. LOAD_GUARD does not apply (an
+//                estimate has no load record); a learned entry always wins, so
+//                the estimate never replaces a learned bound.
 //   Base interval: M' = task_i.moved ? (M << MOVED_SH) : M.
-//   When Entry valid and ctrl_i.EN:
+//   When (Entry valid or Estimate) and ctrl_i.EN:
 //     H    = min(max(M' << SH_H, FLOOR), h_eff_i)       (h_valid: H >= 1)
 //     C    = min(max(M' << SH_C, 2 * H), c_eff_i)       (c_valid: h_valid && C > H)
-//   When Entry valid and late_ctrl_i.EN:
+//   When (Entry valid or Estimate) and late_ctrl_i.EN:
 //     Late = max((M' + (M' >> 2) * FRAC) << SH_L, LFLOOR)
 //                                                       (late_valid: Late < suspect)
 //     where suspect = h_valid ? H : h_eff_i.
@@ -64,7 +70,8 @@ module bingo_hw_manager_wd_adapt #(
     parameter type         wd_event_t = logic,
     parameter type         wd_status_t = logic,
     parameter type         wd_task_t = logic,
-    parameter type         wd_learned_t = logic
+    parameter type         wd_learned_t = logic,
+    parameter type         wd_est_t = logic
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -88,6 +95,9 @@ module bingo_hw_manager_wd_adapt #(
     // upper bounds of H and C; h_eff_i also bounds Late when !h_valid
     input logic [NumCores-1:0][NumClusters-1:0][31:0] h_eff_i,
     input logic [NumCores-1:0][NumClusters-1:0][31:0] c_eff_i,
+    // Compile-time estimate of the slot's task (bingo_hw_manager_wd_est): its E_int
+    // stands in for M during warm-up (all entries 0: as without it)
+    input wd_est_t     est_i,
     // Per-slot learned thresholds and valid bits:
     //   h, h_valid        suspect threshold (replaces h_eff_i when h_valid)
     //   c, c_valid        confirm threshold (used by wd_bounds when c_valid and
@@ -197,7 +207,12 @@ module bingo_hw_manager_wd_adapt #(
                     load_now > load_max_q[c][cl] ? load_now : load_max_q[c][cl];
                 automatic logic [63:0] h, confirm;
                 automatic logic [LateMathWidth-1:0] late_bound;
+                // One declaration per variable: with several names in one automatic
+                // declaration, the Conformal LEC compare of this block did not finish
                 automatic logic entry_valid;
+                automatic logic learned;
+                automatic logic est_use;
+                automatic logic [CounterWidth-1:0] est_max;
                 // BINGO_WD_LATE[8:7]: an execution away from its own slot uses
                 // the learned maximum shifted left by this many more bits
                 automatic logic [1:0] moved_shift = task_i.moved[c][cl] ? late_ctrl_i[8:7] : 2'd0;
@@ -208,11 +223,21 @@ module bingo_hw_manager_wd_adapt #(
                     table_q[type_id][class_id].maximum >= 1 &&
                     table_q[type_id][class_id].samples >= warmup &&
                     (!ctrl_i[1] || peak <= table_q[type_id][class_id].load);
-                if (ctrl_i[0] && entry_valid) begin
-                    h = (64'(table_q[type_id][class_id].maximum) << moved_shift) << ctrl_i[4:2];
+                // Warm-up: the compile-time estimate until the class is learned
+                learned = CoreMask[c][cl] && type_id < Types && class_id != 0 &&
+                    table_q[type_id][class_id].maximum >= 1 &&
+                    table_q[type_id][class_id].samples >= warmup;
+                est_use = !learned && est_i.valid[c][cl];
+                // (an estimate beyond the timer saturates: the caps h_eff_i / c_eff_i apply)
+                est_max = (32'(est_i.e_int[c][cl]) >> CounterWidth) != 0 ?
+                          {CounterWidth{1'b1}} : CounterWidth'(est_i.e_int[c][cl]);
+                if (ctrl_i[0] && (entry_valid || est_use)) begin
+                    h = (64'(est_use ? est_max : table_q[type_id][class_id].maximum) << moved_shift) <<
+                        ctrl_i[4:2];
                     if (h < ctrl_i[31:12]) h = 64'(ctrl_i[31:12]);
                     if (h > h_eff_i[c][cl]) h = 64'(h_eff_i[c][cl]);
-                    confirm = (64'(table_q[type_id][class_id].maximum) << moved_shift) << ctrl_i[7:5];
+                    confirm = (64'(est_use ? est_max : table_q[type_id][class_id].maximum) <<
+                               moved_shift) << ctrl_i[7:5];
                     if (confirm < (h << 1)) confirm = h << 1;
                     if (confirm > c_eff_i[c][cl]) confirm = 64'(c_eff_i[c][cl]);
                     h_ad[c][cl] = 32'(h);
@@ -222,10 +247,11 @@ module bingo_hw_manager_wd_adapt #(
                 end
                 // Prediction shares history/guards, not the detection EN bit.
                 // Compare wide before narrowing; equality with suspect is invalid.
-                if (late_ctrl_i[0] && entry_valid) begin
+                if (late_ctrl_i[0] && (entry_valid || est_use)) begin
                     // BINGO_WD_LATE[10:9] FRAC: (1 + FRAC / 4) times the maximum,
                     // then SH_L
-                    late_bound = LateMathWidth'(table_q[type_id][class_id].maximum) << moved_shift;
+                    late_bound = LateMathWidth'(est_use ? est_max : table_q[type_id][class_id].maximum) <<
+                                 moved_shift;
                     late_bound = (late_bound + (late_bound >> 2) * late_ctrl_i[10:9]) <<
                                  late_ctrl_i[3:1];
                     if (late_bound < late_ctrl_i[31:12])

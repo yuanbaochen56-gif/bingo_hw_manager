@@ -15,7 +15,7 @@ logic [2:0][0:0] hv, cv, lv;
 `BINGO_HW_MANAGER_TYPEDEF_WD_EVENT_T(adapt_event_t, 3, 1)
 `BINGO_HW_MANAGER_TYPEDEF_WD_STATUS_T(adapt_status_t, 3, 1, 32)
 `BINGO_HW_MANAGER_TYPEDEF_WD_TASK_T(adapt_task_t, 3, 1, 3)
-`BINGO_HW_MANAGER_TYPEDEF_WD_LEARNED_T(adapt_learned_t, 3, 1)
+`BINGO_HW_MANAGER_TYPEDEF_WD_LEARNED_T(adapt_learned_t, 3, 1) `BINGO_HW_MANAGER_TYPEDEF_WD_EST_T(adapt_est_t, 3, 1)
 adapt_learned_t adapt_learned;
 assign h_ad = adapt_learned.h;
 assign c_ad = adapt_learned.c;
@@ -27,14 +27,14 @@ bingo_hw_manager_wd_adapt #(
     .NumCores(3), .NumClusters(1), .CounterWidth(32),
     .CoreTypeId({4'd4, 4'd1, 4'd1}),
     .wd_event_t(adapt_event_t), .wd_status_t(adapt_status_t),
-    .wd_task_t(adapt_task_t), .wd_learned_t(adapt_learned_t)
+    .wd_task_t(adapt_task_t), .wd_learned_t(adapt_learned_t), .wd_est_t(adapt_est_t)
 ) dut (
     .clk_i(clk), .rst_ni(rst), .ctrl_i(ctrl), .late_ctrl_i(late_ctrl),
     .event_i('{dispatch: dispatch, done: done, default: '0}),
     .status_i('{progress: progress, interval: interval, busy: busy,
                fenced: fenced, default: '0}),
     .task_i('{wd_class: classes, moved: moved, fast: fast}),
-    .h_eff_i(h_eff), .c_eff_i(c_eff), .learned_o(adapt_learned)
+    .h_eff_i(h_eff), .c_eff_i(c_eff), .est_i('0), .learned_o(adapt_learned)
 );
 
 task automatic step();

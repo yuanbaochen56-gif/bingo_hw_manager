@@ -224,6 +224,11 @@ module bingo_hw_manager_top #(
     input  logic [2**CoreTypeIdWidth-1:0][31:0] wd_type_c_i = '0,
     input  logic [31:0]                        wd_adapt_i = '0,
     input  logic [31:0]                        bingo_hw_manager_wd_late_i = '0,
+    // Compile-time task-time estimates (bingo_hw_manager_wd_est, BINGO_WD_EST): a
+    // write pulse stores data [9:0] for core type [19:16], class [14:12]. Until a
+    // class is learned, the learned bounds start from its estimate. 0: none.
+    input  logic                               wd_est_we_i = 1'b0,
+    input  logic [31:0]                        wd_est_data_i = '0,
     output device_axi_lite_data_t               bingo_hw_manager_risk_o,
     input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
     input device_axi_lite_data_t                bingo_hw_manager_normal_power_level_i,
@@ -880,6 +885,7 @@ module bingo_hw_manager_top #(
     `BINGO_HW_MANAGER_TYPEDEF_WD_EVENT_T(wd_event_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
     `BINGO_HW_MANAGER_TYPEDEF_WD_TASK_T(wd_task_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET, WdClassWidth)
     `BINGO_HW_MANAGER_TYPEDEF_WD_LEARNED_T(wd_learned_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
+    `BINGO_HW_MANAGER_TYPEDEF_WD_EST_T(wd_est_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET)
     `BINGO_HW_MANAGER_TYPEDEF_WD_BOUND_T(wd_bound_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET,
                                          WatchdogCounterWidth, WdClassWidth)
     `BINGO_HW_MANAGER_TYPEDEF_WD_STATUS_T(wd_status_t, NUM_CORES_PER_CLUSTER, NUM_CLUSTERS_PER_CHIPLET,
@@ -894,6 +900,8 @@ module bingo_hw_manager_top #(
     // The bounds learned by bingo_hw_manager_wd_adapt
     wd_task_t    wd_task;
     wd_learned_t wd_learned;
+    // The compile-time estimate of each slot's task (bingo_hw_manager_wd_est)
+    wd_est_t     wd_est;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] wd_h_ad, wd_c_ad;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_h_ad_valid, wd_c_ad_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] wd_late_ad;
@@ -1522,18 +1530,28 @@ module bingo_hw_manager_top #(
     // wd_moved:           whether the task moved to another slot
     // fast:               live flag, set while the slot's clock domain runs faster than normal
     assign wd_task = '{wd_class: wd_class_q, moved: wd_moved_q, fast: ctrl_view.wd_fast};
+    bingo_hw_manager_wd_est #(
+        .NumCores(NUM_CORES_PER_CLUSTER), .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
+        .WdAdaptTypeBits(WdAdaptTypeBits), .WdClassWidth(WdClassWidth),
+        .CoreTypeIdWidth(CoreTypeIdWidth), .CoreMask(WatchdogCoreMask), .CoreTypeId(CoreTypeId),
+        .wd_est_t(wd_est_t)
+    ) i_wd_est (
+        .clk_i(clk_i), .rst_ni(rst_ni), .we_i(wd_est_we_i), .data_i(wd_est_data_i),
+        .class_i(wd_class_q), .est_o(wd_est)
+    );
     bingo_hw_manager_wd_adapt #(
         .NumCores(NUM_CORES_PER_CLUSTER), .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
         .CounterWidth(WatchdogCounterWidth), .WdAdaptTypeBits(WdAdaptTypeBits),
         .WdClassWidth(WdClassWidth), .CoreTypeIdWidth(CoreTypeIdWidth),
         .CoreMask(WatchdogCoreMask), .CoreTypeId(CoreTypeId),
         .wd_event_t(wd_event_t), .wd_status_t(wd_status_t),
-        .wd_task_t(wd_task_t), .wd_learned_t(wd_learned_t)
+        .wd_task_t(wd_task_t), .wd_learned_t(wd_learned_t), .wd_est_t(wd_est_t)
     ) i_wd_adapt (
         .clk_i(clk_i), .rst_ni(rst_ni), .ctrl_i(wd_adapt_i),
         .late_ctrl_i(bingo_hw_manager_wd_late_i),
         .event_i(wd_event), .status_i(wd_status), .task_i(wd_task),
         .h_eff_i(wd_bound.h_static), .c_eff_i(wd_bound.c_static),
+        .est_i(wd_est),
         .learned_o(wd_learned)
     );
 

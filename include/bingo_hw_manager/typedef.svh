@@ -574,6 +574,18 @@
     logic [(NumCores)-1:0][(NumClusters)-1:0]       late_valid;                    \
   } wd_learned_t;
 
+// The compile-time estimate of the task each slot runs (bingo_hw_manager_wd_est), in
+// timer ticks:
+//   valid  the table has an estimate for the slot's (core type, class)
+//   e_tot  the task's time from dispatch to done
+//   e_int  its longest interval without progress, e_tot >> S
+`define BINGO_HW_MANAGER_TYPEDEF_WD_EST_T(wd_est_t, NumCores, NumClusters) \
+  typedef struct packed {                                                  \
+    logic [(NumCores)-1:0][(NumClusters)-1:0]       valid;                 \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][19:0] e_tot;                 \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][19:0] e_int;                 \
+  } wd_est_t;
+
 // Watchdog thresholds (bingo_hw_manager_wd_bounds), in timer ticks:
 //   late_global             host late-beat threshold, shared by all slots (0: off)
 //   risk_confirm            host confirm threshold for a slot at risk
