@@ -673,7 +673,8 @@ module bingo_hw_manager_top #(
     bingo_hw_manager_ready_task_desc_full_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_data_in;
     logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_push;
     logic                                   [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_full;
-    // ready queue data_o/empty_o/pop_i signals are only for CSR interface
+    // ready queue data_o/empty_o/pop_i signals are only for CSR interface.
+    // HeMAiA occamy_quad_ctrl.sv.tpl reads ready_queue_pop and ready_queue_data_out by name (QUAD_CTRL_BINGO_*): a rename must be made there too
     logic                                    [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_pop;
     bingo_hw_manager_ready_task_desc_full_t  [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_data_out;
     logic                                    [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] ready_queue_empty;
@@ -731,6 +732,7 @@ module bingo_hw_manager_top #(
     bingo_hw_manager_done_info_full_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_info;
     logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_pop;
     logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_empty;
+    // HeMAiA occamy_quad_ctrl.sv.tpl reads done_q_data_in and done_q_push by name (QUAD_CTRL_BINGO_*): a rename must be made there too
     bingo_hw_manager_done_info_full_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_data_in;
     logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_push;
     ///////////////////////////////////////
@@ -818,7 +820,7 @@ module bingo_hw_manager_top #(
     // its view of every slot (PM idle, boost, derate, watchdog tick, risk, ...)
     slot_state_t                                                    slot_state;
     ctrl_view_t                                                     ctrl_view;
-    // Late beats (bingo_hw_manager_watchdog)
+    // Late beats (bingo_hw_manager_watchdog). HeMAiA occamy_quad_ctrl.sv.tpl reads it by name (QUAD_CTRL_BINGO_*): a rename must be made there too
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_late;
     logic [31:0][7:0]                                               pm_domain_level;
     // Configuration of the PM from the host (the levels are the low bytes of the
@@ -864,7 +866,8 @@ module bingo_hw_manager_top #(
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect;
-    // Confirmed dead (sticky): the slot's ready reads, dones and heartbeats are ignored
+    // Confirmed dead (sticky): the slot's ready reads, dones and heartbeats are ignored.
+    // HeMAiA occamy_quad_ctrl.sv.tpl reads it by name (QUAD_CTRL_BINGO_*): a rename must be made there too
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_fenced;
     // Fenced and all its outstanding tasks moved to other cores (sticky)
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_retired;
@@ -1641,6 +1644,7 @@ module bingo_hw_manager_top #(
     logic                                                           smt_update;
     // Parking. The request mask is bit (core + cluster * NUM_CORES).
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] park_req;
+    // HeMAiA occamy_quad_ctrl.sv.tpl reads risk_clear by name (QUAD_CTRL_BINGO_*): a rename must be made there too
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] risk_clear;
     park_t                                                          park;
     // Logical slots with tasks in another core's checkout queue

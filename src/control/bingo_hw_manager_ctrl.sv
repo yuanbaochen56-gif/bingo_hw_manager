@@ -104,7 +104,8 @@ module bingo_hw_manager_ctrl
     // Fault precursors: late-beat count per slot, halved every epoch
     // ------------------------------------------------------------------
     // risk_cnt_q, risk_q and risk_epoch_end keep the names that the HeMAiA quad
-    // controller and the testbenches read here (i_ctrl.risk_cnt_q, ...).
+    // controller and the testbenches read here (i_ctrl.risk_cnt_q, ...): a
+    // rename must be made in occamy_quad_ctrl.sv.tpl (QUAD_CTRL_BINGO_*) too.
     logic [NumCores-1:0][NumClusters-1:0][3:0] risk_cnt_q;
     logic [NumCores-1:0][NumClusters-1:0]      risk_q;
     logic                                      risk_epoch_end;
