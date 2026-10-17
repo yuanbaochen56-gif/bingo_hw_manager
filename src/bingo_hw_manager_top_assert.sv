@@ -137,14 +137,14 @@ module bingo_hw_manager_top_assert #(
                                    waiting_i.desc[psrc].task_id, psrc, pscl);
                         end
                     end
-                    // A1: a fenced core neither takes a task nor retires one
+                    // A fenced core neither takes a task nor retires one (was A1)
                     if (slot_i.fenced[c][cl] && (ready_i.pop[c][cl] ||
                                                (done_i.push[c][cl] && !remote_i.push[c][cl]))) begin
                         $error("[BINGO_ASSERT] fenced core %0d cluster %0d: ready pop %0b / done push %0b",
                                c, cl, ready_i.pop[c][cl], done_i.push[c][cl]);
                     end
-                    // A2: a fenced core receives no executing task; before it is
-                    // retired or stuck it receives nothing at all
+                    // A fenced core receives no executing task; before it is
+                    // retired or stuck it receives nothing at all (was A2)
                     if (slot_i.fenced[c][cl] && ready_i.push[c][cl]) begin
                         $error("[BINGO_ASSERT] ready push into fenced core %0d cluster %0d", c, cl);
                     end
@@ -157,12 +157,12 @@ module bingo_hw_manager_top_assert #(
                                checkout_i.push_desc[c][cl].task_id, checkout_i.push_desc[c][cl].task_type,
                                c, cl, slot_i.retired[c][cl]);
                     end
-                    // A3: outstanding counter never wraps
+                    // The outstanding counter never wraps (was A3)
                     if (outstanding_i[c][cl] > NumCores * CheckoutQueueDepth) begin
                         $error("[BINGO_ASSERT] remap_outstanding[%0d][%0d] out of range: %0d",
                                c, cl, outstanding_i[c][cl]);
                     end
-                    // A3b: the per-slot split adds up to the logical core's count
+                    // The per-slot split adds up to the logical core's count (was A3b)
                     if (ForeignStuckDrain) begin
                         automatic int unsigned moved_sum = 0;
                         for (int unsigned p = 0; p < NumCores; p++)
@@ -173,15 +173,15 @@ module bingo_hw_manager_top_assert #(
                                    c, cl, moved_sum, outstanding_i[c][cl]);
                         end
                     end
-                    // A4: a slot being moved is not retired through its done queue
+                    // A slot being moved is not retired through its done queue (was A4)
                     if (step_i.move[c][cl] && done_pop_i[c][cl]) begin
                         $error("[BINGO_ASSERT] done pop on core %0d cluster %0d during replay MOVE", c, cl);
                     end
-                    // A5: a replay push never collides with a routed push
+                    // A replay push never collides with a routed push (was A5)
                     if (replay_op_i.push[c][cl] && route_i.fire[c][cl]) begin
                         $error("[BINGO_ASSERT] replay and routed push into core %0d cluster %0d", c, cl);
                     end
-                    // A7: an executing task retires together with its own done
+                    // An executing task retires together with its own done (was A7)
                     // (a stuck slot's head that the CERF skips does not execute)
                     if (checkout_i.pop[c][cl] && !replay_op_i.pop[c][cl] &&
                         (checkout_i.head[c][cl].task_type != TaskDummy) && !stuck_head_skip_i[c][cl] &&
@@ -196,14 +196,14 @@ module bingo_hw_manager_top_assert #(
                         $error("[BINGO_ASSERT] core %0d cluster %0d popped done of task %0d without retiring a task",
                                c, cl, done_i.head[c][cl].task_id);
                     end
-                    // A8: a stuck slot keeps its entries, except heads that run on
+                    // A stuck slot keeps its entries (was A8), except heads that run on
                     // no core (dummy-set or CERF-skipped) of its own logical core
                     if (slot_i.stuck[c][cl] && checkout_i.pop[c][cl] &&
                         !(stuck_drain_i[c][cl] && !checkout_i.head_exec[c][cl])) begin
                         $error("[BINGO_ASSERT] stuck core %0d cluster %0d popped task %0d",
                                c, cl, checkout_i.head[c][cl].task_id);
                     end
-                    // A6: fenced / retired / stuck are sticky
+                    // Fenced / retired / stuck are sticky (was A6)
                     if ((slot_log_i.fenced[c][cl] && !slot_i.fenced[c][cl]) ||
                         (slot_log_i.retired[c][cl] && !slot_i.retired[c][cl]) ||
                         (slot_log_i.stuck[c][cl] && !slot_i.stuck[c][cl])) begin

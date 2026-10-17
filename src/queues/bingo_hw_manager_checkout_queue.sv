@@ -181,7 +181,7 @@ module bingo_hw_manager_checkout_queue
     end
     assign head_imported = RemoteEn && head_tag.imported;
 
-    // DARTS CERF: if task is conditionally skipped, mark as dummy (TaskDummy)
+    // CERF: if task is conditionally skipped, mark as dummy (TaskDummy)
     // so checkout logic fires dep_set without done_queue match
     always_comb begin
         if (replay_i.push) begin

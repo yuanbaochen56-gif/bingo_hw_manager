@@ -264,7 +264,7 @@ module bingo_hw_manager_router #(
                 (!route_export[core][cluster] || export_grant_i[core][cluster]);
             // Drop from ready queue if:
             // 1. Dummy set task (task_type==01, dep_set_en==1)
-            // 2. DARTS CERF: conditionally skipped task — skip execution but propagate deps
+            // 2. CERF: conditionally skipped task — skip execution but propagate deps
             // 3. an absorbed exit, or an export
             assign ready_inp_valid = route_valid[core][cluster] && !checkout_i.full[core][cluster];
             assign ready_drop =

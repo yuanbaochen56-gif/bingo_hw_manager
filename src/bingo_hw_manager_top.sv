@@ -251,7 +251,7 @@ module bingo_hw_manager_top #(
     // AXI Lite Master Interface
     output host_axi_lite_req_t                  pm_axi_lite_req_o,
     input  host_axi_lite_resp_t                 pm_axi_lite_resp_i,
-    // DARTS: CERF (Conditional Execution Register File) interface
+    // Conditional execution: CERF (Conditional Execution Register File) interface
     input  logic                                cerf_write_en_i,
     input  logic [31:0]                         cerf_write_data_i,
     output logic [31:0]                         cerf_state_o,
@@ -281,7 +281,7 @@ module bingo_hw_manager_top #(
     output logic [63:0]                        evlog_head_o,
     output logic [31:0]                        evlog_count_o,
     output logic [15:0]                        evlog_dropped_o,
-    // DARTS: Load Monitor output (CSR readable)
+    // Load monitor output (upstream, observation only; CSR readable)
     output logic [10:0]                         load_total_pending_o,
     // Power-domain counters: per counted domain, bingo_hw_manager_pkg PmcIdle .. PmcActive
     output logic [PmCountPorts-1:0][bingo_hw_manager_pkg::PmCounters-1:0][31:0] pm_count_o,
@@ -364,7 +364,7 @@ module bingo_hw_manager_top #(
 );
     import bingo_hw_manager_pkg::*;
     // --------Type definitions and signal declarations--------------------//
-    // Task type (two bits, DARTS gating included): values and meaning in bingo_hw_manager_pkg
+    // Task type (two bits, gating included): values and meaning in bingo_hw_manager_pkg
     typedef logic [1:0]                                  bingo_hw_manager_task_type_t;
     // Task ID
     typedef logic [TaskIdWidth-1:0                     ] bingo_hw_manager_task_id_t;
@@ -394,7 +394,7 @@ module bingo_hw_manager_top #(
         logic                                        dep_set_en;
     } bingo_hw_manager_dep_set_info_t;
 
-    // Task info struct (DARTS: includes conditional execution fields)
+    // Task info struct (includes the conditional execution fields)
     typedef struct packed{
         logic [WdClassWidth-1:0]                     wd_class;
         logic                                        is_exit;
@@ -405,7 +405,7 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
         bingo_hw_manager_task_id_t                   task_id;
         bingo_hw_manager_task_type_t                 task_type;
-        // DARTS Tier 1: Conditional Execution
+        // Conditional execution (CERF)
         logic                                        cond_exec_en;
         logic [4:0]                                  cond_exec_group_id;
         logic                                        cond_exec_invert;
@@ -455,7 +455,7 @@ module bingo_hw_manager_top #(
         bingo_hw_manager_assigned_chiplet_id_t       assigned_chiplet_id;
         bingo_hw_manager_task_id_t                   task_id;
         bingo_hw_manager_task_type_t                 task_type;
-        // DARTS Tier 1: Conditional Execution
+        // Conditional execution (CERF)
         logic                                        cond_exec_en;
         logic [4:0]                                  cond_exec_group_id;
         logic                                        cond_exec_invert;
@@ -479,6 +479,9 @@ module bingo_hw_manager_top #(
 
     if (!WdClassAvail) begin : gen_wd_class
 `ifndef SYNTHESIS
+        // A7: the watchdog bounds learned per core type and task class
+        // (bingo_hw_manager_wd_adapt), which then learn per type only. The
+        // text stays: simulation transcripts of such configurations show it.
         initial $info("A7 class unavailable: %0d reserved bits", ReservedBitsForTaskDesc);
 `endif
     end
@@ -712,12 +715,12 @@ module bingo_hw_manager_top #(
     bingo_hw_manager_done_info_full_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_data_in;
     logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_push;
     ///////////////////////////////////////
-    // DARTS Tier 1: CERF state and per-core conditional skip signals
+    // Conditional execution (CERF): state and per-core conditional skip signals
     logic [31:0] cerf_state;
     assign cerf_state_o = cerf_state;  // read-back for SW
     logic [NUM_CORES_PER_CLUSTER-1:0] cond_exec_skip;
 
-    // DARTS CERF: per-core conditional skip evaluation.
+    // CERF: per-core conditional skip evaluation.
     // Only valid when there IS a task being processed (queue not empty).
     // When cond_exec_en==0 (default), this is always 0 regardless of CERF state.
     for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin: gen_cerf_skip
@@ -2343,7 +2346,7 @@ module bingo_hw_manager_top #(
 `endif
 
     //////////////////////////////////////////////////////////////////////
-    // DARTS Tier 3: Load Monitor
+    // Load monitor (upstream, observation only)
     //////////////////////////////////////////////////////////////////////
     bingo_hw_manager_load_monitor #(
         .NumCores   (NUM_CORES_PER_CLUSTER),
@@ -2360,7 +2363,7 @@ module bingo_hw_manager_top #(
     );
 
     //////////////////////////////////////////////////////////////////////
-    // DARTS Tier 1: Conditional Execution Register File (CERF)
+    // Conditional execution: Conditional Execution Register File (CERF)
     //////////////////////////////////////////////////////////////////////
 
     bingo_hw_manager_cond_exec_controller #(

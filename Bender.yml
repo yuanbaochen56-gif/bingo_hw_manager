@@ -33,8 +33,8 @@ sources:
   - src/monitor/bingo_hw_manager_evlog.sv                  # Observation-only control event FIFO
   - src/monitor/bingo_hw_manager_evlog_events.sv           # Event pulses and move records of the control event log
   # Level 1
-  - src/frontend/bingo_hw_manager_cond_exec_controller.sv  # DARTS: CERF
-  - src/monitor/bingo_hw_manager_load_monitor.sv           # DARTS: Load Monitor
+  - src/frontend/bingo_hw_manager_cond_exec_controller.sv  # Conditional execution (CERF)
+  - src/monitor/bingo_hw_manager_load_monitor.sv           # Load monitor (observation only)
   - src/watchdog/bingo_hw_manager_wd_bounds.sv             # watchdog thresholds of every slot (parameter, type, learned, risk)
   - src/watchdog/bingo_hw_manager_watchdog.sv              # core state monitoring and dead core detection
   - src/watchdog/bingo_hw_manager_wd_est.sv                # compile-time task-time estimates per type/class
