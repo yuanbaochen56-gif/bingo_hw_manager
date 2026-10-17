@@ -10,9 +10,9 @@
 //      lowest live cluster, as without a spare (the spare is dead).
 //   TB_4CL_SUB_CASE 2  spare = cluster 3; task 21 hangs on cl2 -> cl3. Then
 //      the host makes cluster 1 the spare: the table keeps cl3 for the fenced
-//      cl2 (task 23 still goes there) and re-chooses the live entries. Task 2
-//      hangs on the cl0 DM core (third fault, flat core 1): it goes to the new
-//      spare cl1, and so does task 3, pushed after that.
+//      cl2 (task 23 goes there); a live slot's entry is unread until the slot
+//      is fenced or parked, and written then. Task 2 hangs on the cl0 DM core
+//      (third fault, flat core 1): it goes to the new spare cl1, as does task 3.
 //   TB_4CL_SUB_CASE 3  partitions {0, 1} and {2, 3} (TB_SUB_PART 32'h2211), no
 //      spare. Task 21 hangs on cl2: 21 and 22 go to cl3, the other cluster of
 //      its partition, not to cl0. Task 22 hangs there too: no live DM core is
