@@ -5,8 +5,11 @@
 // Placement of new tasks: into which physical slot the head of each waiting
 // queue goes, and in which form.
 //
-// Each logical core has a waiting queue. Once its head has passed the dependency
-// check, it is sent to the physical cluster chosen for it. The target slot is
+// Each core index has a waiting queue, shared by the clusters (here called a
+// logical core; see bingo_hw_manager/typedef.svh). Once its head has passed
+// the dependency check, it is sent to the physical cluster chosen for it,
+// which serves the logical slot (core index, the head's assigned_cluster_id).
+// The target slot is
 // the logical slot, unless the control plane has moved the tasks of this logical
 // slot to a substitute (retired or parked, see bingo_hw_manager_core_remap), or
 // level 3 exports them (remote): then the task stays on its proxy slot and is
@@ -28,6 +31,14 @@
 // absorbed into a dummy (route_o.exit_absorb), i.e. exit tasks that do not run
 // on their own logical slot. They are absorbed so that the core on the target
 // slot does not execute someone else's exit and still waits for its own exit.
+//
+// Head-of-line blocking: a waiting queue holds the tasks of one core index of
+// every cluster in push order, and only its head is routed. A head that may not
+// be placed (its logical slot is in HOLD or UNPARK, or it is held as above)
+// also holds every task behind it, including those of the same core index in
+// other clusters: e.g. while (c, 0) is in HOLD, a later task of (c, 1) waits
+// too. The compiler and the scenes keep such tasks out of the way (no task
+// that must run behind a protected slot's task in the same waiting queue).
 module bingo_hw_manager_router #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,

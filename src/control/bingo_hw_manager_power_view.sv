@@ -2,8 +2,11 @@
 // Solderpad Hardware License, Version 0.51, see LICENSE for details.
 // SPDX-License-Identifier: SHL-0.51
 
-// Power and load view of the slots for the control plane (bingo_hw_manager_ctrl),
-// fault-aware: a fenced slot is dead, so it no longer keeps its power domain at
+// Power and load view of the slots for the control plane (bingo_hw_manager_ctrl).
+// The idle view of a slot for the PM, in this order: raw idle (polling for a
+// task, or fenced) -> idle entry delay -> external access wake and recovery
+// hold, either of which keeps the slot awake -> pm_idle_o.
+// Fault-aware: a fenced slot is dead, so it no longer keeps its power domain at
 // the normal level (pm_idle_o: polling for a task, or fenced) and no longer
 // counts as load (load_clear_o). A slot that is only dead_suspect may still be
 // working and keeps both.

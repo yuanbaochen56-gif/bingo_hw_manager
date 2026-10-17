@@ -20,6 +20,14 @@
 //     per slot) and from other chiplets (remote_set_i, the head of the chiplet
 //     done mailbox): one per cycle into the matrix of its cluster and the
 //     column of its core
+// Since a waiting queue is shared by the clusters, a head that waits for its
+// dependencies (or that the placement does not take) also holds the tasks of
+// the same core index of the other clusters behind it (head-of-line blocking,
+// see bingo_hw_manager_router).
+// Index order: the ports and the queues are [core] or [core][cluster], as in
+// the top; the dependency matrix nets (dep_check_*, dep_set_*) are
+// [cluster][core], one matrix per cluster (connect_dep_check_for_dep_matrix and
+// connect_dep_set_for_dep_matrix swap the indices).
 module bingo_hw_manager_dep_unit #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
@@ -104,7 +112,7 @@ module bingo_hw_manager_dep_unit #(
     logic                             [NumCores-1:0] demux_ready_and_checkout_queue_inp_ready;
 
     //////////////////////
-    // Dep matrix signals
+    // Dep matrix signals, indexed [cluster][core]
     //////////////////////
     logic      [NumClusters-1:0][NumCores-1:0] dep_check_valid;
     logic      [NumClusters-1:0][NumCores-1:0] dep_check_result;

@@ -13,6 +13,21 @@
 // top: one struct carries several per-slot signals that travel together, and
 // a module reads a whole vector (slot_i.fenced) or one slot
 // (slot_i.fenced[c][cl]) as before.
+//
+// Three words for the slots:
+//   logical slot   the (core, cluster) a task's descriptor names
+//                  (assigned_core_id, assigned_cluster_id). The slot mapping
+//                  table and the parking state are indexed by it.
+//   physical slot  the (core, cluster) that holds and runs the task: the
+//                  logical slot, or its substitute once that one is fenced or
+//                  parked. The checkout, ready and done queues are indexed by it.
+//   core index     the core within its cluster. The waiting queues are one per
+//                  core index, shared by the clusters: the tasks of (c, 0),
+//                  (c, 1), ... wait in one queue, in the order they were pushed
+//                  (bingo_hw_manager_dep_unit). The placement calls a waiting
+//                  queue a "logical core" (waiting_t, select_t,
+//                  bingo_hw_manager_router); its head belongs to the logical
+//                  slot (that core index, the head's assigned_cluster_id).
 
 `ifndef BINGO_HW_MANAGER_TYPEDEF_SVH_
 `define BINGO_HW_MANAGER_TYPEDEF_SVH_
@@ -127,7 +142,7 @@
     logic [4:0]                 set;                                   \
   } cerf_fb_t;
 
-// Heads of the waiting queues, one per logical core, once checked:
+// Heads of the waiting queues, one per core index (shared by the clusters), once checked:
 //   desc   the head (task_desc_t: bingo_hw_manager_task_desc_t of the top)
 //   empty  the waiting queue is empty
 //   skip   the CERF skips the head (it runs on no core)
@@ -183,7 +198,8 @@
   } ready_t;
 
 // Placement of the waiting queue heads (bingo_hw_manager_router), per logical
-// core: the head may go (valid) to physical slot (core, cluster)
+// core (waiting queue, i.e. core index): the head may go (valid) to physical
+// slot (core, cluster)
 `define BINGO_HW_MANAGER_TYPEDEF_SELECT_T(select_t, NumCores, CoreIdWidth, ClusterIdWidth) \
   typedef struct packed {                                                                  \
     logic [(NumCores)-1:0]                       valid;                                    \
