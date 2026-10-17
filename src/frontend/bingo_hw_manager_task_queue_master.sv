@@ -8,7 +8,7 @@
 // - Yunhao Deng  <yunhao.deng@kuleuven.be>
 
 
-// This module issues the ar/r requests to read the task decriptor from the task_list_base_addr_i with num_task_i
+// This module issues the ar/r requests to read the task descriptor from the task_list_base_addr_i with num_task_i
 //
 // A read answered with an error (SLVERR or DECERR, e.g. a wrong list base) is
 // not a descriptor: it is dropped, the fetch stops there as at the last task

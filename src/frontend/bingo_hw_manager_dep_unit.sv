@@ -141,7 +141,7 @@ module bingo_hw_manager_dep_unit #(
     ///////////////////////////////////////
     // Stream Demux Set Dep Matrix Cluster ID
     ///////////////////////////////////////
-    // Possbile to move the demux before the arbiter to support more parallelism
+    // Possible to move the demux before the arbiter to support more parallelism
     logic                          stream_demux_set_dep_matrix_cluster_id_inp_valid;
     logic                          stream_demux_set_dep_matrix_cluster_id_inp_ready;
     logic  [ClusterIdWidth-1:0]    stream_demux_set_dep_matrix_cluster_id_oup_sel;

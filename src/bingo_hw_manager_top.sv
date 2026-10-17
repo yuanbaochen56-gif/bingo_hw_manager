@@ -427,7 +427,7 @@ module bingo_hw_manager_top #(
     localparam bit WdClassAvail = (ReservedBitsForTaskDesc >= WdClassWidth);
     if (TaskDescWidth>HostAxiLiteDataWidth) begin : gen_task_desc_width_check
         initial begin
-        $error("Task Decriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", TaskDescWidth, HostAxiLiteDataWidth);
+        $error("Task Descriptor width (%0d) exceeds Host AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", TaskDescWidth, HostAxiLiteDataWidth);
         $finish;
         end
     end
@@ -579,7 +579,7 @@ module bingo_hw_manager_top #(
     localparam int unsigned ReservedBitsForDoneInfo = DeviceAxiLiteDataWidth - DoneInfoWidth;
     if (DoneInfoWidth>DeviceAxiLiteDataWidth) begin : gen_done_info_width_check
         initial begin
-        $error("Task Decriptor width (%0d) exceeds Device AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", DoneInfoWidth, DeviceAxiLiteDataWidth);
+        $error("Done info width (%0d) exceeds Device AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", DoneInfoWidth, DeviceAxiLiteDataWidth);
         $finish;
         end
     end
@@ -599,7 +599,7 @@ module bingo_hw_manager_top #(
     localparam int unsigned ReservedBitsForReadyTaskDesc = DeviceAxiLiteDataWidth - ReadyTaskDescWidth;
     if (ReadyTaskDescWidth>DeviceAxiLiteDataWidth) begin : gen_ready_task_desc_width_check
         initial begin
-        $error("Ready Task Decriptor width (%0d) exceeds Device AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", ReadyTaskDescWidth, DeviceAxiLiteDataWidth);
+        $error("Ready Task Descriptor width (%0d) exceeds Device AXI Lite Data Width (%0d)! Please adjust the parameters accordingly.", ReadyTaskDescWidth, DeviceAxiLiteDataWidth);
         $finish;
         end
     end
