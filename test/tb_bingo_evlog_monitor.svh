@@ -41,15 +41,15 @@ always @(posedge clk_i) begin
             if (i_dut.cerf_fb_done && i_dut.cerf_fb.req)
                 expect_event(10, 8'(i_dut.cerf_fb.core_type),
                     {6'b0, i_dut.cerf_fb.set, i_dut.cerf_fb.clear});
-            if (i_dut.replay_move_fire && !i_dut.replay_bounce) begin
+            if (i_dut.replay_step.fire && !i_dut.replay_step.bounce) begin
                 automatic logic [7:0] code = i_dut.replay_data.task_type == 1 ? 13 : 4;
                 expect_event(code, {4'(i_dut.replay_src_cluster), 4'(i_dut.replay_src_core)},
                     {(i_dut.replay_rotate ? 4'hf :
-                      4'(i_dut.replay_dst_core + i_dut.replay_dst_cluster * NUM_CORES_PER_CLUSTER)),
+                      4'(i_dut.replay_step.dst_core + i_dut.replay_step.dst_cluster * NUM_CORES_PER_CLUSTER)),
                      12'(i_dut.replay_data.task_id)});
                 if (code == 4) exec_moves++; else noexec_moves++;
             end
-            if (i_dut.replay_bounce) begin
+            if (i_dut.replay_step.bounce) begin
                 expect_event(14, {4'(i_dut.replay_src_cluster), 4'(i_dut.replay_src_core)},
                     {4'b0, 12'(i_dut.replay_data.task_id)});
                 bounces++;

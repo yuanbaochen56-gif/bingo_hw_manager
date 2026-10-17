@@ -55,7 +55,7 @@ initial begin : csr_heartbeat_addr_test
     end
     csr_done(0, 0, 0, 1);
     repeat (2) @(posedge clk_i);
-    if (gen_dut[0].i_dut.core_busy[0][0] !== 1'b0 ||
+    if (gen_dut[0].i_dut.wd_status.busy[0][0] !== 1'b0 ||
         gen_dut[0].i_dut.core_dead_suspect[0][0] !== 1'b0) begin
         $fatal(1, "done (0x5ff) should clear busy and dead_suspect");
     end
@@ -64,7 +64,7 @@ initial begin : csr_heartbeat_addr_test
     task_queue_master[0].write(task_queue_base[0], '0, hb_core2_task, '1, resp);
     csr_read(0, 0, 2, CSR_READY, task_id);
     repeat (100) @(posedge clk_i);
-    if (gen_dut[0].i_dut.core_busy[2][0] !== 1'b1) begin
+    if (gen_dut[0].i_dut.wd_status.busy[2][0] !== 1'b1) begin
         $fatal(1, "core 2 should be tracked as busy");
     end
     if (gen_dut[0].i_dut.core_dead_suspect[2][0] !== 1'b0) begin

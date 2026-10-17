@@ -60,7 +60,7 @@ task automatic run_task(input int task_id, input bit boosted);
     csr_done(0, 0, 0, task_id);
     repeat (5) @(posedge clk_i);
     release gen_dut[0].i_dut.i_ctrl.pm_i.domain_level;
-    if (gen_dut[0].i_dut.core_busy[0][0]) $fatal(1, "[ADAPT_FAST] core 0 still busy");
+    if (gen_dut[0].i_dut.wd_status.busy[0][0]) $fatal(1, "[ADAPT_FAST] core 0 still busy");
 endtask
 
 initial begin

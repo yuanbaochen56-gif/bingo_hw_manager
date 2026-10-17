@@ -52,13 +52,13 @@ int unsigned xt_moves = 0;
 int unsigned xt_remaps = 0;
 always @(posedge clk_i) begin
     if (rst_ni) begin
-        if (gen_dut[0].i_dut.replay_move_fire) begin
+        if (gen_dut[0].i_dut.replay_step.fire) begin
             automatic int lcl = gen_dut[0].i_dut.replay_data.assigned_cluster_id;
             if ((gen_dut[0].i_dut.replay_data.assigned_core_id != 0) ||
-                (gen_dut[0].i_dut.replay_dst_core != 1) || (gen_dut[0].i_dut.replay_dst_cluster != 1 - lcl)) begin
+                (gen_dut[0].i_dut.replay_step.dst_core != 1) || (gen_dut[0].i_dut.replay_step.dst_cluster != 1 - lcl)) begin
                 $error("[XCL_TWO_FAULTS] task %0d (logical core %0d cluster %0d) replayed to core %0d cluster %0d",
                        gen_dut[0].i_dut.replay_data.task_id, gen_dut[0].i_dut.replay_data.assigned_core_id, lcl,
-                       gen_dut[0].i_dut.replay_dst_core, gen_dut[0].i_dut.replay_dst_cluster);
+                       gen_dut[0].i_dut.replay_step.dst_core, gen_dut[0].i_dut.replay_step.dst_cluster);
             end
             xt_moves++;
         end

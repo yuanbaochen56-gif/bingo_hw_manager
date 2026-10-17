@@ -1323,7 +1323,7 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_counters
     end
     always @(posedge clk_i) begin
         if (rst_ni) begin
-            if (gen_dut[gi].i_dut.replay_move_fire) replay_move_count[gi]++;
+            if (gen_dut[gi].i_dut.replay_step.fire) replay_move_count[gi]++;
             if (gen_dut[gi].i_dut.replay_stuck) replay_stuck_seen[gi] = 1'b1;
             if (|gen_dut[gi].i_dut.core_dead_suspect) dead_suspect_seen[gi] = 1'b1;
             for (int p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
@@ -1372,12 +1372,12 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_sva
     a_retired_stuck:  assert property ((retired & stuck) == '0);
     // A MOVE step goes from a fenced, unretired slot to a live other slot
     // (level 3: or rotates the source's head)
-    a_move_src: assert property (gen_dut[gi].i_dut.replay_move_fire |->
+    a_move_src: assert property (gen_dut[gi].i_dut.replay_step.fire |->
         fenced[gen_dut[gi].i_dut.replay_src_core][gen_dut[gi].i_dut.replay_src_cluster] &&
         !retired[gen_dut[gi].i_dut.replay_src_core][gen_dut[gi].i_dut.replay_src_cluster]);
-    a_move_dst: assert property ((gen_dut[gi].i_dut.replay_move_fire && !gen_dut[gi].i_dut.replay_rotate &&
-                                  !gen_dut[gi].i_dut.replay_bounce) |->
-        !fenced[gen_dut[gi].i_dut.replay_dst_core][gen_dut[gi].i_dut.replay_dst_cluster]);
+    a_move_dst: assert property ((gen_dut[gi].i_dut.replay_step.fire && !gen_dut[gi].i_dut.replay_rotate &&
+                                  !gen_dut[gi].i_dut.replay_step.bounce) |->
+        !fenced[gen_dut[gi].i_dut.replay_step.dst_core][gen_dut[gi].i_dut.replay_step.dst_cluster]);
     // A held (moved / partly moved) slot retires nothing. A stuck or rejected
     // slot only retires a head that runs on no core (a dummy-set, a task
     // skipped at dispatch, or one the CERF skips now), of its own logical core,
@@ -1449,9 +1449,9 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_sva
     // Level 3: an exported entry never gets a ready push; an imported one
     // never enters a fenced slot
     a_rotate_self: assert property (gen_dut[gi].i_dut.replay_rotate |->
-        ((gen_dut[gi].i_dut.replay_src_core == gen_dut[gi].i_dut.replay_dst_core) &&
-         (gen_dut[gi].i_dut.replay_src_cluster == gen_dut[gi].i_dut.replay_dst_cluster) &&
-         !gen_dut[gi].i_dut.replay_push_ready_q));
+        ((gen_dut[gi].i_dut.replay_src_core == gen_dut[gi].i_dut.replay_step.dst_core) &&
+         (gen_dut[gi].i_dut.replay_src_cluster == gen_dut[gi].i_dut.replay_step.dst_cluster) &&
+         !gen_dut[gi].i_dut.replay_step.push_ready));
     a_import_live: assert property ((fenced & gen_dut[gi].i_dut.imported.push) == '0);
 
     c_fence:       cover property ($rose(|fenced));
@@ -1460,23 +1460,23 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_replay_sva
     // Level 3: only an imported head is bounced (rejected back), and nothing
     // is pushed for it; a rejected proxy slot retires nothing more, except the
     // heads that run on no core (stuck_skip_ok, see a_stuck_skip_only)
-    a_bounce_imported: assert property (gen_dut[gi].i_dut.replay_bounce |->
-        (gen_dut[gi].i_dut.replay_move_fire &&
+    a_bounce_imported: assert property (gen_dut[gi].i_dut.replay_step.bounce |->
+        (gen_dut[gi].i_dut.replay_step.fire &&
          gen_dut[gi].i_dut.checkout_head_imported[gen_dut[gi].i_dut.replay_src_core][gen_dut[gi].i_dut.replay_src_cluster] &&
          (gen_dut[gi].i_dut.replay_push == '0)));
     a_rejected_no_retire: assert property (
         (gen_dut[gi].i_dut.remote_rejected_q & ~stuck_skip_ok & gen_dut[gi].i_dut.checkout_retire_valid) == '0);
     a_rejected_fenced: assert property ((gen_dut[gi].i_dut.remote_rejected_q & ~fenced) == '0);
-    c_bounce:        cover property (gen_dut[gi].i_dut.replay_bounce);
+    c_bounce:        cover property (gen_dut[gi].i_dut.replay_step.bounce);
     c_import_reject: cover property (gen_dut[gi].i_dut.imported.reject);
     c_reject_in:     cover property ($rose(|gen_dut[gi].i_dut.remote_rejected_q));
     c_retire:      cover property ($rose(|retired));
     c_stuck:       cover property ($rose(|stuck));
-    c_cross_move:  cover property (gen_dut[gi].i_dut.replay_move_fire &&
-        (gen_dut[gi].i_dut.replay_src_cluster != gen_dut[gi].i_dut.replay_dst_cluster));
+    c_cross_move:  cover property (gen_dut[gi].i_dut.replay_step.fire &&
+        (gen_dut[gi].i_dut.replay_src_cluster != gen_dut[gi].i_dut.replay_step.dst_cluster));
     c_move_abort:  cover property ((gen_dut[gi].i_dut.i_replay_ctrl.state_q == 2) &&
                                    (gen_dut[gi].i_dut.i_replay_ctrl.state_d == 0) &&
-                                   (|(hold & ~gen_dut[gi].i_dut.replay_move)));
+                                   (|(hold & ~gen_dut[gi].i_dut.replay_step.move)));
 end
 
 // ---------------------------------------------------------------------------
@@ -1587,7 +1587,7 @@ for (genvar gi = 0; gi < NUM_CHIPLET; gi++) begin : gen_fenced_export
     assign replay_stuck_export[gi]    = gen_dut[gi].i_dut.replay_stuck;
     assign import_fire_export[gi]     = gen_dut[gi].i_dut.imported.fire;
     assign import_task_export[gi]     = gen_dut[gi].i_dut.imported.desc.task_id;
-    assign replay_bounce_export[gi]   = gen_dut[gi].i_dut.replay_bounce;
+    assign replay_bounce_export[gi]   = gen_dut[gi].i_dut.replay_step.bounce;
 end
 
 // Wait until (chip, cluster, core) is retired: fenced and its outstanding tasks replayed.

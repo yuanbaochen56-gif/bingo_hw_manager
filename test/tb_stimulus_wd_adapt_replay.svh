@@ -8,7 +8,7 @@ task automatic wait_drained(input int core);
     fork : drain_or_timeout
         begin
             wait (gen_dut[0].i_dut.checkout_queue_empty[core][0] &&
-                  !gen_dut[0].i_dut.core_busy[core][0]);
+                  !gen_dut[0].i_dut.wd_status.busy[core][0]);
         end
         begin
             repeat (500) @(posedge clk_i);

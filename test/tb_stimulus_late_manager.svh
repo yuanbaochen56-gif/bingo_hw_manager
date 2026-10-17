@@ -34,7 +34,7 @@ endtask
 task automatic late_drain(input int core = 0);
     fork : drain_timeout
         wait (gen_dut[0].i_dut.checkout_queue_empty[core][0] &&
-              !gen_dut[0].i_dut.core_busy[core][0]);
+              !gen_dut[0].i_dut.wd_status.busy[core][0]);
         begin
             repeat (500) @(posedge clk_i);
             $fatal(1, "[P9_TB] did not drain");
@@ -74,7 +74,7 @@ initial begin
         $fatal(1, "[P9_TB] invalid healthy training fixture");
     wd_late[0] = (80 << 12) | (1 << 1) | 1;
     #1;
-    if (!gen_dut[0].i_dut.wd_late_ad_valid[0][0] ||
+    if (!gen_dut[0].i_dut.wd_learned.late_valid[0][0] ||
         gen_dut[0].i_dut.wd_bound.late[0][0] != 80)
         $fatal(1, "[P9_TB] learned late floor not selected");
 
@@ -94,7 +94,7 @@ initial begin
             $fatal(1, "[P9_TB] smaller static threshold not selected");
         late_beat(2, 50, 1);
         risk_late[0] = 180;
-        bound = gen_dut[0].i_dut.wd_late_ad[0][0];
+        bound = gen_dut[0].i_dut.wd_learned.late[0][0];
         #1;
         if (gen_dut[0].i_dut.wd_bound.late[0][0] != bound || bound >= 180)
             $fatal(1, "[P9_TB] smaller adaptive threshold not selected");
@@ -135,7 +135,7 @@ initial begin
         late_drain(1);
         repeat (500) @(posedge clk_i);
         if (gen_dut[0].i_dut.core_fenced[0][0] ||
-            gen_dut[0].i_dut.core_busy[0][0] || late_count != count_before)
+            gen_dut[0].i_dut.wd_status.busy[0][0] || late_count != count_before)
             $fatal(1, "[P9_TB] parked victim dispatched/fenced or emitted late");
         $display("Predictive late risk tests passed");
     end

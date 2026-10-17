@@ -44,7 +44,7 @@ end
 int unsigned cp_order [$];
 bit          cp_abort_seen = 1'b0;
 always @(posedge clk_i) begin
-    if (rst_ni && gen_dut[0].i_dut.replay_move_fire && (gen_dut[0].i_dut.replay_dst_core == 2)) begin
+    if (rst_ni && gen_dut[0].i_dut.replay_step.fire && (gen_dut[0].i_dut.replay_step.dst_core == 2)) begin
         cp_order.push_back(gen_dut[0].i_dut.replay_data.task_id);
     end
     // MOVE of core 0 left while core 0 still holds entries

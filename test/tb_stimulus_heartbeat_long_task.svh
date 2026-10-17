@@ -22,7 +22,7 @@ initial begin : long_task_heartbeat_test
     csr_read(0, 0, 0, CSR_READY, task_id_data);
 
     repeat (2) @(posedge clk_i);
-    if (gen_dut[0].i_dut.core_busy[0][0] !== 1'b1) begin
+    if (gen_dut[0].i_dut.wd_status.busy[0][0] !== 1'b1) begin
         $fatal(1, "core 0 should be busy after dispatch");
     end
 
@@ -52,7 +52,7 @@ initial begin : long_task_heartbeat_test
 
     repeat (2) @(posedge clk_i);
 
-    if (gen_dut[0].i_dut.core_busy[0][0] !== 1'b0) begin
+    if (gen_dut[0].i_dut.wd_status.busy[0][0] !== 1'b0) begin
         $fatal(1, "core 0 busy should clear after done");
     end
 

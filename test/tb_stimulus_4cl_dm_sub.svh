@@ -184,19 +184,19 @@ int          task_cluster [32];
 initial for (int i = 0; i < 32; i++) task_cluster[i] = -1;
 always @(posedge clk_i) begin
     if (rst_ni) begin
-        if (gen_dut[0].i_dut.replay_move_fire) begin
+        if (gen_dut[0].i_dut.replay_step.fire) begin
             automatic int lcl  = gen_dut[0].i_dut.replay_data.assigned_cluster_id;
             automatic int want = dm_where(lcl);
             if ((gen_dut[0].i_dut.replay_data.assigned_core_id != DM) ||
-                (gen_dut[0].i_dut.replay_dst_core != DM) || (gen_dut[0].i_dut.replay_dst_cluster != want)) begin
+                (gen_dut[0].i_dut.replay_step.dst_core != DM) || (gen_dut[0].i_dut.replay_step.dst_cluster != want)) begin
                 $error("[4CL_SUB] task %0d (logical core %0d cluster %0d) replayed to core %0d cluster %0d, expected cluster %0d",
                        gen_dut[0].i_dut.replay_data.task_id, gen_dut[0].i_dut.replay_data.assigned_core_id, lcl,
-                       gen_dut[0].i_dut.replay_dst_core, gen_dut[0].i_dut.replay_dst_cluster, want);
+                       gen_dut[0].i_dut.replay_step.dst_core, gen_dut[0].i_dut.replay_step.dst_cluster, want);
             end
             $display("[4CL_SUB] %0t move task %0d of cluster %0d to cluster %0d", $time,
-                     gen_dut[0].i_dut.replay_data.task_id, lcl, gen_dut[0].i_dut.replay_dst_cluster);
-            dm_moves_to[gen_dut[0].i_dut.replay_dst_cluster]++;
-            task_cluster[gen_dut[0].i_dut.replay_data.task_id] = gen_dut[0].i_dut.replay_dst_cluster;
+                     gen_dut[0].i_dut.replay_data.task_id, lcl, gen_dut[0].i_dut.replay_step.dst_cluster);
+            dm_moves_to[gen_dut[0].i_dut.replay_step.dst_cluster]++;
+            task_cluster[gen_dut[0].i_dut.replay_data.task_id] = gen_dut[0].i_dut.replay_step.dst_cluster;
         end
         for (int p = 0; p < NUM_CORES_PER_CLUSTER; p++) begin
             for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin

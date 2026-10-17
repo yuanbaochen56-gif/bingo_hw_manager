@@ -22,7 +22,7 @@ task automatic wait_drained(input int core);
     fork : drain_or_timeout
         begin
             wait (gen_dut[0].i_dut.checkout_queue_empty[core][0] &&
-                  !gen_dut[0].i_dut.core_busy[core][0]);
+                  !gen_dut[0].i_dut.wd_status.busy[core][0]);
         end
         begin
             repeat (500) @(posedge clk_i);
@@ -84,10 +84,10 @@ initial begin
     c = moved_off ? 4 * m : 32 * m;
     if (h > 200) h = 200;
     if (c > 600) c = 600;
-    if (gen_dut[0].i_dut.wd_h_ad[1][0] != h || gen_dut[0].i_dut.wd_c_ad[1][0] != c ||
-        !gen_dut[0].i_dut.wd_h_ad_valid[1][0] || !gen_dut[0].i_dut.wd_c_ad_valid[1][0])
+    if (gen_dut[0].i_dut.wd_learned.h[1][0] != h || gen_dut[0].i_dut.wd_learned.c[1][0] != c ||
+        !gen_dut[0].i_dut.wd_learned.h_valid[1][0] || !gen_dut[0].i_dut.wd_learned.c_valid[1][0])
         $fatal(1, "[ADAPT_MOVED] replayed task: H_ad/C_ad %0d/%0d, expected %0d/%0d (M %0d)",
-               gen_dut[0].i_dut.wd_h_ad[1][0], gen_dut[0].i_dut.wd_c_ad[1][0], h, c, m);
+               gen_dut[0].i_dut.wd_learned.h[1][0], gen_dut[0].i_dut.wd_learned.c[1][0], h, c, m);
     csr_write(0, 0, 1, CSR_HEARTBEAT, device_axi_lite_data_t'(1));
     csr_done(0, 0, 1, 3);
     wait_drained(1);
@@ -108,8 +108,8 @@ initial begin
     task_queue_master[0].write(task_queue_base[0], '0, descriptor, '1, resp);
     csr_read(0, 0, 1, CSR_READY, got);
     expect_moved(1, 1'b0, 5, got);
-    if (gen_dut[0].i_dut.wd_h_ad[1][0] != ((2 * m > 200) ? 200 : 2 * m))
-        $fatal(1, "[ADAPT_MOVED] own task on core 1: H_ad %0d", gen_dut[0].i_dut.wd_h_ad[1][0]);
+    if (gen_dut[0].i_dut.wd_learned.h[1][0] != ((2 * m > 200) ? 200 : 2 * m))
+        $fatal(1, "[ADAPT_MOVED] own task on core 1: H_ad %0d", gen_dut[0].i_dut.wd_learned.h[1][0]);
     csr_done(0, 0, 1, 5);
     wait_drained(1);
     learned += 1;

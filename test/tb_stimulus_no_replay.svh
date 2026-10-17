@@ -17,7 +17,7 @@ bingo_hw_manager_task_desc_full_t nr_first, nr_second, nr_join;
 always @(posedge clk_i) begin
     if (rst_ni) begin
         if (gen_dut[0].i_dut.export_push) nr_exports++;
-        if (gen_dut[0].i_dut.replay_move_fire) begin
+        if (gen_dut[0].i_dut.replay_step.fire) begin
             nr_replayed[gen_dut[0].i_dut.replay_data.task_id] = 1'b1;
             nr_replay_count[gen_dut[0].i_dut.replay_data.task_id]++;
         end

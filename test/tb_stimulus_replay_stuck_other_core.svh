@@ -66,8 +66,8 @@ end
 
 // Everything that leaves core 1 goes to core 2 (same type), never to core 0 or 3
 always @(posedge clk_i) begin
-    if (rst_ni && gen_dut[0].i_dut.replay_move_fire && (gen_dut[0].i_dut.replay_dst_core != 2)) begin
+    if (rst_ni && gen_dut[0].i_dut.replay_step.fire && (gen_dut[0].i_dut.replay_step.dst_core != 2)) begin
         $error("[STUCK_OTHER] task %0d replayed to core %0d",
-               gen_dut[0].i_dut.replay_data.task_id, gen_dut[0].i_dut.replay_dst_core);
+               gen_dut[0].i_dut.replay_data.task_id, gen_dut[0].i_dut.replay_step.dst_core);
     end
 end

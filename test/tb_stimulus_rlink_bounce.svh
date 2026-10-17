@@ -33,8 +33,8 @@ always @(posedge clk_i) begin
         for (int g = 0; g < 2; g++) begin
             if (import_fire_export[g]) bt_imports[g].push_back(import_task_export[g]);
         end
-        if (gen_dut[1].i_dut.replay_bounce) bt_bounces++;
-        if (gen_dut[0].i_dut.replay_bounce) $error("[RLINK_BOUNCE] chiplet 0 bounced an entry");
+        if (gen_dut[1].i_dut.replay_step.bounce) bt_bounces++;
+        if (gen_dut[0].i_dut.replay_step.bounce) $error("[RLINK_BOUNCE] chiplet 0 bounced an entry");
     end
 end
 

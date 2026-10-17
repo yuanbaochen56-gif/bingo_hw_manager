@@ -50,7 +50,7 @@ initial begin : remap_dead_suspect_test
     // Wait for core 0 to pick up task 1.
     fork : wait_task1
         begin
-            wait (gen_dut[0].i_dut.core_busy[0][0] === 1'b1);
+            wait (gen_dut[0].i_dut.wd_status.busy[0][0] === 1'b1);
         end
         begin
             repeat (300) @(posedge clk_i);

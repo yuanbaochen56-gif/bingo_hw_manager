@@ -41,9 +41,9 @@ end
 
 // Destinations of the second migration (off core 1)
 always @(posedge clk_i) begin
-    if (rst_ni && gen_dut[0].i_dut.replay_move_fire && (gen_dut[0].i_dut.replay_src_core == 1)) begin
+    if (rst_ni && gen_dut[0].i_dut.replay_step.fire && (gen_dut[0].i_dut.replay_src_core == 1)) begin
         automatic int logical = gen_dut[0].i_dut.replay_data.assigned_core_id;
-        automatic int dst     = gen_dut[0].i_dut.replay_dst_core;
+        automatic int dst     = gen_dut[0].i_dut.replay_step.dst_core;
         if (dst != 3) begin
             $error("[CHAIN] task %0d of logical core %0d moved to core %0d",
                    gen_dut[0].i_dut.replay_data.task_id, logical, dst);

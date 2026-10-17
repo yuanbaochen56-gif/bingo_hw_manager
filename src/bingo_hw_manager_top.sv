@@ -706,8 +706,6 @@ module bingo_hw_manager_top #(
     // Level 3 export (origin side)
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]         route_remote_grant;
     logic                                  replay_rotate;
-    logic                                  replay_export;
-    logic                                  replay_bounce;
     remote_export_t                        export_in;
     logic                                  export_push;
     // Per core type: its export queue has room
@@ -729,7 +727,6 @@ module bingo_hw_manager_top #(
     // This fully eliminates HOL blocking: completions for different
     // cores AND different clusters drain independently.
     ///////////////////////////////////////
-    bingo_hw_manager_done_info_full_t [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_info;
     logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_pop;
     logic                             [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] done_q_empty;
     // HeMAiA occamy_quad_ctrl.sv.tpl reads done_q_data_in and done_q_push by name (QUAD_CTRL_BINGO_*): a rename must be made there too
@@ -863,7 +860,6 @@ module bingo_hw_manager_top #(
                       boost_level:  bingo_hw_manager_boost_power_level_i[7:0],
                       derate_level: risk_policy.derate_level,
                       dvfs_level:   bingo_hw_manager_dvfs_ack_i[7:0]};
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_dead_suspect;
     // Confirmed dead (sticky): the slot's ready reads, dones and heartbeats are ignored.
@@ -883,7 +879,6 @@ module bingo_hw_manager_top #(
     logic                                replay_pending;      // a slot is fenced, neither retired nor stuck
     logic [NUM_CLUSTERS_PER_CHIPLET-1:0] replay_move_cluster; // a MOVE step may push into the cluster
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_ready_flush;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_move;
     // Checkout output held by the replay controller (being moved or partly moved)
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_hold_slot;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_pop;
@@ -896,12 +891,8 @@ module bingo_hw_manager_top #(
     logic                                  replay_exit_absorb;
     smt_t                                  smt;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] exit_absorb;
-    logic                                  replay_move_fire;
-    logic                                  replay_push_ready_q;
     bingo_hw_manager_assigned_core_id_t    replay_src_core;
     bingo_hw_manager_assigned_cluster_id_t replay_src_cluster;
-    bingo_hw_manager_assigned_core_id_t    replay_dst_core;
-    bingo_hw_manager_assigned_cluster_id_t replay_dst_cluster;
     // Fenced slot that no live core can take over (sticky); replay_stuck: any
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] replay_stuck_slot;
     logic                                  replay_stuck;
@@ -948,10 +939,6 @@ module bingo_hw_manager_top #(
     // The total-time budget of each slot (bingo_hw_manager_wd_budget): a fence
     // request for the watchdog and a late beat for the fault precursors
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_budget_fence, wd_budget_late;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] wd_h_ad, wd_c_ad;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_h_ad_valid, wd_c_ad_valid;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][31:0] wd_late_ad;
-    logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_late_ad_valid;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][WdClassWidth-1:0] wd_class_q, ready_class;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] wd_moved_q, ready_moved;
     // The waiting queue heads, and the checkout, ready and done queues of every slot
@@ -986,7 +973,6 @@ module bingo_hw_manager_top #(
     // The done queues drive done_queue; the nets of each field keep their names
     assign done_q_push    = done_queue.push;
     assign done_q_data_in = done_queue.push_data;
-    assign done_q_info    = done_queue.head;
     assign done_q_empty   = done_queue.empty;
     // Level 3: what the remote dones and rejects of exported tasks do to the
     // done queues, and the remote done input as a remote_done_t (its chip is
@@ -1508,7 +1494,6 @@ module bingo_hw_manager_top #(
         .fence_req_i ( wd_budget_fence ),
         .status_o    ( wd_status       )
     );
-    assign core_busy         = wd_status.busy;
     assign core_available    = wd_status.available;
     assign core_dead_suspect = wd_status.dead_suspect;
     assign core_fenced       = wd_status.fenced;
@@ -1528,12 +1513,6 @@ module bingo_hw_manager_top #(
                              WatchdogCounterWidth'(bingo_hw_manager_risk_confirm_i) : '0;
 `endif
     // Thresholds of every slot: parameters, core type, learned, at risk
-    assign wd_h_ad          = wd_learned.h;
-    assign wd_c_ad          = wd_learned.c;
-    assign wd_late_ad       = wd_learned.late;
-    assign wd_h_ad_valid    = wd_learned.h_valid;
-    assign wd_c_ad_valid    = wd_learned.c_valid;
-    assign wd_late_ad_valid = wd_learned.late_valid;
     bingo_hw_manager_wd_bounds #(
         .NumCores(NUM_CORES_PER_CLUSTER),
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
@@ -1817,25 +1796,17 @@ module bingo_hw_manager_top #(
         .step_o       ( replay_step   ),
         .status_o     ( replay_status )
     );
-    // The status and step fields under the names the rest of the top, the event
-    // log, the top checks and the testbenches use (replay_move and
-    // replay_push_ready_q: the testbenches only)
+    // The status and step fields the rest of the top reads, under the names it
+    // uses (the testbenches read the other fields of replay_step directly)
     assign core_retired        = replay_status.retired;
     assign replay_ready_flush  = replay_status.ready_flush;
     assign replay_hold_slot    = replay_status.hold;
     assign replay_stuck_slot   = replay_status.stuck;
     assign replay_blocked_o    = replay_status.blocked;
     assign replay_exec_moved   = replay_status.exec_moved;
-    assign replay_move         = replay_step.move;
-    assign replay_move_fire    = replay_step.fire;
-    assign replay_push_ready_q = replay_step.push_ready;
     assign replay_src_core     = replay_step.src_core;
     assign replay_src_cluster  = replay_step.src_cluster;
-    assign replay_dst_core     = replay_step.dst_core;
-    assign replay_dst_cluster  = replay_step.dst_cluster;
     assign replay_rotate       = replay_step.rotate;
-    assign replay_export       = replay_step.exported;
-    assign replay_bounce       = replay_step.bounce;
     assign replay_stuck   = (|replay_stuck_slot) || (|remote_rejected_q);
     assign replay_stuck_o = replay_stuck;
     // What the replay controller's MOVE step does to the queues
@@ -2266,7 +2237,7 @@ module bingo_hw_manager_top #(
             if (export_push) begin
                 $display("[BINGO_EXPORT] %0t chip=%0d task=%0d type_id=%0d proxy_slot=%0d (replay %0b)",
                          $time, chip_id_i, export_in.desc.task_id, export_in.core_type,
-                         export_in.proxy_slot, replay_export);
+                         export_in.proxy_slot, replay_step.exported);
             end
             if (imported.fire) begin
                 $display("[BINGO_IMPORT] %0t chip=%0d task=%0d from chip=%0d proxy_slot=%0d -> core=%0d cluster=%0d (home core=%0d cluster=%0d)",
@@ -2287,7 +2258,7 @@ module bingo_hw_manager_top #(
                          $time, chip_id_i, imported.desc.task_id, remote_dispatch_origin_chip_i,
                          remote_dispatch_proxy_slot_i);
             end
-            if (replay_bounce) begin
+            if (replay_step.bounce) begin
                 $display("[BINGO_REMOTE_REJECT_OUT] %0t chip=%0d task=%0d -> chip=%0d proxy_slot=%0d (its core died, no other live core)",
                          $time, chip_id_i, replay_data.task_id,
                          checkout_remote_tag_out[replay_src_core][replay_src_cluster].origin_chip,
@@ -2310,11 +2281,11 @@ module bingo_hw_manager_top #(
                     end
                 end
             end
-            if (replay_move_fire && !replay_bounce) begin
+            if (replay_step.fire && !replay_step.bounce) begin
                 $display("[BINGO_REPLAY] %0t chip=%0d task=%0d type=%0d logical_core=%0d from=%0d to=%0d cluster=%0d to_cluster=%0d logical_cluster=%0d",
                          $time, chip_id_i, replay_data.task_id, replay_data.task_type,
-                         replay_data.assigned_core_id, replay_src_core, replay_dst_core, replay_src_cluster,
-                         replay_dst_cluster, replay_data.assigned_cluster_id);
+                         replay_data.assigned_core_id, replay_src_core, replay_step.dst_core, replay_src_cluster,
+                         replay_step.dst_cluster, replay_data.assigned_cluster_id);
             end
         end
     end

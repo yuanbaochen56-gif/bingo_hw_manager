@@ -17,8 +17,8 @@ end
 always @(negedge clk_i) begin
     if (rst_ni) begin
         if (gen_dut[0].i_dut.wd_class_q !== '0 ||
-            gen_dut[0].i_dut.wd_h_ad_valid !== '0 ||
-            gen_dut[0].i_dut.wd_c_ad_valid !== '0 ||
+            gen_dut[0].i_dut.wd_learned.h_valid !== '0 ||
+            gen_dut[0].i_dut.wd_learned.c_valid !== '0 ||
             gen_dut[0].i_dut.i_wd_adapt.table_q !== '0)
             $fatal(1, "[ADAPT_UNAVAILABLE] unavailable class learned or changed thresholds");
         $display("[TRACE] unavailable %0t host_in=%h/%h host_out=%h/%h pm=%h/%h ready=%h/%h data=%h pop=%h done=%h busy=%h suspect=%h fence=%h replay=%h/%h",
@@ -31,7 +31,7 @@ always @(negedge clk_i) begin
                  local_ready_queue_req[0], local_ready_queue_resp[0],
                  gen_dut[0].i_dut.ready_queue_data_out,
                  gen_dut[0].i_dut.ready_queue_pop, gen_dut[0].i_dut.done_q_push,
-                 gen_dut[0].i_dut.core_busy, gen_dut[0].i_dut.core_dead_suspect,
+                 gen_dut[0].i_dut.wd_status.busy, gen_dut[0].i_dut.core_dead_suspect,
                  gen_dut[0].i_dut.core_fenced, replay_move_count[0], fence_drop_count[0]);
         for (int c = 0; c < 5; c++)
             $display("[TRACE] unavailable %0t core=%0d timer=%0d",
