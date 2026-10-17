@@ -35,6 +35,16 @@ initial begin : park_sub_fence_test
     end
 end
 
+// With nothing left, the slot leaves PARKED and fails on the same edge (not
+// through NONE, HOLD or a later fail at once)
+logic psf_parked_q = 1'b0;
+always @(posedge clk_i) begin : park_sub_fence_fail_edge
+    psf_parked_q <= $sampled(gen_dut[0].i_dut.park.parked[0][0]);
+    if (PSF_TARGET == 0 && psf_parked_q === 1'b1 && $sampled(gen_dut[0].i_dut.park.parked[0][0]) === 1'b0 &&
+        $sampled(gen_dut[0].i_dut.park.fail[0][0]) !== 1'b1)
+        $error("[PARK_SUB] no substitute left: core 0 left PARKED without failing on that edge");
+end
+
 initial begin : park_sub_fence_check
     wait (rst_ni);
     wait (gen_dut[0].i_dut.core_fenced[1][0] === 1'b1);
