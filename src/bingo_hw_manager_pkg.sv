@@ -40,6 +40,70 @@ package bingo_hw_manager_pkg;
     localparam logic [1:0] WdConfirmType    = 2'd2; // the core type's C (type_c_i)
     localparam logic [1:0] WdConfirmLearned = 2'd3; // the learned C (bingo_hw_manager_wd_adapt)
 
+    // CSR words of the host (quad periph registers; the field names are the
+    // register fields). The top's ports stay 32-bit words and are converted once.
+
+    // BINGO_WD_ADAPT (bingo_hw_manager_wd_adapt, reset 0: learned H and C off)
+    typedef struct packed {
+        logic [19:0] floor;        // [31:12] lower bound of the learned H (ticks)
+        logic [3:0]  warmup;       // [11:8]  executions before a class counts as learned (0: 1)
+        logic [2:0]  sh_c;         // [7:5]   C = max(M << SH_C, 2 H)
+        logic [2:0]  sh_h;         // [4:2]   H = max(M << SH_H, FLOOR)
+        logic        load_guard;   // [1]     a learned bound needs a peak load no higher than learned
+        logic        en;           // [0]     learned H and C on
+    } wd_adapt_csr_t;
+
+    // BINGO_WD_LATE (bingo_hw_manager_wd_adapt, bingo_hw_manager_wd_budget; reset 0)
+    typedef struct packed {
+        logic [19:0] lfloor;       // [31:12] lower bound of the learned Late (ticks)
+        logic        rsvd11;       // [11]
+        logic [1:0]  frac;         // [10:9]  Late = (M + (M >> 2) * FRAC) << SH_L
+        logic [1:0]  moved_sh;     // [8:7]   M and E_tot << MOVED_SH for a task away from its own slot
+        logic        local_only;   // [6]     learn only executions on their own slot at the normal level
+        logic [1:0]  rsvd4;        // [5:4]
+        logic [2:0]  sh_l;         // [3:1]
+        logic        en;           // [0]     learned Late on
+    } wd_late_csr_t;
+
+    // BINGO_WD_BUDGET (bingo_hw_manager_wd_budget, reset 0: off)
+    typedef struct packed {
+        logic [19:0] bfloor;       // [31:12] lower bound of the budget (ticks)
+        logic [4:0]  rsvd7;        // [11:7]
+        logic [1:0]  frac_b;       // [6:5]   late at the done after E_tot + (E_tot >> 2) * FRAC_B
+        logic [2:0]  sh_b;         // [4:2]   budget = max(E_tot << SH_B, BFLOOR)
+        logic        action;       // [1]     at the budget: 0 one late beat, 1 a fence
+        logic        en;           // [0]
+    } wd_budget_csr_t;
+
+    // BINGO_WD_EST write (bingo_hw_manager_wd_est)
+    typedef struct packed {
+        logic [11:0] rsvd20;       // [31:20]
+        logic [3:0]  core_type;    // [19:16]
+        logic        rsvd15;       // [15]
+        logic [2:0]  wd_class;     // [14:12]
+        logic [1:0]  rsvd10;       // [11:10]
+        logic [9:0]  entry;        // [9:0]   [7:0] E_tot (8-bit float), [9:8] S
+    } wd_est_wr_t;
+
+    // BINGO_RISK_POLICY (bingo_hw_manager_risk, bingo_hw_manager_ctrl)
+    typedef struct packed {
+        logic [15:0] rsvd16;       // [31:16]
+        logic [7:0]  derate_level; // [15:8]  level of a derated domain
+        logic [1:0]  rsvd6;        // [7:6]
+        logic [1:0]  action;       // [5:4]   what an at-risk slot does: [0] park, [1] derate its domain
+        logic [3:0]  thresh;       // [3:0]   late beats that make a slot at risk (0: off)
+    } risk_policy_csr_t;
+
+    // BINGO_BOOST_POLICY (bingo_hw_manager_level_policy)
+    typedef struct packed {
+        logic [7:0]  rsvd24;       // [31:24]
+        logic [7:0]  load_min;     // [23:16] minimum load (checkout occupancy) of a boosted core
+        logic [3:0]  rsvd12;       // [15:12]
+        logic [3:0]  credit;       // [11:8]  boosted domains per lost core (0: no limit)
+        logic [6:0]  rsvd1;        // [7:1]
+        logic        policy;       // [0]     0 the substitutes of fenced cores, 1 capacity
+    } boost_policy_csr_t;
+
     // Port structs of fixed width. The ones whose width depends on the
     // parameters of the top are macros in bingo_hw_manager/typedef.svh.
 

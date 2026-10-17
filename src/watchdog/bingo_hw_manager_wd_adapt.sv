@@ -75,14 +75,10 @@ module bingo_hw_manager_wd_adapt #(
 ) (
     input logic clk_i,
     input logic rst_ni,
-    // BINGO_WD_ADAPT (reset 0: learned H and C disabled):
-    //   [0]     EN          [1]    LOAD_GUARD  [4:2]  SH_H    [7:5] SH_C
-    //   [11:8]  WARMUP (0 -> 1)                [31:12] FLOOR (ticks)
-    input logic [31:0] ctrl_i,
-    // BINGO_WD_LATE (reset 0: Late disabled, late executions still learned):
-    //   [0]     EN          [3:1]  SH_L        [6]    LOCAL_ONLY
-    //   [8:7]   MOVED_SH    [10:9] FRAC        [31:12] LFLOOR (ticks)
-    input logic [31:0] late_ctrl_i,
+    // BINGO_WD_ADAPT (reset 0: learned H and C disabled)
+    input bingo_hw_manager_pkg::wd_adapt_csr_t ctrl_i,
+    // BINGO_WD_LATE (reset 0: Late disabled, late executions still learned)
+    input bingo_hw_manager_pkg::wd_late_csr_t  late_ctrl_i,
     // Watchdog events: dispatch starts an execution (done in the same cycle
     // wins); done ends and learns it in this cycle
     input wd_event_t   event_i,
@@ -127,7 +123,7 @@ module bingo_hw_manager_wd_adapt #(
     logic [LoadWidth-1:0] load_now, load_next;
     logic [3:0] warmup;
 
-    assign warmup = ctrl_i[11:8] == 0 ? 4'd1 : ctrl_i[11:8];
+    assign warmup = ctrl_i.warmup == 0 ? 4'd1 : ctrl_i.warmup;
 
     // Only thresholds depend on EN. History survives disable/re-enable and
     // is cleared only by reset, as are the watchdog's timers.
@@ -156,13 +152,13 @@ module bingo_hw_manager_wd_adapt #(
                 automatic logic [CounterWidth-1:0] sample_max =
                     status_i.interval[c][cl] > imax_q[c][cl] ? status_i.interval[c][cl] : imax_q[c][cl];
                 automatic logic fast_seen = fast_q[c][cl] || task_i.fast[c][cl];
-                // BINGO_WD_LATE[6]: learn only executions comparable with the
-                // ones on their own slot at the normal level
+                // LOCAL_ONLY: learn only executions comparable with the ones on
+                // their own slot at the normal level
                 if (CoreMask[c][cl] && !status_i.fenced[c][cl] && status_i.busy[c][cl] &&
                     event_i.done[c][cl] && class_id != 0 && type_id < Types &&
-                    !(late_ctrl_i[0] && late_valid[c][cl] &&
+                    !(late_ctrl_i.en && late_valid[c][cl] &&
                       sample_max >= late_ad[c][cl]) &&
-                    !(late_ctrl_i[6] && (task_i.moved[c][cl] || fast_seen))) begin
+                    !(late_ctrl_i.local_only && (task_i.moved[c][cl] || fast_seen))) begin
                     // Each completed execution contributes its largest segment.
                     // Fold simultaneous completions in a fixed slot order.
                     if (sample_max > table_d[type_id][class_id].maximum)
@@ -213,16 +209,16 @@ module bingo_hw_manager_wd_adapt #(
                 automatic logic learned;
                 automatic logic est_use;
                 automatic logic [CounterWidth-1:0] est_max;
-                // BINGO_WD_LATE[8:7]: an execution away from its own slot uses
-                // the learned maximum shifted left by this many more bits
-                automatic logic [1:0] moved_shift = task_i.moved[c][cl] ? late_ctrl_i[8:7] : 2'd0;
+                // MOVED_SH: an execution away from its own slot uses the learned
+                // maximum shifted left by this many more bits
+                automatic logic [1:0] moved_shift = task_i.moved[c][cl] ? late_ctrl_i.moved_sh : 2'd0;
                 h = '0;
                 confirm = '0;
                 late_bound = '0;
                 entry_valid = CoreMask[c][cl] && type_id < Types && class_id != 0 &&
                     table_q[type_id][class_id].maximum >= 1 &&
                     table_q[type_id][class_id].samples >= warmup &&
-                    (!ctrl_i[1] || peak <= table_q[type_id][class_id].load);
+                    (!ctrl_i.load_guard || peak <= table_q[type_id][class_id].load);
                 // Warm-up: the compile-time estimate until the class is learned
                 learned = CoreMask[c][cl] && type_id < Types && class_id != 0 &&
                     table_q[type_id][class_id].maximum >= 1 &&
@@ -231,13 +227,13 @@ module bingo_hw_manager_wd_adapt #(
                 // (an estimate beyond the timer saturates: the caps h_eff_i / c_eff_i apply)
                 est_max = (32'(est_i.e_int[c][cl]) >> CounterWidth) != 0 ?
                           {CounterWidth{1'b1}} : CounterWidth'(est_i.e_int[c][cl]);
-                if (ctrl_i[0] && (entry_valid || est_use)) begin
+                if (ctrl_i.en && (entry_valid || est_use)) begin
                     h = (64'(est_use ? est_max : table_q[type_id][class_id].maximum) << moved_shift) <<
-                        ctrl_i[4:2];
-                    if (h < ctrl_i[31:12]) h = 64'(ctrl_i[31:12]);
+                        ctrl_i.sh_h;
+                    if (h < ctrl_i.floor) h = 64'(ctrl_i.floor);
                     if (h > h_eff_i[c][cl]) h = 64'(h_eff_i[c][cl]);
                     confirm = (64'(est_use ? est_max : table_q[type_id][class_id].maximum) <<
-                               moved_shift) << ctrl_i[7:5];
+                               moved_shift) << ctrl_i.sh_c;
                     if (confirm < (h << 1)) confirm = h << 1;
                     if (confirm > c_eff_i[c][cl]) confirm = 64'(c_eff_i[c][cl]);
                     h_ad[c][cl] = 32'(h);
@@ -247,15 +243,14 @@ module bingo_hw_manager_wd_adapt #(
                 end
                 // Prediction shares history/guards, not the detection EN bit.
                 // Compare wide before narrowing; equality with suspect is invalid.
-                if (late_ctrl_i[0] && (entry_valid || est_use)) begin
-                    // BINGO_WD_LATE[10:9] FRAC: (1 + FRAC / 4) times the maximum,
-                    // then SH_L
+                if (late_ctrl_i.en && (entry_valid || est_use)) begin
+                    // FRAC: (1 + FRAC / 4) times the maximum, then SH_L
                     late_bound = LateMathWidth'(est_use ? est_max : table_q[type_id][class_id].maximum) <<
                                  moved_shift;
-                    late_bound = (late_bound + (late_bound >> 2) * late_ctrl_i[10:9]) <<
-                                 late_ctrl_i[3:1];
-                    if (late_bound < late_ctrl_i[31:12])
-                        late_bound = LateMathWidth'(late_ctrl_i[31:12]);
+                    late_bound = (late_bound + (late_bound >> 2) * late_ctrl_i.frac) <<
+                                 late_ctrl_i.sh_l;
+                    if (late_bound < late_ctrl_i.lfloor)
+                        late_bound = LateMathWidth'(late_ctrl_i.lfloor);
                     if (late_bound < (h_valid[c][cl] ? h : 64'(h_eff_i[c][cl]))) begin
                         late_ad[c][cl] = 32'(late_bound);
                         late_valid[c][cl] = 1'b1;
@@ -299,7 +294,7 @@ module bingo_hw_manager_wd_adapt #(
                 end
             end
         end
-        if (rst_ni && learn_log && late_ctrl_i[6]) begin
+        if (rst_ni && learn_log && late_ctrl_i.local_only) begin
             for (int c = 0; c < NumCores; c++) begin
                 for (int cl = 0; cl < NumClusters; cl++) begin
                     if (CoreMask[c][cl] && !status_i.fenced[c][cl] && status_i.busy[c][cl] && event_i.done[c][cl] &&
@@ -319,7 +314,7 @@ module bingo_hw_manager_wd_adapt #(
                         $display("[BINGO_ADAPT_LEARN] %0t type=%0d class=%0d max=%0d n=%0d load=%0d",
                                  $time, t, k, table_d[t][k].maximum,
                                  table_d[t][k].samples, table_d[t][k].load);
-                    if (late_ctrl_i[0] && execution_log && table_d[t][k] != table_q[t][k])
+                    if (late_ctrl_i.en && execution_log && table_d[t][k] != table_q[t][k])
                         $display("[TRACE] P9_TABLE %0t type=%0d class=%0d max=%0d n=%0d load=%0d",
                                  $time, t, k, table_d[t][k].maximum,
                                  table_d[t][k].samples, table_d[t][k].load);

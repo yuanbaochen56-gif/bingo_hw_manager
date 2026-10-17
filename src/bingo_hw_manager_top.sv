@@ -190,10 +190,11 @@ module bingo_hw_manager_top #(
     // Recovery boost level (a faster clock divider than the normal level) of a
     // domain whose core runs a dead core's tasks; 0 disables the boost
     input device_axi_lite_data_t                bingo_hw_manager_boost_power_level_i = '0,
-    // Which cores get the boost level (bingo_hw_manager_level_policy): [0] 0 = the
-    // substitutes of fenced cores, 1 = capacity (busy cores of a type that lost
-    // a core); [11:8] boosted domains per lost core (0 = no limit); [23:16]
-    // minimum load (checkout occupancy) of a boosted core
+    // Which cores get the boost level (bingo_hw_manager_level_policy,
+    // bingo_hw_manager_pkg::boost_policy_csr_t): [0] 0 = the substitutes of
+    // fenced cores, 1 = capacity (busy cores of a type that lost a core);
+    // [11:8] boosted domains per lost core (0 = no limit); [23:16] minimum load
+    // (checkout occupancy) of a boosted core
     input device_axi_lite_data_t                bingo_hw_manager_boost_policy_i = '0,
     // Cycles a core must be idle before it lets its domain drop to the idle
     // level (bingo_hw_manager_power_view); 0 = at once
@@ -215,7 +216,8 @@ module bingo_hw_manager_top #(
     input  device_axi_lite_data_t               bingo_hw_manager_park_req_i = '0,
     output device_axi_lite_data_t               bingo_hw_manager_park_fail_o,
     // Fault precursors (bingo_hw_manager_risk). A heartbeat or done of a busy
-    // core whose watchdog timer reached risk_late is late (0 = off). policy:
+    // core whose watchdog timer reached risk_late is late (0 = off). policy
+    // (bingo_hw_manager_pkg::risk_policy_csr_t):
     // [3:0] late beats that make a slot at risk (0 = off), [4] park it,
     // [5] derate its domain, [15:8] derate level. epoch: the counts are
     // halved every that many cycles (0 = never). clear and risk_o use the
@@ -229,16 +231,19 @@ module bingo_hw_manager_top #(
     // Zero/invalid entries fall back to the parameters; validate before narrowing.
     input  logic [2**CoreTypeIdWidth-1:0][31:0] wd_type_h_i = '0,
     input  logic [2**CoreTypeIdWidth-1:0][31:0] wd_type_c_i = '0,
+    // The learned bounds (bingo_hw_manager_wd_adapt): BINGO_WD_ADAPT and
+    // BINGO_WD_LATE, bingo_hw_manager_pkg::wd_adapt_csr_t / wd_late_csr_t
     input  logic [31:0]                        wd_adapt_i = '0,
     input  logic [31:0]                        bingo_hw_manager_wd_late_i = '0,
-    // Compile-time task-time estimates (bingo_hw_manager_wd_est, BINGO_WD_EST): a
-    // write pulse stores data [9:0] for core type [19:16], class [14:12]. Until a
-    // class is learned, the learned bounds start from its estimate. 0: none.
+    // Compile-time task-time estimates (bingo_hw_manager_wd_est, BINGO_WD_EST,
+    // bingo_hw_manager_pkg::wd_est_wr_t): a write pulse stores data [9:0] for
+    // core type [19:16], class [14:12]. Until a class is learned, the learned
+    // bounds start from its estimate. 0: none.
     input  logic                               wd_est_we_i = 1'b0,
     input  logic [31:0]                        wd_est_data_i = '0,
     // Total-time budget against those estimates (bingo_hw_manager_wd_budget,
-    // BINGO_WD_BUDGET): [0] EN, [1] ACTION (0 late beat, 1 fence), [4:2] SH_B,
-    // [6:5] FRAC_B, [31:12] BFLOOR. 0: off.
+    // BINGO_WD_BUDGET, bingo_hw_manager_pkg::wd_budget_csr_t): [0] EN, [1] ACTION
+    // (0 late beat, 1 fence), [4:2] SH_B, [6:5] FRAC_B, [31:12] BFLOOR. 0: off.
     input  logic [31:0]                        wd_budget_i = '0,
     output device_axi_lite_data_t               bingo_hw_manager_risk_o,
     input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
@@ -843,13 +848,18 @@ module bingo_hw_manager_top #(
         (bingo_hw_manager_pm_access_level_i > 32'(bingo_hw_manager_normal_power_level_i[7:0]) &&
          bingo_hw_manager_pm_access_level_i < 32'(bingo_hw_manager_idle_power_level_i[7:0])) ?
         bingo_hw_manager_pm_access_level_i : 32'd0;
+    // The CSR words with fields (bingo_hw_manager_pkg)
+    risk_policy_csr_t  risk_policy;
+    boost_policy_csr_t boost_policy;
+    assign risk_policy  = risk_policy_csr_t'(32'(bingo_hw_manager_risk_policy_i));
+    assign boost_policy = boost_policy_csr_t'(32'(bingo_hw_manager_boost_policy_i));
     assign pm_cfg = '{enable:       bingo_hw_manager_enable_idle_pm_i[0],
                       dvfs:         bingo_hw_manager_pm_mode_i[0],
                       idle_level:   bingo_hw_manager_idle_power_level_i[7:0],
                       normal_level: bingo_hw_manager_normal_power_level_i[7:0],
                       access_level: pm_access_level[7:0],
                       boost_level:  bingo_hw_manager_boost_power_level_i[7:0],
-                      derate_level: bingo_hw_manager_risk_policy_i[15:8],
+                      derate_level: risk_policy.derate_level,
                       dvfs_level:   bingo_hw_manager_dvfs_ack_i[7:0]};
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_busy;
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0] core_available;
@@ -1564,13 +1574,22 @@ module bingo_hw_manager_top #(
     // wd_moved:           whether the task moved to another slot
     // fast:               live flag, set while the slot's clock domain runs faster than normal
     assign wd_task = '{wd_class: wd_class_q, moved: wd_moved_q, fast: ctrl_view.wd_fast};
+    // The CSR words of the estimates, the learned bounds and the budget, with fields
+    wd_est_wr_t     wd_est_wr;
+    wd_adapt_csr_t  wd_adapt_csr;
+    wd_late_csr_t   wd_late_csr;
+    wd_budget_csr_t wd_budget_csr;
+    assign wd_est_wr     = wd_est_wr_t'(wd_est_data_i);
+    assign wd_adapt_csr  = wd_adapt_csr_t'(wd_adapt_i);
+    assign wd_late_csr   = wd_late_csr_t'(bingo_hw_manager_wd_late_i);
+    assign wd_budget_csr = wd_budget_csr_t'(wd_budget_i);
     bingo_hw_manager_wd_est #(
         .NumCores(NUM_CORES_PER_CLUSTER), .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
         .WdAdaptTypeBits(WdAdaptTypeBits), .WdClassWidth(WdClassWidth),
         .CoreTypeIdWidth(CoreTypeIdWidth), .CoreMask(WatchdogCoreMask), .CoreTypeId(CoreTypeId),
         .wd_est_t(wd_est_t)
     ) i_wd_est (
-        .clk_i(clk_i), .rst_ni(rst_ni), .we_i(wd_est_we_i), .data_i(wd_est_data_i),
+        .clk_i(clk_i), .rst_ni(rst_ni), .we_i(wd_est_we_i), .data_i(wd_est_wr),
         .class_i(wd_class_q), .est_o(wd_est)
     );
     bingo_hw_manager_wd_adapt #(
@@ -1581,8 +1600,8 @@ module bingo_hw_manager_top #(
         .wd_event_t(wd_event_t), .wd_status_t(wd_status_t),
         .wd_task_t(wd_task_t), .wd_learned_t(wd_learned_t), .wd_est_t(wd_est_t)
     ) i_wd_adapt (
-        .clk_i(clk_i), .rst_ni(rst_ni), .ctrl_i(wd_adapt_i),
-        .late_ctrl_i(bingo_hw_manager_wd_late_i),
+        .clk_i(clk_i), .rst_ni(rst_ni), .ctrl_i(wd_adapt_csr),
+        .late_ctrl_i(wd_late_csr),
         .event_i(wd_event), .status_i(wd_status), .task_i(wd_task),
         .h_eff_i(wd_bound.h_static), .c_eff_i(wd_bound.c_static),
         .est_i(wd_est),
@@ -1594,8 +1613,8 @@ module bingo_hw_manager_top #(
         .wd_event_t(wd_event_t), .wd_status_t(wd_status_t), .wd_task_t(wd_task_t),
         .wd_est_t(wd_est_t)
     ) i_wd_budget (
-        .clk_i(clk_i), .rst_ni(rst_ni), .ctrl_i(wd_budget_i),
-        .late_ctrl_i(bingo_hw_manager_wd_late_i),
+        .clk_i(clk_i), .rst_ni(rst_ni), .ctrl_i(wd_budget_csr),
+        .late_ctrl_i(wd_late_csr),
         .event_i(wd_event), .status_i(wd_status), .task_i(wd_task), .est_i(wd_est),
         .fence_o(wd_budget_fence), .late_o(wd_budget_late)
     );
@@ -1604,7 +1623,7 @@ module bingo_hw_manager_top #(
     bit wd_late_log;
     initial wd_late_log = $test$plusargs("bingo_adapt_log");
     always @(posedge clk_i) begin
-        if (rst_ni && wd_late_log && bingo_hw_manager_wd_late_i[0]) begin
+        if (rst_ni && wd_late_log && wd_late_csr.en) begin
             for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
                     if (wd_late[c][cl])
@@ -1697,12 +1716,12 @@ module bingo_hw_manager_top #(
     assign ctrl_cfg   = '{idle_delay:     32'(bingo_hw_manager_idle_entry_delay_i),
                           access_hold:    32'(bingo_hw_manager_access_wake_hold_i),
                           recovery_hold:  bingo_hw_manager_recovery_hold_i,
-                          risk_thresh:    bingo_hw_manager_risk_policy_i[3:0],
-                          risk_action:    bingo_hw_manager_risk_policy_i[5:4],
+                          risk_thresh:    risk_policy.thresh,
+                          risk_action:    risk_policy.action,
                           risk_epoch:     32'(bingo_hw_manager_risk_epoch_i),
-                          boost_policy:   bingo_hw_manager_boost_policy_i[0],
-                          boost_credit:   bingo_hw_manager_boost_policy_i[11:8],
-                          boost_load_min: bingo_hw_manager_boost_policy_i[23:16],
+                          boost_policy:   boost_policy.policy,
+                          boost_credit:   boost_policy.credit,
+                          boost_load_min: boost_policy.load_min,
                           sub:            sub_cfg_i};
     bingo_hw_manager_ctrl #(
         .NumCores(NUM_CORES_PER_CLUSTER),

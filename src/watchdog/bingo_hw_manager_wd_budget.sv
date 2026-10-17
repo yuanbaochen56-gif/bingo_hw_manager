@@ -13,14 +13,15 @@
 //    dispatch and counts event_i.tick pulses while the slot is busy and not fenced,
 //    saturating at all ones. Heartbeats do not restart it; it holds after the done.
 //
-// 2. Budget (ctrl_i, BINGO_WD_BUDGET; reset 0 = off):
-//      [0]     EN      budget on
-//      [1]     ACTION  at the budget: 0 one late beat, 1 a fence
-//      [4:2]   SH_B    budget = max(E_tot << SH_B, BFLOOR)
-//      [6:5]   FRAC_B  late threshold at the done = E_tot + (E_tot >> 2) * FRAC_B
-//      [31:12] BFLOOR  ticks
+// 2. Budget (ctrl_i, BINGO_WD_BUDGET, bingo_hw_manager_pkg::wd_budget_csr_t; reset
+//    0 = off):
+//      en      budget on
+//      action  at the budget: 0 one late beat, 1 a fence
+//      sh_b    budget = max(E_tot << SH_B, BFLOOR)
+//      frac_b  late threshold at the done = E_tot + (E_tot >> 2) * FRAC_B
+//      bfloor  ticks
 //    E_tot is the estimate of the slot's (core type, class) (est_i); a task away from
-//    its own logical slot (task_i.moved) uses E_tot << MOVED_SH (BINGO_WD_LATE[8:7]),
+//    its own logical slot (task_i.moved) uses E_tot << MOVED_SH (BINGO_WD_LATE),
 //    as the learned bounds do. A slot without a valid estimate has no budget.
 //
 // 3. Per slot:
@@ -43,8 +44,8 @@ module bingo_hw_manager_wd_budget #(
 ) (
     input  logic                                 clk_i,
     input  logic                                 rst_ni,
-    input  logic [31:0]                          ctrl_i,       // BINGO_WD_BUDGET
-    input  logic [31:0]                          late_ctrl_i,  // BINGO_WD_LATE ([8:7] MOVED_SH)
+    input  bingo_hw_manager_pkg::wd_budget_csr_t ctrl_i,       // BINGO_WD_BUDGET
+    input  bingo_hw_manager_pkg::wd_late_csr_t   late_ctrl_i,  // BINGO_WD_LATE (moved_sh)
     input  wd_event_t                            event_i,      // dispatch, done, tick
     input  wd_status_t                           status_i,     // busy, fenced
     input  wd_task_t                             task_i,       // moved
@@ -62,19 +63,19 @@ module bingo_hw_manager_wd_budget #(
                 logic [31:0]             e_tot, budget, late_bound;
                 logic                    timed, over, budget_late, done_late;
 
-                assign moved_shift = task_i.moved[c][cl] ? late_ctrl_i[8:7] : 2'd0;
+                assign moved_shift = task_i.moved[c][cl] ? late_ctrl_i.moved_sh : 2'd0;
                 assign e_tot = 32'(est_i.e_tot[c][cl]) << moved_shift;
                 // E_tot < 2^23 after MOVED_SH and < 2^30 after SH_B: no overflow in 32 bits
-                assign budget = (e_tot << ctrl_i[4:2]) > 32'(ctrl_i[31:12]) ?
-                                (e_tot << ctrl_i[4:2]) : 32'(ctrl_i[31:12]);
-                assign late_bound = e_tot + (e_tot >> 2) * ctrl_i[6:5];
-                assign timed = ctrl_i[0] && est_i.valid[c][cl] && status_i.busy[c][cl] &&
+                assign budget = (e_tot << ctrl_i.sh_b) > 32'(ctrl_i.bfloor) ?
+                                (e_tot << ctrl_i.sh_b) : 32'(ctrl_i.bfloor);
+                assign late_bound = e_tot + (e_tot >> 2) * ctrl_i.frac_b;
+                assign timed = ctrl_i.en && est_i.valid[c][cl] && status_i.busy[c][cl] &&
                                !status_i.fenced[c][cl];
                 assign over = timed && 32'(elapsed_q) >= budget;
-                assign budget_late = over && !ctrl_i[1] && !reported_q;
+                assign budget_late = over && !ctrl_i.action && !reported_q;
                 assign done_late = timed && event_i.done[c][cl] && !reported_q &&
                                    32'(elapsed_q) >= late_bound;
-                assign fence_o[c][cl] = over && ctrl_i[1];
+                assign fence_o[c][cl] = over && ctrl_i.action;
                 assign late_o[c][cl] = budget_late || done_late;
 
                 always_ff @(posedge clk_i or negedge rst_ni) begin

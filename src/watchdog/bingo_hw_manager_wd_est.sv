@@ -9,9 +9,9 @@
 //      [7:0]  E_tot in timer ticks, 8-bit float: 0 = none, else (16 + m) << e with
 //             e = [7:4] and m = [3:0] (17 .. 1015808 ticks; the compiler rounds up)
 //      [9:8]  S: the longest interval without progress is E_int = E_tot >> S
-//    A write pulse (we_i, BINGO_WD_EST) stores data_i[9:0] at type data_i[19:16] and
-//    class data_i[14:12]; a type out of range or class 0 is ignored. The new value
-//    is read from the next cycle.
+//    A write pulse (we_i, BINGO_WD_EST, bingo_hw_manager_pkg::wd_est_wr_t) stores
+//    data_i.entry at type data_i.core_type and class data_i.wd_class; a type out of
+//    range or class 0 is ignored. The new value is read from the next cycle.
 //
 // 2. Per slot (est_o): the entry of its core type and of the class of its task
 //    (class_i, latched at dispatch). valid: a monitored slot (CoreMask), an
@@ -32,9 +32,9 @@ module bingo_hw_manager_wd_est #(
 ) (
     input  logic                                                   clk_i,
     input  logic                                                   rst_ni,
-    // BINGO_WD_EST: [9:0] entry, [14:12] class, [19:16] core type; we_i: one-cycle pulse
+    // BINGO_WD_EST; we_i: one-cycle pulse
     input  logic                                                   we_i,
-    input  logic [31:0]                                            data_i,
+    input  bingo_hw_manager_pkg::wd_est_wr_t                       data_i,
     input  logic [NumCores-1:0][NumClusters-1:0][WdClassWidth-1:0] class_i,
     output wd_est_t                                                est_o
 );
@@ -50,15 +50,15 @@ module bingo_hw_manager_wd_est #(
     logic [WdClassWidth-1:0]            wr_class;
     logic                               wr;
 
-    assign wr_type  = data_i[16 +: WdAdaptTypeBits];
-    assign wr_class = data_i[12 +: WdClassWidth];
-    assign wr       = we_i && (4'(data_i[19:16]) >> WdAdaptTypeBits) == '0 && wr_class != '0;
+    assign wr_type  = data_i.core_type[WdAdaptTypeBits-1:0];
+    assign wr_class = data_i.wd_class[WdClassWidth-1:0];
+    assign wr       = we_i && (data_i.core_type >> WdAdaptTypeBits) == '0 && wr_class != '0;
 
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             est_q <= '0;
         end else if (wr) begin
-            est_q[wr_type][wr_class] <= data_i[9:0];
+            est_q[wr_type][wr_class] <= data_i.entry;
         end
     end
 
