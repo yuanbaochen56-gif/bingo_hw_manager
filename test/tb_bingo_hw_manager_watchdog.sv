@@ -28,6 +28,11 @@ module tb_bingo_hw_manager_watchdog;
     `BINGO_HW_MANAGER_TYPEDEF_WD_STATUS_T(wd_status_t, NUM_CORES, NUM_CLUSTERS, COUNTER_WIDTH)
     wd_event_t  wd_event;
     wd_status_t wd_status, wd_status_masked, wd_status_f;
+    // The thresholds bingo_hw_manager_wd_bounds gives without any CSR: the parameters
+    wd_bound_t  wd_bound_params;
+    assign wd_bound_params = '{suspect_eff: {(NUM_CORES * NUM_CLUSTERS){COUNTER_WIDTH'(TIMEOUT)}},
+                               confirm_eff: {(NUM_CORES * NUM_CLUSTERS){COUNTER_WIDTH'(CONFIRM)}},
+                               default: '0};
     assign wd_event = '{dispatch: task_dispatched_i, done: task_done_i, heartbeat: heartbeat_i,
                         waiting: waiting_task_i, tick: '1};
     assign core_busy_o         = wd_status.busy;
@@ -47,7 +52,7 @@ module tb_bingo_hw_manager_watchdog;
         .clk_i(clk_i),
         .rst_ni(rst_ni),
         .event_i(wd_event),
-        .bound_i('0),
+        .bound_i(wd_bound_params),
         .status_o(wd_status)
     );
 
@@ -71,7 +76,7 @@ module tb_bingo_hw_manager_watchdog;
         .clk_i(clk_i),
         .rst_ni(rst_ni),
         .event_i(wd_event),
-        .bound_i('0),
+        .bound_i(wd_bound_params),
         .status_o(wd_status_masked)
     );
 
@@ -99,7 +104,7 @@ module tb_bingo_hw_manager_watchdog;
         .clk_i(clk_i),
         .rst_ni(rst_ni),
         .event_i(wd_event),
-        .bound_i('0),
+        .bound_i(wd_bound_params),
         .status_o(wd_status_f)
     );
 

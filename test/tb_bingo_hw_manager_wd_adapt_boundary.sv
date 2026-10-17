@@ -29,7 +29,13 @@ module tb_bingo_hw_manager_wd_adapt_boundary;
     ) wd (
         .clk_i(clk), .rst_ni(rst),
         .event_i('{dispatch: dispatch, done: done, heartbeat: hb, waiting: '0, tick: ticks}),
-        .bound_i('{suspect: h_thr, confirm: c_thr, suspect_valid: hv, adapt_confirm: cv,
+        // As bingo_hw_manager_wd_bounds: the learned bounds if valid, else the parameters
+        .bound_i('{suspect: h_thr, confirm: c_thr,
+                   suspect_eff: (h_thr != '0 || hv) ? h_thr : 8'd40,
+                   confirm_eff: (c_thr != '0) ? c_thr : 8'd100,
+                   confirm_src: cv ? bingo_hw_manager_pkg::WdConfirmLearned :
+                                (c_thr != '0) ? bingo_hw_manager_pkg::WdConfirmType :
+                                bingo_hw_manager_pkg::WdConfirmParam,
                    wd_class: 3'd1, default: '0}),
         .status_o(wd_status)
     );

@@ -9,9 +9,17 @@ module tb_bingo_hw_manager_wd_adapt_execution;
     logic [1:0][0:0][31:0] h_ad, c_ad;
     logic [1:0][0:0] hv, cv;
     logic [31:0] ctrl;
+    logic [1:0][0:0][15:0] h_eff, c_eff;
+    logic [1:0][0:0][1:0]  c_src;
     for (genvar c = 0; c < 2; c++) begin
         assign h_thr[c][0] = hv[c][0] ? 16'(h_ad[c][0]) : 16'd40000;
         assign c_thr[c][0] = cv[c][0] ? 16'(c_ad[c][0]) : 16'd60000;
+        // As bingo_hw_manager_wd_bounds: the learned bounds if valid, else the parameters
+        assign h_eff[c][0] = (h_thr[c][0] != '0 || hv[c][0]) ? h_thr[c][0] : 16'd40000;
+        assign c_eff[c][0] = (c_thr[c][0] != '0) ? c_thr[c][0] : 16'd60000;
+        assign c_src[c][0] = cv[c][0] ? bingo_hw_manager_pkg::WdConfirmLearned :
+                             (c_thr[c][0] != '0) ? bingo_hw_manager_pkg::WdConfirmType :
+                             bingo_hw_manager_pkg::WdConfirmParam;
     end
     // Port structs of bingo_hw_manager_watchdog
     `BINGO_HW_MANAGER_TYPEDEF_WD_EVENT_T(wd_event_t, 2, 1)
@@ -30,8 +38,8 @@ module tb_bingo_hw_manager_wd_adapt_execution;
     ) wd (
         .clk_i(clk), .rst_ni(rst),
         .event_i('{dispatch: dispatch, done: done, heartbeat: hb, waiting: '0, tick: 2'b11}),
-        .bound_i('{suspect: h_thr, confirm: c_thr, suspect_valid: hv, adapt_confirm: cv,
-                   wd_class: {3'd1, 3'd1}, default: '0}),
+        .bound_i('{suspect: h_thr, confirm: c_thr, suspect_eff: h_eff, confirm_eff: c_eff,
+                   confirm_src: c_src, wd_class: {3'd1, 3'd1}, default: '0}),
         .status_o(wd_status)
     );
     // Port structs of bingo_hw_manager_wd_adapt (bingo_hw_manager/typedef.svh)

@@ -15,6 +15,13 @@ wire [CW-1:0] effective_r = gen_dut[0].i_dut.wd_risk_confirm;
 `BINGO_HW_MANAGER_TYPEDEF_WD_BOUND_T(unit_wd_bound_t, 2, 1, CW, 3)
 `BINGO_HW_MANAGER_TYPEDEF_WD_STATUS_T(unit_wd_status_t, 2, 1, CW)
 unit_wd_status_t unit_status;
+// As bingo_hw_manager_wd_bounds for slot 0 at risk (slot 1 not): the effective R
+// if nonzero, else the parameters
+logic [CW-1:0] unit_r_confirm;
+logic [1:0]    unit_r_src;
+assign unit_r_confirm = (effective_r != '0) ? effective_r : CW'(WATCHDOG_CONFIRM_TIMEOUT);
+assign unit_r_src     = (effective_r != '0) ? bingo_hw_manager_pkg::WdConfirmRisk :
+                                              bingo_hw_manager_pkg::WdConfirmParam;
 assign ubusy = unit_status.busy;
 assign suspect = unit_status.dead_suspect;
 assign ufence = unit_status.fenced;
@@ -25,7 +32,10 @@ bingo_hw_manager_watchdog #(
 ) unit_wd (
     .clk_i(clk_i), .rst_ni(unit_rst),
     .event_i('{dispatch: ud, done: done, heartbeat: hb, waiting: '0, tick: ticks}),
-    .bound_i('{risk: 2'b01, risk_use: '1, risk_confirm: effective_r, default: '0}),
+    .bound_i('{suspect_eff: {2{CW'(20)}},
+               confirm_eff: {CW'(WATCHDOG_CONFIRM_TIMEOUT), unit_r_confirm},
+               confirm_src: {bingo_hw_manager_pkg::WdConfirmParam, unit_r_src},
+               risk_confirm: effective_r, default: '0}),
     .status_o(unit_status)
 );
 

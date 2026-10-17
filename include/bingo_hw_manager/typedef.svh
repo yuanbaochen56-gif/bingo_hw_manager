@@ -602,8 +602,16 @@
     logic [(NumCores)-1:0][(NumClusters)-1:0][19:0] e_int;                 \
   } wd_est_t;
 
-// Watchdog thresholds (bingo_hw_manager_wd_bounds), in timer ticks:
-//   late_global             host late-beat threshold, shared by all slots (0: off)
+// Watchdog thresholds (bingo_hw_manager_wd_bounds), in timer ticks. The
+// watchdog compares with the three *_eff values only; the rest says where they
+// come from (for the log, the event log, bingo_hw_manager_wd_adapt and TBs).
+//   suspect_eff             the timer value that makes a busy slot dead_suspect
+//   confirm_eff             the timer value that fences it (with fencing on)
+//   late_eff                a heartbeat or done at this timer value or later is
+//                           late (0: off)
+//   confirm_src             where confirm_eff comes from: WdConfirmParam,
+//                           WdConfirmRisk, WdConfirmType or WdConfirmLearned
+//                           (bingo_hw_manager_pkg)
 //   risk_confirm            host confirm threshold for a slot at risk
 //   h_static                static suspect threshold: the core type's H (type_h_i)
 //                           if nonzero and no longer than the parameter, else the
@@ -612,34 +620,30 @@
 //                           if fencing is on and it is longer than h_static but no
 //                           longer than the parameter, else the parameter (0:
 //                           fencing off); caps the learned confirm threshold
-//   suspect, suspect_valid  suspect threshold in use: learned if suspect_valid, else
-//                           h_static (0 when !suspect_valid means the parameter)
-//   confirm, adapt_confirm  confirm threshold in use: learned if adapt_confirm, else
-//                           the core type's (0: the parameter)
-//   late, late_adaptive     late-beat threshold in use: learned if late_adaptive,
-//                           else late_global (0: off)
-//   risk                    the slot is at risk (bingo_hw_manager_ctrl)
+//   suspect                 learned suspect threshold if valid, else h_static
+//   confirm                 confirm threshold without the at-risk R: learned if
+//                           shorter, else the core type's (0: the parameter)
+//   late, late_adaptive     late-beat threshold: learned if late_adaptive, else
+//                           the host's global one (0: the global one; off if that
+//                           is 0 too)
 //   risk_valid              confirming is on and risk_confirm lies strictly between
-//                           h_static and c_static
-//   risk_use                risk_confirm replaces confirm: risk_valid, and no
-//                           learned confirm is shorter than risk_confirm; the
-//                           watchdog applies it while the slot is at risk
+//                           h_static and c_static (applies while the slot is at
+//                           risk, unless a learned confirm is shorter)
 //   wd_class                class of the task the slot runs (for the log only)
 `define BINGO_HW_MANAGER_TYPEDEF_WD_BOUND_T(wd_bound_t, NumCores, NumClusters, CounterWidth, WdClassWidth) \
   typedef struct packed {                                                                               \
-    logic [(CounterWidth)-1:0]                                     late_global;                         \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][(CounterWidth)-1:0]  suspect_eff;                         \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][(CounterWidth)-1:0]  confirm_eff;                         \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][(CounterWidth)-1:0]  late_eff;                            \
+    logic [(NumCores)-1:0][(NumClusters)-1:0][1:0]                 confirm_src;                         \
     logic [(CounterWidth)-1:0]                                     risk_confirm;                        \
     logic [(NumCores)-1:0][(NumClusters)-1:0][31:0]                h_static;                            \
     logic [(NumCores)-1:0][(NumClusters)-1:0][31:0]                c_static;                            \
     logic [(NumCores)-1:0][(NumClusters)-1:0][(CounterWidth)-1:0]  suspect;                             \
-    logic [(NumCores)-1:0][(NumClusters)-1:0]                      suspect_valid;                       \
     logic [(NumCores)-1:0][(NumClusters)-1:0][(CounterWidth)-1:0]  confirm;                             \
     logic [(NumCores)-1:0][(NumClusters)-1:0][(CounterWidth)-1:0]  late;                                \
     logic [(NumCores)-1:0][(NumClusters)-1:0]                      late_adaptive;                       \
-    logic [(NumCores)-1:0][(NumClusters)-1:0]                      risk;                                \
     logic [(NumCores)-1:0][(NumClusters)-1:0]                      risk_valid;                          \
-    logic [(NumCores)-1:0][(NumClusters)-1:0]                      risk_use;                            \
-    logic [(NumCores)-1:0][(NumClusters)-1:0]                      adapt_confirm;                       \
     logic [(NumCores)-1:0][(NumClusters)-1:0][(WdClassWidth)-1:0]  wd_class;                            \
   } wd_bound_t;
 

@@ -2081,18 +2081,13 @@ module bingo_hw_manager_top #(
         evlog_move_t             move;
         // The threshold that would confirm a fence of the slot now, the argument
         // of its fence record (the host decodes it): 4 the total-time budget,
-        // 3 the learned C, 1 the at-risk R, 2 the per-type C, 0 the parameter C
-        // (ConfirmTimeoutCycles; wd_bound.confirm is 0 then, see
-        // bingo_hw_manager_wd_bounds)
+        // else where the confirm threshold comes from (wd_bound.confirm_src: 3 the
+        // learned C, 1 the at-risk R, 2 the per-type C, 0 the parameter C)
         logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][2:0] fence_reason;
         always_comb begin
             for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
-                    fence_reason[c][cl] = wd_budget_fence[c][cl] ? 3'd4 : {1'b0,
-                        wd_bound.adapt_confirm[c][cl] ? 2'd3 :
-                        (ctrl_view.risk[c][cl] && wd_bound.risk_valid[c][cl] &&
-                        bingo_hw_manager_risk_confirm_i != 0) ? 2'd1 :
-                        ((wd_bound.confirm[c][cl] != 0) ? 2'd2 : 2'd0)};
+                    fence_reason[c][cl] = wd_budget_fence[c][cl] ? 3'd4 : {1'b0, wd_bound.confirm_src[c][cl]};
         end
         bingo_hw_manager_evlog_events #(
             .NumCores        ( NUM_CORES_PER_CLUSTER                            ),

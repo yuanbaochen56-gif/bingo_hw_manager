@@ -13,6 +13,26 @@ logic [1:0][0:0] ubusy, suspect, ufence;
 `BINGO_HW_MANAGER_TYPEDEF_WD_BOUND_T(unit_wd_bound_t, 2, 1, CW, 3)
 `BINGO_HW_MANAGER_TYPEDEF_WD_STATUS_T(unit_wd_status_t, 2, 1, CW)
 unit_wd_status_t unit_status;
+// As bingo_hw_manager_wd_bounds for two slots at risk, with the top's validated
+// per-type H / C and R: R where valid and nonzero, else the type's C, else the
+// parameters
+logic [1:0][0:0]         unit_risk_valid;
+logic [1:0][0:0][CW-1:0] unit_suspect, unit_confirm, unit_suspect_eff, unit_confirm_eff;
+logic [1:0][0:0][1:0]    unit_confirm_src;
+assign unit_risk_valid = gen_dut[0].i_dut.wd_bound.risk_valid;
+assign unit_suspect    = gen_dut[0].i_dut.wd_bound.suspect;
+assign unit_confirm    = gen_dut[0].i_dut.wd_bound.confirm;
+for (genvar s = 0; s < 2; s++) begin : gen_unit_bound
+    logic risk_now;
+    assign risk_now = unit_risk_valid[s][0] && (CW'(risk_confirm[0]) != '0);
+    assign unit_suspect_eff[s][0] = (unit_suspect[s][0] != '0) ? unit_suspect[s][0] : CW'(20);
+    assign unit_confirm_eff[s][0] = risk_now ? CW'(risk_confirm[0]) :
+                                    (unit_confirm[s][0] != '0) ? unit_confirm[s][0] :
+                                    CW'(WATCHDOG_CONFIRM_TIMEOUT);
+    assign unit_confirm_src[s][0] = risk_now ? bingo_hw_manager_pkg::WdConfirmRisk :
+                                    (unit_confirm[s][0] != '0) ? bingo_hw_manager_pkg::WdConfirmType :
+                                    bingo_hw_manager_pkg::WdConfirmParam;
+end
 assign ubusy = unit_status.busy;
 assign suspect = unit_status.dead_suspect;
 assign ufence = unit_status.fenced;
@@ -24,12 +44,10 @@ bingo_hw_manager_watchdog #(
 ) unit_wd (
     .clk_i(clk_i), .rst_ni(unit_rst),
     .event_i('{dispatch: ud, done: done, heartbeat: hb, waiting: '0, tick: ticks}),
-    .bound_i('{risk: '1,
-               risk_confirm: CW'(risk_confirm[0]),
-               risk_use: gen_dut[0].i_dut.wd_bound.risk_valid,
-               suspect: gen_dut[0].i_dut.wd_bound.suspect,
-               confirm: gen_dut[0].i_dut.wd_bound.confirm,
-               default: '0}),
+    .bound_i('{risk_confirm: CW'(risk_confirm[0]),
+               suspect: unit_suspect, confirm: unit_confirm,
+               suspect_eff: unit_suspect_eff, confirm_eff: unit_confirm_eff,
+               confirm_src: unit_confirm_src, default: '0}),
     .status_o(unit_status)
 );
 

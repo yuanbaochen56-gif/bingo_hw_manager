@@ -33,6 +33,9 @@ module tb_bingo_hw_manager_wd_budget;
     task_t       tk;
     est_t        est;
     status_t     st, ref_st;
+    // The thresholds bingo_hw_manager_wd_bounds gives without any CSR: the parameters
+    bound_t      bound_params;
+    assign bound_params = '{suspect_eff: {3{8'd200}}, confirm_eff: {3{8'd250}}, default: '0};
     logic [2:0][0:0] fence_req, late;
     int errors = 0;
 
@@ -42,7 +45,7 @@ module tb_bingo_hw_manager_wd_budget;
         .CoreTypeId({4'd0, 4'd2, 4'd1}),
         .wd_event_t(event_t), .wd_bound_t(bound_t), .wd_status_t(status_t)
     ) dut_wd (
-        .clk_i(clk), .rst_ni(rst), .event_i(ev), .bound_i('0), .fence_req_i(fence_req), .status_o(st)
+        .clk_i(clk), .rst_ni(rst), .event_i(ev), .bound_i(bound_params), .fence_req_i(fence_req), .status_o(st)
     );
     bingo_hw_manager_watchdog #(
         .NumCores(3), .NumClusters(1), .CounterWidth(8),
@@ -50,7 +53,7 @@ module tb_bingo_hw_manager_wd_budget;
         .CoreTypeId({4'd0, 4'd2, 4'd1}),
         .wd_event_t(event_t), .wd_bound_t(bound_t), .wd_status_t(status_t)
     ) ref_wd (
-        .clk_i(clk), .rst_ni(rst), .event_i(ev), .bound_i('0), .fence_req_i('0), .status_o(ref_st)
+        .clk_i(clk), .rst_ni(rst), .event_i(ev), .bound_i(bound_params), .fence_req_i('0), .status_o(ref_st)
     );
     bingo_hw_manager_wd_budget #(
         .NumCores(3), .NumClusters(1), .CounterWidth(8), .CoreMask(3'b011),

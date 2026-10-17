@@ -32,6 +32,14 @@ package bingo_hw_manager_pkg;
     } pm_counter_e;
     localparam int unsigned PmCounters = int'(PmcActive) + 1;  // PmcActive is the last
 
+    // Source of the confirm threshold a slot uses (bingo_hw_manager_wd_bounds,
+    // wd_bound_t confirm_src). The values are the codes of the event log's fence
+    // record (4 there is the total-time budget), which the host decodes.
+    localparam logic [1:0] WdConfirmParam   = 2'd0; // ConfirmTimeoutCycles
+    localparam logic [1:0] WdConfirmRisk    = 2'd1; // the at-risk R (risk_confirm_i)
+    localparam logic [1:0] WdConfirmType    = 2'd2; // the core type's C (type_c_i)
+    localparam logic [1:0] WdConfirmLearned = 2'd3; // the learned C (bingo_hw_manager_wd_adapt)
+
     // Port structs of fixed width. The ones whose width depends on the
     // parameters of the top are macros in bingo_hw_manager/typedef.svh.
 
