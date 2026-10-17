@@ -913,9 +913,6 @@ module bingo_hw_manager_top #(
     wd_event_t   wd_event;
     wd_bound_t   wd_bound;
     wd_status_t  wd_status;
-    // Not read by the design (each slot uses wd_bound.risk_valid): the value
-    // tb_bingo_hw_manager_watchdog_risk_confirm compares the effective threshold with
-    logic [WatchdogCounterWidth-1:0] wd_risk_confirm;
     // The bounds learned by bingo_hw_manager_wd_adapt
     wd_task_t    wd_task;
     wd_learned_t wd_learned;
@@ -1495,11 +1492,17 @@ module bingo_hw_manager_top #(
     assign core_fenced_o = core_fenced;
     assign core_dead_suspect_o = core_dead_suspect;
     assign ready_queue_pending_o = (READY_AND_DONE_QUEUE_INTERFACE_TYPE == 0) ? '0 : ~ready_queue_empty;
-    // Validate the full CSR before narrowing it. A valid R is below C and fits.
+`ifndef SYNTHESIS
+    // Testbench observation point, not read by the design (each slot uses
+    // wd_bound.risk_valid): the value tb_bingo_hw_manager_watchdog_risk_confirm
+    // compares the effective threshold with. Validate the full CSR before
+    // narrowing it. A valid R is below C and fits.
+    logic [WatchdogCounterWidth-1:0] wd_risk_confirm;
     assign wd_risk_confirm = (WatchdogConfirmTimeoutCycles != 0 &&
                              bingo_hw_manager_risk_confirm_i > WatchdogHeartbeatTimeoutCycles &&
                              bingo_hw_manager_risk_confirm_i < WatchdogConfirmTimeoutCycles) ?
                              WatchdogCounterWidth'(bingo_hw_manager_risk_confirm_i) : '0;
+`endif
     // Thresholds of every slot: parameters, core type, learned, at risk
     assign wd_h_ad          = wd_learned.h;
     assign wd_c_ad          = wd_learned.c;
@@ -1666,7 +1669,9 @@ module bingo_hw_manager_top #(
             end
         end
     end
-    // Load of a slot: its checkout queue occupancy (full = highest)
+    // Load of a slot: its checkout queue occupancy (full = highest). This is the
+    // load the substitute choice (SubstitutePolicy 1) and the boost
+    // (boost_load_min) use, not bingo_hw_manager_load_monitor below.
     logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][CheckoutUsageWidth:0] ctrl_load;
     for (genvar c = 0; c < NUM_CORES_PER_CLUSTER; c++) begin : gen_ctrl_load_core
         for (genvar cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++) begin : gen_ctrl_load_cluster
@@ -2348,6 +2353,9 @@ module bingo_hw_manager_top #(
     //////////////////////////////////////////////////////////////////////
     // Load monitor (upstream, observation only)
     //////////////////////////////////////////////////////////////////////
+    // The control plane does not read it: its load is the checkout occupancy
+    // (ctrl_load). The per-slot counts are left open; load_total_pending_o is
+    // not connected in HeMAiA and only read by tb_stimulus_pm_fault_aware.
     bingo_hw_manager_load_monitor #(
         .NumCores   (NUM_CORES_PER_CLUSTER),
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),
