@@ -95,9 +95,13 @@ import axi_test::*;
 `ifndef TB_FENCE_FB
   `define TB_FENCE_FB 16'h0000
 `endif
-// Substitute choice (bingo_hw_manager_top sub_cfg_i): spare clusters, 0 = none
+// Substitute choice (bingo_hw_manager_top sub_cfg_i): spare clusters, 0 = none;
+// partitions, SubPartBits per cluster, all ones = one partition
 `ifndef TB_SUB_SPARE
   `define TB_SUB_SPARE 32'h0
+`endif
+`ifndef TB_SUB_PART
+  `define TB_SUB_PART 32'hffff_ffff
 `endif
 // Level 3: connect the remote dispatch / done streams of chiplet i to chiplet
 // (i + 1) % NUM_CHIPLET (back to back; needs TB_SUBSTITUTE_LEVEL_MASK[2])
@@ -702,7 +706,7 @@ logic [CERF_FB_NUM_TYPES-1:0]      cerf_fb_evt   [NUM_CHIPLET];
 logic [CERF_FB_NUM_TYPES-1:0] fence_fb [NUM_CHIPLET] = '{default: 16'(`TB_FENCE_FB)};
 // Substitute choice: TB_SUB_* from the start; a stimulus file may write it
 // like the host registers.
-bingo_hw_manager_pkg::sub_cfg_t sub_cfg [NUM_CHIPLET] = '{default: '{spare: `TB_SUB_SPARE}};
+bingo_hw_manager_pkg::sub_cfg_t sub_cfg [NUM_CHIPLET] = '{default: '{spare: `TB_SUB_SPARE, partition: `TB_SUB_PART}};
 
 initial begin
     cerf_write_en = '0;

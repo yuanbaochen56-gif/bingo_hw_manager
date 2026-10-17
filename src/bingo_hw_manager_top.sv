@@ -268,11 +268,12 @@ module bingo_hw_manager_top #(
     // 0 = off. Set it before the first fence or park.
     input  logic [2**CoreTypeIdWidth-1:0]       bingo_hw_manager_fence_fb_i = '0,
     // Substitute choice (bingo_hw_manager_slot_table, bingo_hw_manager_pkg::sub_cfg_t):
-    // spare clusters are searched first for a substitute. The default is the
-    // choice of before. A change applies to the substitutes chosen after it: set
-    // it before the first fence or park. The default is SubCfgDefault written
-    // out (not every tool takes a package constant as a port default).
-    input  bingo_hw_manager_pkg::sub_cfg_t      sub_cfg_i = {32'h0},
+    // spare clusters are searched first for a substitute, and a cluster stands
+    // in for another only within a shared partition. The default is the choice
+    // of before. A change applies to the substitutes chosen after it: set it
+    // before the first fence or park. The default is SubCfgDefault written out
+    // (not every tool takes a package constant as a port default).
+    input  bingo_hw_manager_pkg::sub_cfg_t      sub_cfg_i = {32'h0, 32'hffff_ffff},
     // Observation-only event log. CLEAR/POP trigger once per value change.
     input logic                                evlog_enable_i = 1'b0,
     input logic [31:0]                         evlog_clear_i = '0,

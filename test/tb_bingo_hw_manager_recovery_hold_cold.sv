@@ -27,7 +27,7 @@ module tb_bingo_hw_manager_recovery_hold_cold;
     ) ctrl (
         .clk_i(clk), .rst_ni(rst), .slot_i('{fenced: fenced, default: '0}), .late_i('0),
         .queue_i('{waiting: '1, checkout_empty: '1, ready_empty: '1, default: '0}), .host_i('{domain: ctrl_domains, default: '0}),
-        .type_cfg_i('0), .cfg_i('{recovery_hold: 32'd32, default: '0}), .cluster_access_i(2'b00), .cerf_fb_done_i(1'b0),
+        .type_cfg_i('0), .cfg_i('{recovery_hold: 32'd32, sub: bingo_hw_manager_pkg::SubCfgDefault, default: '0}), .cluster_access_i(2'b00), .cerf_fb_done_i(1'b0),
         .pm_i('{enable: 1'b1, dvfs: 1'b0, normal_level: 8'd6, dvfs_level: 8'd6, domain_level: level, default: '0}),
         .view_o(view), .smt_o(), .smt_update_o(), .park_o(), .cerf_fb_o(), .cerf_fb_evt_o()
     );

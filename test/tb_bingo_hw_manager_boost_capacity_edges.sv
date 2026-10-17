@@ -63,6 +63,7 @@ module tb_bingo_hw_manager_boost_capacity_edges;
                  boost_policy:   boost_policy,
                  boost_credit:   boost_credit,
                  boost_load_min: boost_load_min,
+                 sub:            bingo_hw_manager_pkg::SubCfgDefault,
                  default:        '0}),
         .pm_i('{enable:       1'b1,
                 dvfs:         1'b0,

@@ -8,7 +8,9 @@
 // Candidates are the logical slot itself and every slot of the chiplet with the
 // same non-zero CoreTypeId that LevelMask allows, minus the fenced slots:
 //   LevelMask[0] (level 1) slots of the logical cluster
-//   LevelMask[1] (level 2) slots of the other clusters, enabled by core type
+//   LevelMask[1] (level 2) slots of the other clusters, enabled by core type,
+//                          in a cluster that part_ok_i allows (e.g. the same
+//                          partition)
 // The logical cluster is searched first, then the other clusters in index
 // order; within a cluster the lowest core wins. With LeastWeight the candidate
 // with the lowest weight_i wins instead (e.g. its queue occupancy), still in the
@@ -38,8 +40,10 @@ module bingo_hw_manager_substitute_sel #(
     input  logic [ClusterIdWidth-1:0]            logical_cluster_i,
     input  logic [NumCores-1:0][NumClusters-1:0] fenced_i,
     input  logic [NumCores-1:0][NumClusters-1:0][WeightWidth-1:0] weight_i = '0,
-    // Spare clusters, searched first (0 = none)
+    // Spare clusters, searched first (0 = none); clusters whose slots may stand
+    // in for the logical cluster's at level 2 (all ones = every cluster)
     input  logic [NumClusters-1:0]               spare_i = '0,
+    input  logic [NumClusters-1:0]               part_ok_i = '1,
     output logic                                 found_o,
     output logic [CoreIdWidth-1:0]               core_o,
     output logic [ClusterIdWidth-1:0]            cluster_o
@@ -59,7 +63,7 @@ module bingo_hw_manager_substitute_sel #(
                     (((c == int'(logical_core_i)) && (cl == int'(logical_cluster_i))) ||
                      ((logical_type != '0) && (CoreTypeId[c][cl] == logical_type) &&
                       ((cl == int'(logical_cluster_i)) ? LevelMask[0] :
-                       (LevelMask[1] && L2TypeEn[logical_type]))));
+                       (LevelMask[1] && L2TypeEn[logical_type] && part_ok_i[cl]))));
             end
         end
     end

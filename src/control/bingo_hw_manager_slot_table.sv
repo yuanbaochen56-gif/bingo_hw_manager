@@ -29,6 +29,10 @@
 //                       entry is recomputed, i.e. when the core dies.
 // Spare clusters (sub_cfg_i.spare, host-configured, 0 = none) are searched
 // before the logical cluster, with either policy (bingo_hw_manager_substitute_sel).
+// Partitions (sub_cfg_i.partition, all ones = one): a slot of another cluster
+// is a candidate only if the two clusters share a partition, so a fault in one
+// partition never takes a core of another; without a candidate there the slot
+// is stuck (or exported, level 3), and the spare search keeps to it as well.
 // Only the entries of fenced and parked slots are read (and their substitutes
 // written), so a change of sub_cfg_i applies to the entries chosen after it;
 // fenced and parked entries keep their substitute, which already has their
@@ -122,8 +126,30 @@ module bingo_hw_manager_slot_table #(
     // ------------------------------------------------------------------
     // Substitute choice from the host
     // ------------------------------------------------------------------
+    localparam int unsigned PartBits = bingo_hw_manager_pkg::SubPartBits;
+    localparam int unsigned PartClusters = (NumClusters < 32 / PartBits) ? NumClusters : 32 / PartBits;
     logic [NumClusters-1:0] spare;
     assign spare = sub_cfg_i.spare[NumClusters-1:0];
+    // The partitions of every cluster (the ones beyond the field: all), and
+    // part_ok[l][cl]: a slot of cluster cl may stand in for a slot of cluster l
+    // at level 2 (the selector never asks it for l itself: the own cluster is
+    // level 1, which partitions do not restrict)
+    logic [NumClusters-1:0][PartBits-1:0]    part_of;
+    logic [NumClusters-1:0][NumClusters-1:0] part_ok;
+    for (genvar cl = 0; cl < NumClusters; cl++) begin : gen_part_of
+        if (cl < PartClusters) begin : gen_in_field
+            assign part_of[cl] = sub_cfg_i.partition[PartBits * cl +: PartBits];
+        end else begin : gen_beyond
+            assign part_of[cl] = '1;
+        end
+    end
+    always_comb begin
+        for (int unsigned l = 0; l < NumClusters; l++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                part_ok[l][cl] = (part_of[l] & part_of[cl]) != '0;
+            end
+        end
+    end
 
     // ------------------------------------------------------------------
     // Candidate choice per logical slot over the current fenced set
@@ -150,6 +176,7 @@ module bingo_hw_manager_slot_table #(
                 .logical_core_i(CoreIdWidth'(c)),
                 .logical_cluster_i(ClusterIdWidth'(cl)),
                 .spare_i(spare),
+                .part_ok_i(part_ok[cl]),
                 .fenced_i(slot_i.fenced),
                 .weight_i(queue_i.load),
                 .found_o(choice_any[c][cl]),
@@ -197,6 +224,7 @@ module bingo_hw_manager_slot_table #(
                 .logical_core_i(CoreIdWidth'(c)),
                 .logical_cluster_i(ClusterIdWidth'(cl)),
                 .spare_i(spare),
+                .part_ok_i(part_ok[cl]),
                 .fenced_i(fenced_excl),
                 .weight_i(queue_i.load),
                 .found_o(park_choice_found[c][cl]),

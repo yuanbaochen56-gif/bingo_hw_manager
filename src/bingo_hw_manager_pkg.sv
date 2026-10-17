@@ -36,13 +36,21 @@ package bingo_hw_manager_pkg;
     // Host configuration of the control plane (bingo_hw_manager_ctrl)
     // Substitute choice of the slot mapping table (bingo_hw_manager_slot_table),
     // from the host:
-    //   spare  clusters searched first for a substitute, one bit per cluster
-    //          (e.g. a cluster the compiler leaves empty as a cold spare);
-    //          0 = none (the order of before)
+    //   spare      clusters searched first for a substitute, one bit per cluster
+    //              (e.g. a cluster the compiler leaves empty as a cold spare);
+    //              0 = none (the order of before)
+    //   partition  SubPartBits per cluster (cluster i at [SubPartBits * i +:
+    //              SubPartBits]): the partitions it belongs to. A slot of another
+    //              cluster may stand in for a slot only if their clusters share a
+    //              partition; the same cluster always may (level 1). Clusters from
+    //              32 / SubPartBits on belong to every partition. All ones = one
+    //              partition (the choice of before)
+    localparam int unsigned SubPartBits = 4;
     typedef struct packed {
         logic [31:0] spare;
+        logic [31:0] partition;
     } sub_cfg_t;
-    localparam sub_cfg_t SubCfgDefault = '{spare: '0};
+    localparam sub_cfg_t SubCfgDefault = '{spare: '0, partition: '1};
 
     typedef struct packed {
         logic [31:0] idle_delay;     // cycles a slot must be idle before the PM may count it as idle (0: at once)
