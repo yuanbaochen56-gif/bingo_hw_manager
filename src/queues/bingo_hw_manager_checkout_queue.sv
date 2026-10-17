@@ -102,8 +102,6 @@ module bingo_hw_manager_checkout_queue
     output retire_req_t                 retire_o,
     input  retire_rsp_t                 retire_i
 );
-    import bingo_hw_manager_pkg::*;
-
     // The entry pushed, occupancy, head and retirement (push_o, occ_o, head_o, retire_o)
     logic                  push, exit_absorb;
     task_desc_t            push_desc, head;
@@ -302,9 +300,14 @@ module bingo_hw_manager_checkout_queue
     assign chiplet_set_valid = set_oup_valid[1];
     assign set_oup_ready     = {retire_i.chiplet_set, local_ready};
 
-    // Only drop the signal when dep set is disabled and the per-(core,cluster) done queue is non-empty
-    // (a head that ran has its done here already, see retire_kind; the done
-    // queue only decides for a head that runs on no core)
+    // A head whose dep set is disabled skips the dependency matrix, but only
+    // while this slot's done queue is not empty. A head that ran always has
+    // its done there (see retire_kind), so it is always dropped. A head that
+    // runs on no core (dummy, CERF-skipped, absorbed exit) is dropped only if
+    // the done queue happens to hold a done; otherwise it goes through the
+    // dependency-matrix arbiter like a set and retires on that handshake. The
+    // condition is left over from an older retire rule; it stays because
+    // dropping those heads too would change when they retire.
     assign local_drop = (head.dep_set_info.dep_set_en == 1'b0) && !done_empty;
     stream_filter i_stream_filter_checkout_queue_dep_set_enable (
         .valid_i ( set_oup_valid[0]  ),
