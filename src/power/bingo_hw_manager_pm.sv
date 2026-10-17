@@ -28,6 +28,20 @@ module bingo_hw_manager_pm #(
     // the HeMAiA level (occamygen hw_manager_ipi_idx) so it tracks the hart count instead
     // of being hardcoded; must match HW_MANAGER_DVFS_MSIP_BIT / occamy_soc.sv ipi_i.
     parameter int unsigned HOST_DVFS_MSIP_BIT = 3,
+    // Layout of the clock/reset controller's division registers (DFS):
+    // 0  four 8-bit divisions per 32-bit register from 0x08 (domains 4k..4k+3 at
+    //    0x08 + 4k), loaded by a bit of the valid register at 0x04. The PM writes
+    //    the whole 8-byte word that holds its domain (the other seven bytes with
+    //    the levels it applied before), so it shares that word with any other
+    //    writer of those domains.
+    // 1  besides those, one division register per domain (domain d at
+    //    0x38 + 8d; nothing at 0x3c + 8d) and its own valid register at 0x34.
+    //    The PM writes only its domain's register and loads it with that valid
+    //    register: it never writes a byte of another domain, and the packed
+    //    registers are left to the other writers (the host). Same bus sequence
+    //    as 0 (an 8-byte write at an 8-byte boundary, then a write to the upper
+    //    half of an 8-byte word), so the level is applied in the same cycle.
+    parameter bit      DivisionPerDomain = 1'b0,
     parameter type     req_lite_t   = logic,
     parameter type     resp_lite_t  = logic,
     parameter type     addr_t       = logic,
@@ -72,6 +86,9 @@ module bingo_hw_manager_pm #(
     localparam int unsigned MAX_DOMAINS = bingo_hw_manager_pkg::PmMaxDomains;
     localparam int unsigned OFFSET_CLOCK_VALID = 32'h04;
     localparam int unsigned OFFSET_CLOCK_DIVISION_BASE = 32'h08;
+    // DivisionPerDomain: the per-domain registers and their valid register
+    localparam int unsigned OFFSET_DOMAIN_VALID = 32'h34;
+    localparam int unsigned OFFSET_DOMAIN_DIVISION_BASE = 32'h38;
     // HOST_DVFS_MSIP_BIT is now a module parameter (injected from the HeMAiA level).
     // DVFS_REQUEST field layout (must match occamy_quad_periph DVFS_REQUEST register)
     localparam int unsigned DVFS_REQ_PENDING_BIT = 0;
@@ -302,28 +319,39 @@ module bingo_hw_manager_pm #(
                 // writes: a 64-bit write with half of its strobes reaches it through
                 // the 64- to 32-bit converter as a second write without strobes,
                 // which it answers with SLVERR.
-                bus_addr = pm_base_addr_i + OFFSET_CLOCK_DIVISION_BASE + ((active_domain_id_q >> 3) << 3);
+                // DivisionPerDomain: the 8-byte word of the active domain's own
+                // register (0x38 + 8d), whose upper half holds no register.
+                if (DivisionPerDomain) begin
+                    bus_addr = pm_base_addr_i + OFFSET_DOMAIN_DIVISION_BASE + (addr_t'(active_domain_id_q) << 3);
+                end else begin
+                    bus_addr = pm_base_addr_i + OFFSET_CLOCK_DIVISION_BASE + ((active_domain_id_q >> 3) << 3);
+                end
                 bus_aw_valid = 1'b1;
             end
 
             WRITE_FREQ_W: begin
                 // The other seven domains of the word keep the level the PM last
                 // applied to them (0: none yet); the controller loads a domain's
-                // level only with its valid bit (WRITE_VALID_*)
-                bus_wdata = division_word;
+                // level only with its valid bit (WRITE_VALID_*).
+                // DivisionPerDomain: the level alone, in the register of the domain.
+                if (DivisionPerDomain) begin
+                    bus_wdata = data_t'(active_target_level_q);
+                end else begin
+                    bus_wdata = division_word;
+                end
                 bus_wstrb = 8'hff;
                 bus_w_valid  = 1'b1;
             end
 
             WRITE_VALID_AW: begin
-                bus_addr = pm_base_addr_i + OFFSET_CLOCK_VALID;
+                bus_addr = pm_base_addr_i + (DivisionPerDomain ? OFFSET_DOMAIN_VALID : OFFSET_CLOCK_VALID);
                 bus_aw_valid = 1'b1;
             end
 
             WRITE_VALID_W: begin
                 // Replicate 32-bit data
                 bus_wdata = {2{32'(1'b1) << active_domain_id_q}};
-                // Valid register is at Offset 0x04 (Upper 32 bits)
+                // Valid register is at Offset 0x04 (Upper 32 bits; DivisionPerDomain: 0x34)
                 // We are actully writes to the 0x00 to 0x08 range with the 64bit bus
                 // So the valid bits are always in the upper 32 bits
                 bus_wstrb = 8'hf0;

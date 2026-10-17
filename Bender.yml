@@ -234,6 +234,7 @@ sources:
       - test/tb_bingo_hw_manager_task_queue_master.sv     # task fetch: exactly the task count, none for 0, at most one per task id
       - test/tb_bingo_hw_manager_task_queue_slave.sv      # task queue slave mode: the start reset outputs stay 0
       - test/tb_bingo_hw_manager_bus_error.sv             # bus errors: a failed descriptor read stops the fetch; PM write / read flags
+      - test/tb_bingo_hw_manager_pm_division.sv           # PM division writes: packed registers vs one per domain, with the host as a second writer
       - test/tb_bingo_hw_manager_csr_unknown.sv           # CSR port: an unknown CSR reads 0 or is ignored, never stalls
       - test/tb_bingo_hw_manager_chiplet_dep_set_data.sv  # chiplet dep-set write: the data is the whole descriptor, no unknown bit
       - test/tb_bingo_hw_manager_done_mailbox.sv          # done mailbox: a done for a slot that does not exist is dropped, never blocks

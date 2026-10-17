@@ -104,6 +104,11 @@ module bingo_hw_manager_top #(
     // domains PmCountBase .. PmCountBase + PmCountDomains - 1; 0 = none
     parameter int unsigned PmCountBase = 0,
     parameter int unsigned PmCountDomains = 0,
+    // Division registers of the clock/reset controller the PM writes (DFS):
+    // 0 = the packed ones (the PM writes the 8-byte word of eight domains),
+    // 1 = one register per domain and its own valid register (the PM writes
+    // only its domain; see bingo_hw_manager_pm DivisionPerDomain)
+    parameter bit          PmDivisionPerDomain = 1'b0,
     // Level 3 export queues: one per peer of the transport (e.g.
     // bingo_hw_manager_remote_link NumPeers), each deep enough for a whole
     // checkout queue, so a peer without credits only holds its own exports
@@ -1393,6 +1398,7 @@ module bingo_hw_manager_top #(
         .NUM_CORES_PER_CLUSTER    ( NUM_CORES_PER_CLUSTER             ),
         .CfgBusWidth              ( DeviceAxiLiteDataWidth            ),
         .HOST_DVFS_MSIP_BIT       ( HOST_DVFS_MSIP_BIT                ),
+        .DivisionPerDomain        ( PmDivisionPerDomain               ),
         .req_lite_t               ( host_axi_lite_req_t               ),
         .resp_lite_t              ( host_axi_lite_resp_t              ),
         .addr_t                   ( host_axi_lite_addr_t              ),
