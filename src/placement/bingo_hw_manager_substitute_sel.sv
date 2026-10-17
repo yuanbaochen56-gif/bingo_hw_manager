@@ -12,7 +12,9 @@
 // The logical cluster is searched first, then the other clusters in index
 // order; within a cluster the lowest core wins. With LeastWeight the candidate
 // with the lowest weight_i wins instead (e.g. its queue occupancy), still in the
-// logical cluster first, the lowest index on a tie. bingo_hw_manager_slot_table
+// logical cluster first, the lowest index on a tie. Spare clusters (spare_i)
+// are searched before all of that, in index order, among the same candidates.
+// bingo_hw_manager_slot_table
 // keeps the choice in the slot mapping table, so all tasks of one dead core go
 // to the same substitute even when the weights change.
 module bingo_hw_manager_substitute_sel #(
@@ -36,6 +38,8 @@ module bingo_hw_manager_substitute_sel #(
     input  logic [ClusterIdWidth-1:0]            logical_cluster_i,
     input  logic [NumCores-1:0][NumClusters-1:0] fenced_i,
     input  logic [NumCores-1:0][NumClusters-1:0][WeightWidth-1:0] weight_i = '0,
+    // Spare clusters, searched first (0 = none)
+    input  logic [NumClusters-1:0]               spare_i = '0,
     output logic                                 found_o,
     output logic [CoreIdWidth-1:0]               core_o,
     output logic [ClusterIdWidth-1:0]            cluster_o
@@ -60,21 +64,22 @@ module bingo_hw_manager_substitute_sel #(
         end
     end
 
-    // Level 1 (the logical cluster) first, then level 2 (the other clusters in
-    // index order). Scanning upwards, a candidate replaces the current choice
-    // only if nothing was found yet or (LeastWeight) its weight is lower, so
-    // the lowest index wins among equals.
+    // The spare clusters first (pass 0), then level 1 (the logical cluster),
+    // then level 2 (the other clusters in index order). Scanning upwards, a
+    // candidate replaces the current choice only if nothing was found yet or
+    // (LeastWeight) its weight is lower, so the lowest index wins among equals.
     logic [WeightWidth-1:0] best_weight;
     always_comb begin
         found_o     = 1'b0;
         core_o      = '0;
         cluster_o   = '0;
         best_weight = '0;
-        for (int unsigned level = 1; level <= 2; level++) begin
+        for (int unsigned level = 0; level <= 2; level++) begin
             if (!found_o) begin
                 for (int unsigned cl = 0; cl < NumClusters; cl++) begin
                     for (int unsigned c = 0; c < NumCores; c++) begin
-                        if (candidate[c][cl] && ((cl == int'(logical_cluster_i)) == (level == 1)) &&
+                        if (candidate[c][cl] &&
+                            ((level == 0) ? spare_i[cl] : ((cl == int'(logical_cluster_i)) == (level == 1))) &&
                             (!found_o || (LeastWeight && (weight_i[c][cl] < best_weight)))) begin
                             found_o     = 1'b1;
                             core_o      = CoreIdWidth'(c);

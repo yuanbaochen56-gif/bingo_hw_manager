@@ -95,6 +95,10 @@ import axi_test::*;
 `ifndef TB_FENCE_FB
   `define TB_FENCE_FB 16'h0000
 `endif
+// Substitute choice (bingo_hw_manager_top sub_cfg_i): spare clusters, 0 = none
+`ifndef TB_SUB_SPARE
+  `define TB_SUB_SPARE 32'h0
+`endif
 // Level 3: connect the remote dispatch / done streams of chiplet i to chiplet
 // (i + 1) % NUM_CHIPLET (back to back; needs TB_SUBSTITUTE_LEVEL_MASK[2])
 // Import stand-in levels (bingo_hw_manager_top ImportSubstituteLevelMask)
@@ -696,6 +700,9 @@ logic [CERF_FB_NUM_TYPES-1:0]      cerf_fb_evt   [NUM_CHIPLET];
 // Fence fallback types (see bingo_hw_manager_slot_table): TB_FENCE_FB from the start;
 // a stimulus file may write it like the host register.
 logic [CERF_FB_NUM_TYPES-1:0] fence_fb [NUM_CHIPLET] = '{default: 16'(`TB_FENCE_FB)};
+// Substitute choice: TB_SUB_* from the start; a stimulus file may write it
+// like the host registers.
+bingo_hw_manager_pkg::sub_cfg_t sub_cfg [NUM_CHIPLET] = '{default: '{spare: `TB_SUB_SPARE}};
 
 initial begin
     cerf_write_en = '0;
@@ -1142,6 +1149,7 @@ for (genvar chiplet_idx = 0; chiplet_idx < NUM_CHIPLET; chiplet_idx++) begin : g
         .cerf_fb_set_i                        ( cerf_fb_set[chiplet_idx]                                     ),
         .cerf_fb_evt_o                        ( cerf_fb_evt[chiplet_idx]                                     ),
         .bingo_hw_manager_fence_fb_i          ( fence_fb[chiplet_idx]                                        ),
+        .sub_cfg_i                            ( sub_cfg[chiplet_idx]                                         ),
         .evlog_enable_i                      ( `TB_EVLOG_DEPTH != 0                                        ),
         .evlog_clear_i                       ( '0                                                          ),
         .evlog_pop_i                         ( evlog_pop[chiplet_idx]                                      ),

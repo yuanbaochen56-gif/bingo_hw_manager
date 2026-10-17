@@ -157,6 +157,7 @@ module bingo_hw_manager_ctrl
         .slot_i(slot_i),
         .queue_i(queue_i),
         .type_cfg_i(type_cfg_i),
+        .sub_cfg_i(cfg_i.sub),
         .park_req_i(park_req),
         .smt_o(smt_o),
         .smt_update_o(smt_update_o),

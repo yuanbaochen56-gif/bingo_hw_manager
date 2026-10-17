@@ -267,6 +267,12 @@ module bingo_hw_manager_top #(
     // either), so a fence makes it stuck and the degradation above applies.
     // 0 = off. Set it before the first fence or park.
     input  logic [2**CoreTypeIdWidth-1:0]       bingo_hw_manager_fence_fb_i = '0,
+    // Substitute choice (bingo_hw_manager_slot_table, bingo_hw_manager_pkg::sub_cfg_t):
+    // spare clusters are searched first for a substitute. The default is the
+    // choice of before. A change applies to the substitutes chosen after it: set
+    // it before the first fence or park. The default is SubCfgDefault written
+    // out (not every tool takes a package constant as a port default).
+    input  bingo_hw_manager_pkg::sub_cfg_t      sub_cfg_i = {32'h0},
     // Observation-only event log. CLEAR/POP trigger once per value change.
     input logic                                evlog_enable_i = 1'b0,
     input logic [31:0]                         evlog_clear_i = '0,
@@ -1693,7 +1699,8 @@ module bingo_hw_manager_top #(
                           risk_epoch:     32'(bingo_hw_manager_risk_epoch_i),
                           boost_policy:   bingo_hw_manager_boost_policy_i[0],
                           boost_credit:   bingo_hw_manager_boost_policy_i[11:8],
-                          boost_load_min: bingo_hw_manager_boost_policy_i[23:16]};
+                          boost_load_min: bingo_hw_manager_boost_policy_i[23:16],
+                          sub:            sub_cfg_i};
     bingo_hw_manager_ctrl #(
         .NumCores(NUM_CORES_PER_CLUSTER),
         .NumClusters(NUM_CLUSTERS_PER_CHIPLET),

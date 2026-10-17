@@ -27,6 +27,12 @@
 //                       occupancy of its checkout queue), logical cluster first,
 //                       lowest index on a tie. The load is sampled when the
 //                       entry is recomputed, i.e. when the core dies.
+// Spare clusters (sub_cfg_i.spare, host-configured, 0 = none) are searched
+// before the logical cluster, with either policy (bingo_hw_manager_substitute_sel).
+// Only the entries of fenced and parked slots are read (and their substitutes
+// written), so a change of sub_cfg_i applies to the entries chosen after it;
+// fenced and parked entries keep their substitute, which already has their
+// tasks. Set it before the first fence or park.
 //
 // In the cycle a slot is fenced, the cycle a live slot is parked, and the cycle
 // after reset, the table is being written: smt_update_o asks its readers to
@@ -101,8 +107,9 @@ module bingo_hw_manager_slot_table #(
     // Slot state (fenced); queues (checkout and ready empty, push, moved, load)
     input  slot_state_t                          slot_i,
     input  ctrl_queue_t                          queue_i,
-    // Fence fallback per core type, park request per slot
+    // Fence fallback per core type, substitute choice, park request per slot
     input  type_cfg_t                            type_cfg_i,
+    input  bingo_hw_manager_pkg::sub_cfg_t       sub_cfg_i,
     input  logic [NumCores-1:0][NumClusters-1:0] park_req_i,
 
     // The table, the cycle it is written, and the entries recomputed this cycle
@@ -111,6 +118,12 @@ module bingo_hw_manager_slot_table #(
     output logic [NumCores-1:0][NumClusters-1:0] smt_recompute_o,
     output park_t                                park_o
 );
+
+    // ------------------------------------------------------------------
+    // Substitute choice from the host
+    // ------------------------------------------------------------------
+    logic [NumClusters-1:0] spare;
+    assign spare = sub_cfg_i.spare[NumClusters-1:0];
 
     // ------------------------------------------------------------------
     // Candidate choice per logical slot over the current fenced set
@@ -136,6 +149,7 @@ module bingo_hw_manager_slot_table #(
             ) i_choice (
                 .logical_core_i(CoreIdWidth'(c)),
                 .logical_cluster_i(ClusterIdWidth'(cl)),
+                .spare_i(spare),
                 .fenced_i(slot_i.fenced),
                 .weight_i(queue_i.load),
                 .found_o(choice_any[c][cl]),
@@ -182,6 +196,7 @@ module bingo_hw_manager_slot_table #(
             ) i_park_choice (
                 .logical_core_i(CoreIdWidth'(c)),
                 .logical_cluster_i(ClusterIdWidth'(cl)),
+                .spare_i(spare),
                 .fenced_i(fenced_excl),
                 .weight_i(queue_i.load),
                 .found_o(park_choice_found[c][cl]),
@@ -344,13 +359,33 @@ module bingo_hw_manager_slot_table #(
     assign smt_recompute_o = recompute;
 
 `ifndef SYNTHESIS
+    // Entries written before the last change of sub_cfg_i and not since: chosen
+    // under the choice of before
+    bingo_hw_manager_pkg::sub_cfg_t       sub_seen_q;
+    logic [NumCores-1:0][NumClusters-1:0] sub_stale_q;
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            sub_seen_q  <= sub_cfg_i;
+            sub_stale_q <= '0;
+        end else begin
+            sub_seen_q <= sub_cfg_i;
+            for (int unsigned c = 0; c < NumCores; c++) begin
+                for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                    if (recompute[c][cl] || park_commit[c][cl] || unpark_commit[c][cl]) sub_stale_q[c][cl] <= 1'b0;
+                    else if (sub_cfg_i != sub_seen_q)                                  sub_stale_q[c][cl] <= 1'b1;
+                end
+            end
+        end
+    end
+
     // Outside an update cycle the table equals the combinational choice (only
     // for the lowest-index policy: a load-based choice depends on the load when
-    // the core died)
+    // the core died; and not for an entry kept from before a change of sub_cfg_i)
     always @(posedge clk_i) begin : smt_equivalence
         if (rst_ni && !smt_update_o && (SubstitutePolicy == 0)) begin
             for (int unsigned c = 0; c < NumCores; c++) begin
                 for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                    if (sub_stale_q[c][cl] || (sub_cfg_i != sub_seen_q)) continue;
                     // A parked entry was chosen among the slots that were neither in
                     // HOLD nor PARKED at the time, so it is only checked for validity
                     // (below and here: another slot, never itself, never parked).

@@ -185,6 +185,9 @@ sources:
       - test/tb_bingo_hw_manager_4cl_dm_two.sv            # four clusters: the substitute DM core dies too
       - test/tb_bingo_hw_manager_4cl_dm_three.sv          # four clusters: three DM cores die, event log of 12 slots
       - test/tb_bingo_hw_manager_4cl_gemm_cerf.sv         # four clusters: GEMM core stuck in its cluster, CERF
+      - test/tb_bingo_hw_manager_4cl_spare.sv             # four clusters: a spare cluster's DM core first, then the lowest live one
+      - test/tb_bingo_hw_manager_4cl_spare_change.sv      # four clusters: another spare later; fenced entries keep their substitute
+      - test/tb_bingo_hw_manager_4cl_spare_park.sv        # four clusters: a parked DM core parks on the spare
       - test/tb_bingo_hw_manager_remote_dispatch.sv        # level 3: dead core's tasks run on the other chiplet
       - test/tb_bingo_hw_manager_remote_full_queue.sv      # level 3: export from a full checkout queue, in order
       - test/tb_bingo_hw_manager_remote_no_executor.sv     # level 3: no live core of the type anywhere

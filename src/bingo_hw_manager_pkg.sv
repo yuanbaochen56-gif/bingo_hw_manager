@@ -34,6 +34,16 @@ package bingo_hw_manager_pkg;
     // parameters of the top are macros in bingo_hw_manager/typedef.svh.
 
     // Host configuration of the control plane (bingo_hw_manager_ctrl)
+    // Substitute choice of the slot mapping table (bingo_hw_manager_slot_table),
+    // from the host:
+    //   spare  clusters searched first for a substitute, one bit per cluster
+    //          (e.g. a cluster the compiler leaves empty as a cold spare);
+    //          0 = none (the order of before)
+    typedef struct packed {
+        logic [31:0] spare;
+    } sub_cfg_t;
+    localparam sub_cfg_t SubCfgDefault = '{spare: '0};
+
     typedef struct packed {
         logic [31:0] idle_delay;     // cycles a slot must be idle before the PM may count it as idle (0: at once)
         logic [31:0] access_hold;    // cycles a cluster's slots stay awake after an external access (0: off)
@@ -44,6 +54,7 @@ package bingo_hw_manager_pkg;
         logic        boost_policy;   // 0: boost the substitutes of fenced cores, 1: capacity
         logic [3:0]  boost_credit;   // boosted domains per lost slot (0: no limit)
         logic [7:0]  boost_load_min; // minimum load of a capacity boost candidate
+        sub_cfg_t    sub;            // substitute choice (see sub_cfg_t)
     } ctrl_cfg_t;
 
     // Configuration of the PM (bingo_hw_manager_pm) from the host. The levels
