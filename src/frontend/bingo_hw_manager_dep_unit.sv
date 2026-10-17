@@ -70,13 +70,13 @@ module bingo_hw_manager_dep_unit #(
     } dep_matrix_set_meta_t;
 
     /////////////////////////////////////////////////////////
-    // Stream demux core type
+    // Stream demux by core index (assigned_core_id): one waiting queue per core index
     /////////////////////////////////////////////////////////
-    logic                                           stream_demux_core_type_inp_valid;
-    logic                                           stream_demux_core_type_inp_ready;
-    logic [CoreIdWidth-1:0]                         stream_demux_core_type_oup_sel;
-    logic [NumCores-1:0]                            stream_demux_core_type_oup_valid;
-    logic [NumCores-1:0]                            stream_demux_core_type_oup_ready;
+    logic                                           stream_demux_core_idx_inp_valid;
+    logic                                           stream_demux_core_idx_inp_ready;
+    logic [CoreIdWidth-1:0]                         stream_demux_core_idx_oup_sel;
+    logic [NumCores-1:0]                            stream_demux_core_idx_oup_valid;
+    logic [NumCores-1:0]                            stream_demux_core_idx_oup_ready;
 
     ///////////////////////////////////
     // Waiting dep check queue signals
@@ -126,9 +126,9 @@ module bingo_hw_manager_dep_unit #(
     ///////////////////////////////////////
     // Stream Arbiter Dep Matrix Set
     ///////////////////////////////////////
-    // There are two types input streams to set the dep matrix
-    // Type 1: From Checkout queues (NUM_CORE * NUM_Cluster) for normal and dummy set dep
-    // Type 2: From Chiplet Dep Set Recv Queue for chiplet dep set queues
+    // There are two sources of input streams to set the dep matrix
+    // Source 1: the checkout queues retiring a task (NUM_CORE * NUM_Cluster), normal and dummy set dep
+    // Source 2: another chiplet (the chiplet dep set receive queue)
     // In total we have (NUM_CORE * NUM_Cluster) + 1 inputs for the dep matrix set
     localparam int unsigned STREAM_ARBITER_DEP_MATRIX_SET_NUM_INP = NumCores * NumClusters + 1;
     dep_matrix_set_meta_t [STREAM_ARBITER_DEP_MATRIX_SET_NUM_INP-1:0] stream_arbiter_dep_matrix_set_inp_data;
@@ -156,27 +156,27 @@ module bingo_hw_manager_dep_unit #(
     logic [NumClusters-1:0][NumCores-1:0]                stream_demux_set_dep_matrix_core_id_oup_valid;
     logic [NumClusters-1:0][NumCores-1:0]                stream_demux_set_dep_matrix_core_id_oup_ready;
 
-    assign task_ready_o = stream_demux_core_type_inp_ready;
+    assign task_ready_o = stream_demux_core_idx_inp_ready;
     assign head_o       = waiting_dep_check_task_desc;
     assign head_empty_o = waiting_dep_check_queue_empty;
 
     //////////////////////////////////////////////////////////////////////
-    // Stream demux core type
+    // Stream demux by core index (assigned_core_id): one waiting queue per core index
     //////////////////////////////////////////////////////////////////////
     stream_demux #(
         .N_OUP ( NumCores                        )
-    ) i_stream_demux_core_type (
-        .inp_valid_i ( stream_demux_core_type_inp_valid ),
-        .inp_ready_o ( stream_demux_core_type_inp_ready ),
-        .oup_sel_i   ( stream_demux_core_type_oup_sel   ),
-        .oup_valid_o ( stream_demux_core_type_oup_valid ),
-        .oup_ready_i ( stream_demux_core_type_oup_ready )
+    ) i_stream_demux_core_idx (
+        .inp_valid_i ( stream_demux_core_idx_inp_valid ),
+        .inp_ready_o ( stream_demux_core_idx_inp_ready ),
+        .oup_sel_i   ( stream_demux_core_idx_oup_sel   ),
+        .oup_valid_o ( stream_demux_core_idx_oup_valid ),
+        .oup_ready_i ( stream_demux_core_idx_oup_ready )
     );
-    always_comb begin: compose_stream_demux_core_type_signals
-        stream_demux_core_type_inp_valid = task_valid_i;
-        stream_demux_core_type_oup_sel = task_i.assigned_core_id;
+    always_comb begin: compose_stream_demux_core_idx_signals
+        stream_demux_core_idx_inp_valid = task_valid_i;
+        stream_demux_core_idx_oup_sel = task_i.assigned_core_id;
         for (int unsigned core = 0; core < NumCores; core = core + 1) begin
-            stream_demux_core_type_oup_ready[core] = !waiting_dep_check_queue_full[core];
+            stream_demux_core_idx_oup_ready[core] = !waiting_dep_check_queue_full[core];
         end
     end
 
@@ -199,7 +199,7 @@ module bingo_hw_manager_dep_unit #(
             .data_o      ( waiting_dep_check_task_desc[core]   ),
             .pop_i       ( waiting_dep_check_queue_pop[core]   )
         );
-        assign waiting_dep_check_queue_push[core] = stream_demux_core_type_oup_valid[core] && !waiting_dep_check_queue_full[core];
+        assign waiting_dep_check_queue_push[core] = stream_demux_core_idx_oup_valid[core] && !waiting_dep_check_queue_full[core];
         assign waiting_dep_check_queue_pop[core] = dep_check_manager_inp_wait_dep_check_queue_ready[core] && !waiting_dep_check_queue_empty[core];
 
         bingo_hw_manager_dep_check_manager i_dep_check_manager(
