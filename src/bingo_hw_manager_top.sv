@@ -2065,8 +2065,10 @@ module bingo_hw_manager_top #(
         logic [Events-1:0][15:0] args;
         evlog_move_t             move;
         // The threshold that would confirm a fence of the slot now, the argument
-        // of its fence record: 4 the total-time budget, 3 learned, 1 at risk, 2 type
-        // or parameter, 0 none
+        // of its fence record (the host decodes it): 4 the total-time budget,
+        // 3 the learned C, 1 the at-risk R, 2 the per-type C, 0 the parameter C
+        // (ConfirmTimeoutCycles; wd_bound.confirm is 0 then, see
+        // bingo_hw_manager_wd_bounds)
         logic [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0][2:0] fence_reason;
         always_comb begin
             for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)

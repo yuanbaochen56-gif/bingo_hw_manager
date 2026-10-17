@@ -4,7 +4,10 @@
 
 // Per-slot heartbeat watchdog.
 //
-// 1. Timer and busy state (priority: fenced > done > dispatch > heartbeat)
+// 1. Timer and busy state. One update per slot and cycle, the first that
+//   applies (the numbered branches of the always_ff below):
+//     (1) fenced > (2) done > (3) dispatch > (4) budget fence >
+//     (5) heartbeat > (6) confirm timeout > (7) tick
 //   A slot becomes busy on event_i.dispatch and idle on event_i.done. While
 //   busy, timer_q counts event_i.tick pulses (normal-clock cycles from
 //   bingo_hw_manager_wd_tick, saturating at all ones) and resets to 0 on
@@ -122,11 +125,11 @@ module bingo_hw_manager_watchdog #(
         end else begin
             for(int c=0; c<NumCores; c++) begin
                 for(int cl=0; cl<NumClusters; cl++) begin
+                    // (1) Fenced: ignore the core for good.
                     if (fenced_q[c][cl]) begin
-                        // Fenced: ignore the core for good.
                         busy_q[c][cl] <= 1'b0;
                         timer_q[c][cl] <= '0;
-                    // Check for task completion, new task dispatch, and heartbeat
+                    // (2) Done, (3) dispatch: the timer restarts
                     end else if(event_i.done[c][cl]) begin
                         busy_q[c][cl] <= 1'b0;
                         timer_q[c][cl] <= '0;
@@ -135,7 +138,7 @@ module bingo_hw_manager_watchdog #(
                         timer_q[c][cl] <= '0;
                     end else if ((ConfirmTimeoutCycles != 0) && CoreMask[c][cl] && busy_q[c][cl] &&
                                  fence_req_i[c][cl]) begin
-                        // Over the total-time budget: before a heartbeat of this cycle
+                        // (4) Over the total-time budget: before a heartbeat of this cycle
                         fenced_q[c][cl] <= 1'b1;
                         busy_q[c][cl] <= 1'b0;
                         timer_q[c][cl] <= '0;
@@ -144,12 +147,13 @@ module bingo_hw_manager_watchdog #(
                                  $time, c, cl, CoreTypeId[c][cl], bound_i.wd_class[c][cl]);
 `endif
                     end else if (event_i.heartbeat[c][cl]) begin
-                        timer_q[c][cl] <= '0; // Reset timer on heartbeat
+                        timer_q[c][cl] <= '0; // (5) Reset timer on heartbeat
                     end else if ((ConfirmTimeoutCycles != 0) && CoreMask[c][cl] && busy_q[c][cl] &&
                                  (timer_q[c][cl] >= ((bound_i.risk[c][cl] && bound_i.risk_use[c][cl] && bound_i.risk_confirm != '0) ?
                                   bound_i.risk_confirm : ((bound_i.confirm[c][cl] != '0) ?
                                   bound_i.confirm[c][cl] : ConfirmTimeoutCycles[CounterWidth-1:0])))) begin
-                        // A done, dispatch or heartbeat in this cycle wins (branches above).
+                        // (6) Confirm timeout. A done, dispatch or heartbeat in this
+                        // cycle wins (branches above).
                         fenced_q[c][cl] <= 1'b1;
                         busy_q[c][cl] <= 1'b0;
                         timer_q[c][cl] <= '0;
@@ -165,7 +169,7 @@ module bingo_hw_manager_watchdog #(
                                      $time, c, cl, CoreTypeId[c][cl], bound_i.confirm[c][cl]);
 `endif
                     end else if (busy_q[c][cl] && event_i.tick[c][cl] && timer_q[c][cl] != {CounterWidth{1'b1}}) begin
-                        timer_q[c][cl] <= timer_q[c][cl] + 1'b1; // Increment timer if core is busy and no heartbeat
+                        timer_q[c][cl] <= timer_q[c][cl] + 1'b1; // (7) Increment timer if core is busy and no heartbeat
                     end
                 end
             end
