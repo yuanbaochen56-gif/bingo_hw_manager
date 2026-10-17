@@ -133,6 +133,7 @@ module bingo_hw_manager_top #(
     input logic rst_ni,
     /// Chip ID for multi-chip addressing
     input chip_id_t chip_id_i,
+    // ==== System bus and core interfaces ==================================
     /// Interface to the system
     // For the task queue, we have two interfaces:
     // 1. Host writes to the task queue via 64bit AXI Lite interface
@@ -182,6 +183,7 @@ module bingo_hw_manager_top #(
     output csr_rsp_t                            [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_o,
     output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_valid_o,
     input  logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    csr_rsp_ready_i,
+    // ==== Host configuration (quad periph registers) and its read-back =====
     /// The interface to the Power Management Module
     // Host configuration interface
     input device_axi_lite_data_t                bingo_hw_manager_enable_idle_pm_i,
@@ -285,6 +287,7 @@ module bingo_hw_manager_top #(
     output logic [10:0]                         load_total_pending_o,
     // Power-domain counters: per counted domain, bingo_hw_manager_pkg PmcIdle .. PmcActive
     output logic [PmCountPorts-1:0][bingo_hw_manager_pkg::PmCounters-1:0][31:0] pm_count_o,
+    // ==== Status outputs (quad periph status registers) ====================
     // Watchdog: confirmed dead cores (sticky). The system may reset / isolate them.
     output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    core_fenced_o,
     // Replay: a fenced core holds a task that no live core may run (level 3:
@@ -299,6 +302,14 @@ module bingo_hw_manager_top #(
     // ready queue (which stalls while it is empty) poll without blocking.
     // Always 0 with the AXI-Lite mailbox queues, which have their own status.
     output logic                                [NUM_CORES_PER_CLUSTER-1:0][NUM_CLUSTERS_PER_CHIPLET-1:0]    ready_queue_pending_o,
+    // Sticky bus errors (SLVERR / DECERR) of the manager's AXI-Lite masters:
+    // [0] a task descriptor read (the descriptor is dropped and the fetch
+    // stops, bingo_hw_manager_task_queue_master), [1] a write of the PM, [2] the
+    // DVFS read of the PM (bingo_hw_manager_pm). The chiplet dep-set master
+    // gets its B response from the D2D link, which answers every write.
+    output logic [2:0]                          bus_error_o,
+
+    // ==== Level 3 remote dispatch ==========================================
     // Level 3 remote dispatch (SubstituteLevelMask[2]; unused and tied off
     // otherwise, all inputs have defaults). valid/ready streams.
     // Export: a task of this chiplet that no live core here may run. Its
@@ -354,13 +365,7 @@ module bingo_hw_manager_top #(
     // belong to its exported head task (the slot then stops retiring), or a
     // remote done / reject arrived for a slot that is no proxy (not fenced, or
     // out of range; dropped)
-    output logic                                remote_done_mismatch_o,
-    // Sticky bus errors (SLVERR / DECERR) of the manager's AXI-Lite masters:
-    // [0] a task descriptor read (the descriptor is dropped and the fetch
-    // stops, bingo_hw_manager_task_queue_master), [1] a write of the PM, [2] the
-    // DVFS read of the PM (bingo_hw_manager_pm). The chiplet dep-set master
-    // gets its B response from the D2D link, which answers every write.
-    output logic [2:0]                          bus_error_o
+    output logic                                remote_done_mismatch_o
 );
     import bingo_hw_manager_pkg::*;
     // --------Type definitions and signal declarations--------------------//
@@ -485,6 +490,15 @@ module bingo_hw_manager_top #(
         initial $info("A7 class unavailable: %0d reserved bits", ReservedBitsForTaskDesc);
 `endif
     end
+`ifndef SYNTHESIS
+    // The counts of bingo_hw_manager_pkg follow from the last item of their enum
+    initial begin
+        automatic pm_counter_e  pm_counter  = pm_counter_e'(0);
+        automatic evlog_group_e evlog_group = evlog_group_e'(0);
+        if (pm_counter.num() != PmCounters || evlog_group.num() != EvlogGroups)
+            $error("bingo_hw_manager_pkg: PmCounters or EvlogGroups is not the size of its enum");
+    end
+`endif
 
     // Level 3 remote dispatch
     localparam bit RemoteEn = SubstituteLevelMask[2];
@@ -975,6 +989,12 @@ module bingo_hw_manager_top #(
     // --------Finish Type definitions and signal declarations--------------------//
 
     // --------Module initializations---------------------------------------------//
+    // Sections: task queue, dependency sets between chiplets, dependency unit,
+    // ready, checkout and done queues, power manager, watchdog, control plane,
+    // task replay, placement of new tasks, level 3, event log and assertions,
+    // load monitor, CERF. Not quite the data flow (placement comes after the
+    // queues it fills): the instances keep their order, since the order of
+    // simulation prints within one time step follows it.
 
     //////////////////////////////////////////////////////////////////////
     // Task Queue
@@ -1039,18 +1059,9 @@ module bingo_hw_manager_top #(
         // Tie off the unused slave interface signals
         assign task_queue_axi_lite_resp_o = '0;
     end
-    //////////////////////////////////////////////////////////////////////
-    // Task queue → demux (direct connection, no mux needed)
-    //////////////////////////////////////////////////////////////////////
-    host_axi_lite_data_t muxed_task_data;
-    logic                muxed_task_valid;
-
-    assign muxed_task_data  = task_queue_mbox_data;
-    assign muxed_task_valid = !task_queue_mbox_empty;
+    // The task queue head enters the dependency unit
     assign task_queue_mbox_pop = dep_task_ready && !task_queue_mbox_empty;
-
-    // Compose the current task descriptor from the muxed source
-    assign cur_task_desc_full = bingo_hw_manager_task_desc_full_t'(muxed_task_data);
+    assign cur_task_desc_full = bingo_hw_manager_task_desc_full_t'(task_queue_mbox_data);
     assign cur_task_desc = full_to_desc(cur_task_desc_full);
 
     //////////////////////////////////////////////////////////////////////
@@ -1100,7 +1111,7 @@ module bingo_hw_manager_top #(
         .clk_i              ( clk_i                            ),
         .rst_ni             ( rst_ni                           ),
         .task_i             ( cur_task_desc                    ),
-        .task_valid_i       ( muxed_task_valid                 ),
+        .task_valid_i       ( !task_queue_mbox_empty           ),
         .task_ready_o       ( dep_task_ready                   ),
         .head_o             ( waiting_dep_check_task_desc      ),
         .head_empty_o       ( waiting_dep_check_queue_empty    ),
@@ -1532,24 +1543,20 @@ module bingo_hw_manager_top #(
         .class_i        ( wd_class_q                      ),
         .bound_o        ( wd_bound                        )
     );
+    // Latched when a slot takes its next task (ready queue pop): the task's
+    // class (wd_class_q) and whether it runs away from its own logical slot
+    // (wd_moved_q)
     always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) wd_class_q <= '0;
-        else begin
+        if (!rst_ni) begin
+            wd_class_q <= '0;
+            wd_moved_q <= '0;
+        end else begin
             for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
                 for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
-                    if (ready_queue_pop[c][cl] && !done_q_push[c][cl] && !core_fenced[c][cl])
+                    if (ready_queue_pop[c][cl] && !done_q_push[c][cl] && !core_fenced[c][cl]) begin
                         wd_class_q[c][cl] <= ready_class[c][cl];
-        end
-    end
-    // Whether the slot's current task runs away from its own logical slot,
-    // latched with its class
-    always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) wd_moved_q <= '0;
-        else begin
-            for (int c = 0; c < NUM_CORES_PER_CLUSTER; c++)
-                for (int cl = 0; cl < NUM_CLUSTERS_PER_CHIPLET; cl++)
-                    if (ready_queue_pop[c][cl] && !done_q_push[c][cl] && !core_fenced[c][cl])
                         wd_moved_q[c][cl] <= ready_moved[c][cl];
+                    end
         end
     end
     // Per-slot task info for the watchdog adaptation (wd_adapt):
@@ -1608,19 +1615,6 @@ module bingo_hw_manager_top #(
         end
     end
 `endif
-
-    //////////////////////////////////////////////////////////////////////
-    // Task Replay
-    //////////////////////////////////////////////////////////////////////
-    // A fenced core's checkout queue holds all its dispatched, unfinished tasks
-    // in order (the head is the one it was running). The replay controller
-    // (bingo_hw_manager_replay_ctrl) moves them to live cores, one MOVE step at
-    // a time; its data path (bingo_hw_manager_replay_path) presents each
-    // checkout head to it and carries out the steps on the queues.
-    // Level 3: a fence-fallback type is not exported, as a type the transport
-    // has no target for
-    logic [2**CoreTypeIdWidth-1:0] remote_export_type_en;
-    assign remote_export_type_en = remote_export_type_en_i & ~bingo_hw_manager_fence_fb_i;
 
     //////////////////////////////////////////////////////////////////////
     // Control plane: slot mapping table (substitute of every logical slot)
@@ -1749,6 +1743,19 @@ module bingo_hw_manager_top #(
         .cerf_fb_o        ( cerf_fb                           ),
         .cerf_fb_evt_o    ( cerf_fb_evt_o                     )
     );
+
+    //////////////////////////////////////////////////////////////////////
+    // Task Replay
+    //////////////////////////////////////////////////////////////////////
+    // A fenced core's checkout queue holds all its dispatched, unfinished tasks
+    // in order (the head is the one it was running). The replay controller
+    // (bingo_hw_manager_replay_ctrl) moves them to live cores, one MOVE step at
+    // a time; its data path (bingo_hw_manager_replay_path) presents each
+    // checkout head to it and carries out the steps on the queues.
+    // Level 3: a fence-fallback type is not exported, as a type the transport
+    // has no target for
+    logic [2**CoreTypeIdWidth-1:0] remote_export_type_en;
+    assign remote_export_type_en = remote_export_type_en_i & ~bingo_hw_manager_fence_fb_i;
 
     replay_slot_t   replay_slot;
     replay_l3_t     replay_l3;

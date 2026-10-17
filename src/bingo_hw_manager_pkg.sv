@@ -17,7 +17,9 @@ package bingo_hw_manager_pkg;
     localparam logic [11:0] CsrReady = 12'h5fe;
     localparam logic [11:0] CsrDone  = 12'h5ff;
     // Power domains 0 .. PmMaxDomains-1. A slot configured with a larger domain
-    // (the host writes 99 for the host and tied-off slots) belongs to none.
+    // belongs to none (the host writes BINGO_PM_NO_DOMAIN, 99, for the host and
+    // tied-off slots; libbingo bingo_api.h). The top maps every such value to
+    // PmMaxDomains.
     localparam int unsigned PmMaxDomains = 32;
     // Power-domain counters (bingo_hw_manager_pm_counters), per counted domain,
     // in this order. The host reads them by index: add new ones at the end.
@@ -28,7 +30,7 @@ package bingo_hw_manager_pkg;
         PmcOther,   //                at any other level (access servo, derate)
         PmcActive   // manager cycles in which a slot of the domain is active
     } pm_counter_e;
-    localparam int unsigned PmCounters = 5;
+    localparam int unsigned PmCounters = int'(PmcActive) + 1;  // PmcActive is the last
 
     // Port structs of fixed width. The ones whose width depends on the
     // parameters of the top are macros in bingo_hw_manager/typedef.svh.
@@ -123,9 +125,10 @@ package bingo_hw_manager_pkg;
         EvgRecHold,     // recovery hold entered / left (arg: new state)
         EvgExitAbsorb   // exit task absorbed (arg: logical slot, task)
     } evlog_group_e;
-    localparam int unsigned EvlogGroups = 11;
-    // The per-type pulses sit between the first EvlogGroupsBeforeTypes groups and the rest
-    localparam int unsigned EvlogGroupsBeforeTypes = 9;
+    localparam int unsigned EvlogGroups = int'(EvgExitAbsorb) + 1;  // EvgExitAbsorb is the last
+    // The per-type pulses sit between the first EvlogGroupsBeforeTypes groups
+    // (EvgSuspect .. EvgRetired) and the rest
+    localparam int unsigned EvlogGroupsBeforeTypes = int'(EvgRecHold);
 
     localparam logic [7:0] EvSuspect    = 8'h01;
     localparam logic [7:0] EvClear      = 8'h02;
