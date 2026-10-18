@@ -109,6 +109,7 @@ sources:
       - test/tb_bingo_hw_manager_watchdog_type_thr_detect.sv
       - test/tb_bingo_hw_manager_wd_adapt.sv
       - test/tb_bingo_hw_manager_wd_est.sv
+      - test/tb_bingo_hw_manager_wd_est_floor.sv
       - test/tb_bingo_hw_manager_wd_budget.sv
       - test/tb_bingo_hw_manager_wd_adapt_boundary.sv
       - test/tb_bingo_hw_manager_wd_adapt_execution.sv

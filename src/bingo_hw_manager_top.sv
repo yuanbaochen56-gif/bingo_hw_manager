@@ -244,6 +244,8 @@ module bingo_hw_manager_top #(
     // Total-time budget against those estimates (bingo_hw_manager_wd_budget,
     // BINGO_WD_BUDGET, bingo_hw_manager_pkg::wd_budget_csr_t): [0] EN, [1] ACTION
     // (0 late beat, 1 fence), [4:2] SH_B, [6:5] FRAC_B, [31:12] BFLOOR. 0: off.
+    // [7] EST_FLOOR (bingo_hw_manager_wd_adapt): the estimate also bounds the learned
+    // bounds from below, not only until the class is learned.
     input  logic [31:0]                        wd_budget_i = '0,
     output device_axi_lite_data_t               bingo_hw_manager_risk_o,
     input device_axi_lite_data_t                bingo_hw_manager_idle_power_level_i,
@@ -1586,7 +1588,7 @@ module bingo_hw_manager_top #(
         .late_ctrl_i(wd_late_csr),
         .event_i(wd_event), .status_i(wd_status), .task_i(wd_task),
         .h_eff_i(wd_bound.h_static), .c_eff_i(wd_bound.c_static),
-        .est_i(wd_est),
+        .est_i(wd_est), .est_floor_i(wd_budget_csr.est_floor),
         .learned_o(wd_learned)
     );
     bingo_hw_manager_wd_budget #(

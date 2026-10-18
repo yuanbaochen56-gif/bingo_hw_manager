@@ -68,7 +68,8 @@ package bingo_hw_manager_pkg;
     // BINGO_WD_BUDGET (bingo_hw_manager_wd_budget, reset 0: off)
     typedef struct packed {
         logic [19:0] bfloor;       // [31:12] lower bound of the budget (ticks)
-        logic [4:0]  rsvd7;        // [11:7]
+        logic [3:0]  rsvd8;        // [11:8]
+        logic        est_floor;    // [7]     the estimate is a lower bound of the learned H, C and Late
         logic [1:0]  frac_b;       // [6:5]   late at the done after E_tot + (E_tot >> 2) * FRAC_B
         logic [2:0]  sh_b;         // [4:2]   budget = max(E_tot << SH_B, BFLOOR)
         logic        action;       // [1]     at the budget: 0 one late beat, 1 a fence

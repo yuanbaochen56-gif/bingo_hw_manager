@@ -32,11 +32,17 @@
 //   Learned:     monitored slot, in-range type and class != 0, M >= 1 and
 //                N >= WARMUP.
 //   Entry valid: learned and (!LOAD_GUARD || peak_load <= L).
-//   Estimate:    not learned yet (warm-up) and the compile-time estimate of the
-//                slot's (type, class) is valid (est_i, bingo_hw_manager_wd_est):
-//                its E_int takes the place of M. LOAD_GUARD does not apply (an
-//                estimate has no load record); a learned entry always wins, so
-//                the estimate never replaces a learned bound.
+//   Estimate:    the compile-time estimate of the slot's (type, class) is valid
+//                (est_i, bingo_hw_manager_wd_est) and the class is not learned yet
+//                (warm-up), or est_floor_i is set: its E_int takes the place of M.
+//                LOAD_GUARD does not apply (an estimate has no load record).
+//                est_floor_i clear: a learned entry always wins, so the estimate
+//                never replaces a learned bound. est_floor_i set (BINGO_WD_BUDGET
+//                EST_FLOOR): the estimate is a lower bound of the learned bound,
+//                M = max(M, E_int) when the entry is valid, E_int alone when it is
+//                not (warm-up, or rejected by LOAD_GUARD); a learned execution
+//                cannot know a wait it did not meet (another cluster's transfer
+//                ahead on the shared L3 port), the compiler's estimate can.
 //   Base interval: M' = task_i.moved ? (M << MOVED_SH) : M.
 //   When (Entry valid or Estimate) and ctrl_i.EN:
 //     H    = min(max(M' << SH_H, FLOOR), h_eff_i)       (h_valid: H >= 1)
@@ -94,6 +100,8 @@ module bingo_hw_manager_wd_adapt #(
     // Compile-time estimate of the slot's task (bingo_hw_manager_wd_est): its E_int
     // stands in for M during warm-up (all entries 0: as without it)
     input wd_est_t     est_i,
+    // EST_FLOOR: the estimate is also a lower bound of a learned M (0: warm-up only)
+    input logic        est_floor_i = 1'b0,
     // Per-slot learned thresholds and valid bits:
     //   h, h_valid        suspect threshold (replaces h_eff_i when h_valid)
     //   c, c_valid        confirm threshold (used by wd_bounds when c_valid and
@@ -208,6 +216,7 @@ module bingo_hw_manager_wd_adapt #(
                 automatic logic entry_valid;
                 automatic logic learned;
                 automatic logic est_use;
+                automatic logic est_sel;
                 automatic logic [CounterWidth-1:0] est_max;
                 // MOVED_SH: an execution away from its own slot uses the learned
                 // maximum shifted left by this many more bits
@@ -219,20 +228,22 @@ module bingo_hw_manager_wd_adapt #(
                     table_q[type_id][class_id].maximum >= 1 &&
                     table_q[type_id][class_id].samples >= warmup &&
                     (!ctrl_i.load_guard || peak <= table_q[type_id][class_id].load);
-                // Warm-up: the compile-time estimate until the class is learned
+                // Warm-up: the compile-time estimate until the class is learned;
+                // with EST_FLOOR always, and the larger of it and a valid entry
                 learned = CoreMask[c][cl] && type_id < Types && class_id != 0 &&
                     table_q[type_id][class_id].maximum >= 1 &&
                     table_q[type_id][class_id].samples >= warmup;
-                est_use = !learned && est_i.valid[c][cl];
+                est_use = (!learned || est_floor_i) && est_i.valid[c][cl];
                 // (an estimate beyond the timer saturates: the caps h_eff_i / c_eff_i apply)
                 est_max = (32'(est_i.e_int[c][cl]) >> CounterWidth) != 0 ?
                           {CounterWidth{1'b1}} : CounterWidth'(est_i.e_int[c][cl]);
+                est_sel = est_use && !(entry_valid && table_q[type_id][class_id].maximum > est_max);
                 if (ctrl_i.en && (entry_valid || est_use)) begin
-                    h = (64'(est_use ? est_max : table_q[type_id][class_id].maximum) << moved_shift) <<
+                    h = (64'(est_sel ? est_max : table_q[type_id][class_id].maximum) << moved_shift) <<
                         ctrl_i.sh_h;
                     if (h < ctrl_i.floor) h = 64'(ctrl_i.floor);
                     if (h > h_eff_i[c][cl]) h = 64'(h_eff_i[c][cl]);
-                    confirm = (64'(est_use ? est_max : table_q[type_id][class_id].maximum) <<
+                    confirm = (64'(est_sel ? est_max : table_q[type_id][class_id].maximum) <<
                                moved_shift) << ctrl_i.sh_c;
                     if (confirm < (h << 1)) confirm = h << 1;
                     if (confirm > c_eff_i[c][cl]) confirm = 64'(c_eff_i[c][cl]);
@@ -245,7 +256,7 @@ module bingo_hw_manager_wd_adapt #(
                 // Compare wide before narrowing; equality with suspect is invalid.
                 if (late_ctrl_i.en && (entry_valid || est_use)) begin
                     // FRAC: (1 + FRAC / 4) times the maximum, then SH_L
-                    late_bound = LateMathWidth'(est_use ? est_max : table_q[type_id][class_id].maximum) <<
+                    late_bound = LateMathWidth'(est_sel ? est_max : table_q[type_id][class_id].maximum) <<
                                  moved_shift;
                     late_bound = (late_bound + (late_bound >> 2) * late_ctrl_i.frac) <<
                                  late_ctrl_i.sh_l;
