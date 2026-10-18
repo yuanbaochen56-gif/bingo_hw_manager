@@ -266,6 +266,21 @@ module tb_bingo_hw_manager_wd_est_floor;
         tk.wd_class[0] = 3'd1;
         #1 check($sformatf("larger M stays: H %0d C %0d", dut_l.h[0], dut_l.c[0]),
                  dut_l.h[0] == 1000 && dut_l.c[0] == 2000 && off_l.h[0] == 1000);
+        // a larger learned M (500 at load 1) rejected by LOAD_GUARD: the estimate, not M
+        write_est(1, 5, entry(8'h44, 1));
+        execute(0, 5, 500);
+        ctrl.load_guard = 1;
+        st.busy[1] = 1;
+        tk.wd_class[0] = 3'd5;
+        ev.dispatch[0] = 1;                               // peak load 2 > learned load 1
+        step();
+        ev.dispatch[0] = 0; st.busy[0] = 1;
+        #1 check($sformatf("rejected larger M: the estimate, H %0d", dut_l.h[0]),
+                 dut_l.h_valid[0] && dut_l.h[0] == 320 && dut_l.c[0] == 640);
+        ev.done[0] = 1; st.interval[0] = 24'd40;
+        step();
+        idle_inputs();
+        ctrl.load_guard = 0;
         // a class without estimate keeps its learned bound
         execute(0, 2, 30);
         tk.wd_class[0] = 3'd2;
