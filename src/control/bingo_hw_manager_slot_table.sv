@@ -2,90 +2,40 @@
 // Solderpad Hardware License, Version 0.51, see LICENSE for details.
 // SPDX-License-Identifier: SHL-0.51
 
-// Slot mapping table and core parking of the control plane
-// (bingo_hw_manager_ctrl).
+// Slot mapping table (SMT) and core parking (bingo_hw_manager_ctrl).
 //
-// Slot mapping table (SMT): for every logical slot L = (core, cluster), the live
-// slot that runs L's tasks once L is fenced (its substitute), or none
-// (smt_o.found = 0). bingo_hw_manager_core_remap (new tasks) and
-// bingo_hw_manager_replay_ctrl (outstanding tasks) both read it, so all tasks of
-// one dead core go to the same substitute, in order.
+// SMT: for each logical slot L = (core, cluster), the live substitute that
+// runs L's tasks once L is fenced or parked, or none (smt_o.found = 0). Both
+// bingo_hw_manager_core_remap (new tasks) and bingo_hw_manager_replay_ctrl
+// (outstanding tasks) read it so all tasks of L go to one substitute in order.
 //
-// The table is a register. It is filled once after reset and then only changes
-// when a slot is fenced, or when a live slot is parked (below): an entry is
-// recomputed if its logical slot or its current substitute was just fenced
-// (bingo_hw_manager_substitute_sel over the new fenced set); every other entry
-// keeps its value. With the default choice
-// (the lowest live slot of the same type, logical cluster first) removing a slot
-// that is not the chosen one never changes a choice, so the table always equals
-// the combinational choice of bingo_hw_manager_substitute_sel (checked in
-// simulation). Keeping the choice in a register is what lets a policy use
-// information that changes over time without moving a dead core's tasks to a
-// different substitute half-way:
+// Entries are registered so a policy can depend on state at the moment of the
+// update without switching a core's substitute later:
 //   SubstitutePolicy 0  lowest live slot of the type (logical cluster first)
-//   SubstitutePolicy 1  least loaded live slot of the type (queue_i.load: the
-//                       occupancy of its checkout queue), logical cluster first,
-//                       lowest index on a tie. The load is sampled when the
-//                       entry is recomputed, i.e. when the core dies.
-// Spare clusters (sub_cfg_i.spare, host-configured, 0 = none) are searched
-// before the logical cluster, with either policy (bingo_hw_manager_substitute_sel).
-// Partitions (sub_cfg_i.partition, all ones = one): a slot of another cluster
-// is a candidate only if the two clusters share a partition, so a fault in one
-// partition never takes a core of another; without a candidate there the slot
-// is stuck (or exported, level 3), and the spare search keeps to it as well.
-// Only the entries of fenced and parked slots are read (and their substitutes
-// written), so a change of sub_cfg_i applies to the entries chosen after it;
-// fenced and parked entries keep their substitute, which already has their
-// tasks. Set it before the first fence or park.
+//   SubstitutePolicy 1  least loaded live slot (queue_i.load, logical cluster
+//                       first, lowest index on a tie), sampled on write
+// Spare clusters (sub_cfg_i.spare) are searched before the logical cluster;
+// cross-cluster candidates require a shared partition (sub_cfg_i.partition).
+// If type_cfg_i.fence_fb is set for a core type, its fenced slots take no
+// substitute (leaving tasks to CERF degradation) and cannot be parked. Both
+// sub_cfg_i and fence_fb take effect when an entry is written; set them before
+// the first fence or park.
 //
-// In the cycle a slot is fenced, the cycle a live slot is parked, and the cycle
-// after reset, the table is being written: smt_update_o asks its readers to
-// wait one cycle. smt_recompute_o marks the entries recomputed in that cycle
-// (after reset, or because their slot or their substitute was just fenced).
+// An entry is recomputed after reset or when its slot or current substitute is
+// newly fenced (smt_recompute_o), and is also written on park/unpark commits.
+// With policy 0, removing a slot that is not the chosen one never changes a
+// choice, so the table then equals the combinational choice (checked in
+// simulation). Whenever the table is written, smt_update_o tells readers to
+// wait one cycle.
 //
-// Core parking (park_req_i: the host request, or an at-risk slot with the park
-// action, see bingo_hw_manager_ctrl; one bit per logical slot; 0 = off, and the
-// machine then matches a build without parking). A requested slot that is
-// not fenced enters HOLD: bingo_hw_manager_core_remap admits no new task to
-// its checkout. Tasks already in its checkout or ready queue run to completion.
-// Once both queues are empty and nothing is pushed into the slot this cycle,
-// the same substitute selector (same SubstitutePolicy, same SubstituteLevelMask,
-// with this slot and every slot in HOLD or PARKED masked out of the candidates,
-// so two slots never park onto each other and a draining slot gets no new
-// work) picks a live core of its type.
-// That result is written into the table and the slot becomes PARKED: later
-// executing tasks follow the table, dummy-set and CERF-skipped tasks stay on
-// the logical core. Level 3 is not a parking substitute. No live core of the
-// type releases HOLD and raises park_o.fail; the bit stays until the request
-// drops, and the request is not tried again while it stays set. A slot that
-// runs the tasks of another logical slot (the table target of a fenced or
-// parked slot) cannot drain on its own: a request then fails at once, and a
-// slot that becomes such a target while in HOLD gives up the same way, so its
-// own tasks are not held behind the other slot's. A fence of the
-// slot itself drops HOLD or PARKED and writes the table only through the fence
-// update above, never as a park write in that same cycle. Clearing park_req_i
-// of a PARKED slot moves it back (UNPARK): its new tasks are held, on neither
-// core, until none of its tasks is left on another core (queue_i.moved, the per
-// logical core count of entries in other cores' checkout queues), so a task on
-// the slot itself cannot overtake an older one on the substitute; then the
-// entry goes back to the plain choice and the slot is no longer parked. The
-// substitute keeps running its own tasks meanwhile: its queue is in order, so
-// they never delay the parked slot's. Setting the request again during UNPARK
-// returns to PARKED. If the substitute of a parked slot is fenced, the
-// entry is recomputed with the slot still masked out; if nothing is left, the
-// slot leaves PARKED, park_o.fail is raised, and the table points back at the
-// slot so a replay of entries already on the dead substitute has a live core.
-//
-// Fence fallback (type_cfg_i.fence_fb, host-configured per core type, 0 = off):
-// a type whose bit is set takes no substitute, as if it had no other slot. The
-// table entry of a fenced slot of that type is written as none, and a park of
-// such a slot fails as with no live core of the type. The fenced slot then becomes
-// stuck, so its outstanding and later tasks are left to the CERF degradation
-// (bingo_hw_manager_cerf_fallback; e.g. a host backup that is cheaper than a
-// replay on another cluster).
-// The top keeps such a type from level 3 as well. The entries of live slots do
-// not depend on the bit. The table samples it when an entry is written, like
-// the load: set it before the first fence or park.
+// Core parking (park_req_i): a requested live slot that is not another slot's
+// substitute enters HOLD, drains its checkout and ready queues, and picks a
+// live same-type substitute with itself and all HOLD/PARKED slots masked out
+// (never level 3). It then enters PARKED and writes the substitute into the
+// table, or raises park_o.fail until the request drops. Clearing park_req_i
+// enters UNPARK, holding new tasks until queue_i.moved == 0 so no new task
+// overtakes an older one on the substitute, then restores the plain table
+// entry. The states of one slot are kept in bingo_hw_manager_park_fsm.
 module bingo_hw_manager_slot_table #(
     parameter int unsigned NumCores = 4,
     parameter int unsigned NumClusters = 2,
@@ -193,20 +143,10 @@ module bingo_hw_manager_slot_table #(
     // Parking substitute: the same selector, with this slot and the slots in
     // HOLD or PARKED masked out
     // ------------------------------------------------------------------
-    // Parking state of each logical slot: four flag registers, of which five
-    // combinations occur (smt_validity below checks that the others do not):
-    //   hold parked unpark fail
-    //    0     0      0     0   NONE    not asked
-    //    1     0      0     0   HOLD    asked: no new task is admitted, the slot drains
-    //    0     1      0     0   PARKED  drained: its executing tasks follow the table
-    //    0     1      1     0   UNPARK  request dropped: its new tasks wait until none
-    //                                   of its tasks is left on the substitute
-    //    0     0      0     1   FAIL    no substitute: until the request drops
-    logic [NumCores-1:0][NumClusters-1:0]                     park_hold_q;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_parked_q;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_fail_q;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_unpark_q;
-    logic [NumCores-1:0][NumClusters-1:0]                     unpark_commit;
+    logic [NumCores-1:0][NumClusters-1:0]                     park_hold;
+    logic [NumCores-1:0][NumClusters-1:0]                     park_parked;
+    logic [NumCores-1:0][NumClusters-1:0]                     park_unpark;
+    logic [NumCores-1:0][NumClusters-1:0]                     park_fail;
     logic [NumCores-1:0][NumClusters-1:0]                     park_choice_found;
     logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    park_choice_core;
     logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] park_choice_cluster;
@@ -215,7 +155,7 @@ module bingo_hw_manager_slot_table #(
         for (genvar cl = 0; cl < NumClusters; cl++) begin : gen_park_choice_cluster
             logic [NumCores-1:0][NumClusters-1:0] fenced_excl;
             always_comb begin
-                fenced_excl = slot_i.fenced | park_hold_q | park_parked_q;
+                fenced_excl = slot_i.fenced | park_hold | park_parked;
                 fenced_excl[c][cl] = 1'b1;
             end
             bingo_hw_manager_substitute_sel #(
@@ -244,30 +184,85 @@ module bingo_hw_manager_slot_table #(
     end
 
     // ------------------------------------------------------------------
-    // Table update: a new fence, or a park commit after the slot drained
+    // Table state, and the entries recomputed this cycle
     // ------------------------------------------------------------------
     logic                                                     init_q;
     logic [NumCores-1:0][NumClusters-1:0]                     fenced_seen_q;
-    logic [NumCores-1:0][NumClusters-1:0]                     fence_new;
-    logic [NumCores-1:0][NumClusters-1:0]                     recompute;
     logic [NumCores-1:0][NumClusters-1:0]                     smt_found_q;
     logic [NumCores-1:0][NumClusters-1:0][CoreIdWidth-1:0]    smt_core_q;
     logic [NumCores-1:0][NumClusters-1:0][ClusterIdWidth-1:0] smt_cluster_q;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_choice_ok;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_target;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_drained;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_commit;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_give_up;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_hold_target;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_drop_request;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_enter_hold;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_fail_at_once;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_clear_fail;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_sub_fenced;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_lose_substitute;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_start_unpark;
-    logic [NumCores-1:0][NumClusters-1:0]                     park_cancel_unpark;
+    logic [NumCores-1:0][NumClusters-1:0]                     fence_new;
+    logic [NumCores-1:0][NumClusters-1:0]                     recompute;
+    logic [NumCores-1:0][NumClusters-1:0]                     sub_fenced;
 
+    assign fence_new = slot_i.fenced & ~fenced_seen_q;
+
+    // An entry is recomputed after reset, when its slot is newly fenced, or when
+    // its substitute is (sub_fenced: for that last reason only)
+    always_comb begin
+        for (int unsigned c = 0; c < NumCores; c++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                recompute[c][cl] = init_q || fence_new[c][cl] ||
+                    (smt_found_q[c][cl] && fence_new[smt_core_q[c][cl]][smt_cluster_q[c][cl]]);
+                sub_fenced[c][cl] = recompute[c][cl] && !fence_new[c][cl] && !init_q;
+            end
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // Parking state of every logical slot
+    // ------------------------------------------------------------------
+    logic [NumCores-1:0][NumClusters-1:0] park_target;
+    logic [NumCores-1:0][NumClusters-1:0] park_choice_ok;
+    logic [NumCores-1:0][NumClusters-1:0] park_commit;
+    logic [NumCores-1:0][NumClusters-1:0] unpark_commit;
+
+    // Slots that are the table target of a fenced or parked logical slot: they
+    // receive that slot's tasks, so they cannot drain on their own
+    always_comb begin
+        park_target = '0;
+        for (int unsigned c = 0; c < NumCores; c++) begin
+            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                if (smt_found_q[c][cl] && (slot_i.fenced[c][cl] || park_parked[c][cl]) &&
+                    ((smt_core_q[c][cl] != CoreIdWidth'(c)) || (smt_cluster_q[c][cl] != ClusterIdWidth'(cl)))) begin
+                    park_target[smt_core_q[c][cl]][smt_cluster_q[c][cl]] = 1'b1;
+                end
+            end
+        end
+    end
+
+    for (genvar c = 0; c < NumCores; c++) begin : gen_park_core
+        for (genvar cl = 0; cl < NumClusters; cl++) begin : gen_park_cluster
+            // Fence fallback: such a type has no parking substitute either
+            assign park_choice_ok[c][cl] = park_choice_found[c][cl] &&
+                                           !type_cfg_i.fence_fb[CoreTypeId[c][cl]] &&
+                                           !((park_choice_core[c][cl] == CoreIdWidth'(c)) &&
+                                             (park_choice_cluster[c][cl] == ClusterIdWidth'(cl)));
+            bingo_hw_manager_park_fsm i_park (
+                .clk_i(clk_i),
+                .rst_ni(rst_ni),
+                .req_i(park_req_i[c][cl]),
+                .fenced_i(slot_i.fenced[c][cl]),
+                .target_i(park_target[c][cl]),
+                .drained_i(queue_i.checkout_empty[c][cl] && queue_i.ready_empty[c][cl] &&
+                           !queue_i.push[c][cl]),
+                .choice_ok_i(park_choice_ok[c][cl]),
+                .recompute_i(recompute[c][cl]),
+                .sub_fenced_i(sub_fenced[c][cl]),
+                .moved_i(queue_i.moved[c][cl]),
+                .hold_o(park_hold[c][cl]),
+                .parked_o(park_parked[c][cl]),
+                .unpark_o(park_unpark[c][cl]),
+                .fail_o(park_fail[c][cl]),
+                .commit_o(park_commit[c][cl]),
+                .unpark_commit_o(unpark_commit[c][cl])
+            );
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // Table update: a new fence, or a park or unpark commit
+    // ------------------------------------------------------------------
     // What the table entry of a logical slot is written with this cycle
     typedef enum logic [1:0] {
         SmtKeep,        // no write
@@ -284,87 +279,17 @@ module bingo_hw_manager_slot_table #(
     } smt_write_e;
     smt_write_e [NumCores-1:0][NumClusters-1:0] smt_write;
 
-    assign fence_new = slot_i.fenced & ~fenced_seen_q;
-
-    // Slots that are the table target of a fenced or parked logical slot: they
-    // receive that slot's tasks, so they cannot drain on their own
-    always_comb begin
-        park_target = '0;
-        for (int unsigned c = 0; c < NumCores; c++) begin
-            for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                if (smt_found_q[c][cl] && (slot_i.fenced[c][cl] || park_parked_q[c][cl]) &&
-                    ((smt_core_q[c][cl] != CoreIdWidth'(c)) || (smt_cluster_q[c][cl] != ClusterIdWidth'(cl)))) begin
-                    park_target[smt_core_q[c][cl]][smt_cluster_q[c][cl]] = 1'b1;
-                end
-            end
-        end
-    end
-
+    // A recompute (reset, a fence of the slot or of its substitute) wins over a
+    // park or unpark commit
     always_comb begin
         for (int unsigned c = 0; c < NumCores; c++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                recompute[c][cl] = init_q || fence_new[c][cl] ||
-                    (smt_found_q[c][cl] && fence_new[smt_core_q[c][cl]][smt_cluster_q[c][cl]]);
-                // Fence fallback: such a type has no parking substitute either
-                park_choice_ok[c][cl] = park_choice_found[c][cl] &&
-                    !type_cfg_i.fence_fb[CoreTypeId[c][cl]] &&
-                    !((park_choice_core[c][cl] == CoreIdWidth'(c)) &&
-                      (park_choice_cluster[c][cl] == ClusterIdWidth'(cl)));
-                park_drained[c][cl] = queue_i.checkout_empty[c][cl] && queue_i.ready_empty[c][cl] &&
-                                      !queue_i.push[c][cl];
-                // Not in the cycle this slot is fenced: that write belongs to the fence.
-                park_commit[c][cl] = park_hold_q[c][cl] && !park_parked_q[c][cl] &&
-                                     !slot_i.fenced[c][cl] && !fence_new[c][cl] && !park_target[c][cl] &&
-                                     park_drained[c][cl] && park_choice_ok[c][cl];
-                unpark_commit[c][cl] = park_parked_q[c][cl] && park_unpark_q[c][cl] &&
-                                       !slot_i.fenced[c][cl] && !fence_new[c][cl] && !recompute[c][cl] &&
-                                       !queue_i.moved[c][cl];
-                park_give_up[c][cl] = park_hold_q[c][cl] && !park_parked_q[c][cl] &&
-                                      !slot_i.fenced[c][cl] && !fence_new[c][cl] &&
-                                      park_drained[c][cl] && !park_choice_ok[c][cl];
-
-                // The transitions of the parking state. The always_ff below applies,
-                // after a fence of the slot (which clears it), the first of them
-                // that holds, in this order:
-                //   park_commit                        HOLD -> PARKED
-                //   park_give_up, park_hold_target     HOLD -> FAIL
-                //   park_drop_request                  HOLD -> NONE
-                //   park_enter_hold, park_fail_at_once NONE -> HOLD / FAIL
-                //   park_clear_fail                    FAIL -> NONE
-                //   park_lose_substitute               PARKED or UNPARK -> FAIL
-                //   unpark_commit                      UNPARK -> NONE
-                //   park_start_unpark                  PARKED -> UNPARK
-                //   park_cancel_unpark                 UNPARK -> PARKED
-                // A slot in HOLD that became the table target of another slot runs
-                // that slot's tasks and cannot drain on its own: it gives up
-                park_hold_target[c][cl] = park_hold_q[c][cl] && park_target[c][cl];
-                // The request dropped before the slot drained
-                park_drop_request[c][cl] = park_hold_q[c][cl] && !park_req_i[c][cl];
-                // A new request (not while a failed one is still asserted); a slot
-                // that runs another slot's tasks cannot drain, so it fails at once
-                park_enter_hold[c][cl] = !park_hold_q[c][cl] && !park_parked_q[c][cl] &&
-                                         !park_fail_q[c][cl] && park_req_i[c][cl] && !park_target[c][cl];
-                park_fail_at_once[c][cl] = !park_hold_q[c][cl] && !park_parked_q[c][cl] &&
-                                           !park_fail_q[c][cl] && park_req_i[c][cl] && park_target[c][cl];
-                // The failed request dropped
-                park_clear_fail[c][cl] = park_fail_q[c][cl] && !park_req_i[c][cl];
-                // The substitute of a parked slot was just fenced (its entry is
-                // recomputed, the slot still masked out of its own search) ...
-                park_sub_fenced[c][cl] = park_parked_q[c][cl] && recompute[c][cl] &&
-                                         !fence_new[c][cl] && !init_q;
-                // ... and no other substitute is left
-                park_lose_substitute[c][cl] = park_sub_fenced[c][cl] && !park_choice_ok[c][cl];
-                // The request of a parked slot dropped: move back
-                park_start_unpark[c][cl] = park_parked_q[c][cl] && !park_unpark_q[c][cl] &&
-                                           !park_req_i[c][cl];
-                // Asked again before the move back finished: stay parked
-                park_cancel_unpark[c][cl] = park_unpark_q[c][cl] && park_req_i[c][cl];
-
-                // The table entry: a recompute (reset, a fence of the slot or of
-                // its substitute) wins over a park or unpark commit
                 if (recompute[c][cl]) begin
-                    if (park_sub_fenced[c][cl]) smt_write[c][cl] = park_choice_ok[c][cl] ? SmtParkChoice : SmtSelf;
-                    else                        smt_write[c][cl] = SmtChoice;
+                    if (park_parked[c][cl] && sub_fenced[c][cl]) begin
+                        smt_write[c][cl] = park_choice_ok[c][cl] ? SmtParkChoice : SmtSelf;
+                    end else begin
+                        smt_write[c][cl] = SmtChoice;
+                    end
                 end else if (park_commit[c][cl]) begin
                     smt_write[c][cl] = SmtParkChoice;
                 end else if (unpark_commit[c][cl]) begin
@@ -383,10 +308,6 @@ module bingo_hw_manager_slot_table #(
             smt_found_q   <= '0;
             smt_core_q    <= '0;
             smt_cluster_q <= '0;
-            park_hold_q   <= '0;
-            park_parked_q <= '0;
-            park_fail_q   <= '0;
-            park_unpark_q <= '0;
         end else begin
             init_q        <= 1'b0;
             fenced_seen_q <= slot_i.fenced;
@@ -410,54 +331,20 @@ module bingo_hw_manager_slot_table #(
                         end
                         default: ;  // SmtKeep
                     endcase
-
-                    if (slot_i.fenced[c][cl]) begin
-                        // A fence of the slot ends parking (any state -> NONE)
-                        park_hold_q[c][cl]   <= 1'b0;
-                        park_parked_q[c][cl] <= 1'b0;
-                        park_fail_q[c][cl]   <= 1'b0;
-                        park_unpark_q[c][cl] <= 1'b0;
-                    end else if (park_commit[c][cl]) begin
-                        park_hold_q[c][cl]   <= 1'b0;
-                        park_parked_q[c][cl] <= 1'b1;
-                        park_fail_q[c][cl]   <= 1'b0;
-                    end else if (park_give_up[c][cl] || park_hold_target[c][cl]) begin
-                        park_hold_q[c][cl] <= 1'b0;
-                        park_fail_q[c][cl] <= 1'b1;
-                    end else if (park_drop_request[c][cl]) begin
-                        park_hold_q[c][cl] <= 1'b0;
-                    end else if (park_enter_hold[c][cl]) begin
-                        park_hold_q[c][cl] <= 1'b1;
-                    end else if (park_fail_at_once[c][cl]) begin
-                        park_fail_q[c][cl] <= 1'b1;
-                    end else if (park_clear_fail[c][cl]) begin
-                        park_fail_q[c][cl] <= 1'b0;
-                    end else if (park_lose_substitute[c][cl]) begin
-                        park_parked_q[c][cl] <= 1'b0;
-                        park_unpark_q[c][cl] <= 1'b0;
-                        park_fail_q[c][cl]   <= 1'b1;
-                    end else if (unpark_commit[c][cl]) begin
-                        park_parked_q[c][cl] <= 1'b0;
-                        park_unpark_q[c][cl] <= 1'b0;
-                    end else if (park_start_unpark[c][cl]) begin
-                        park_unpark_q[c][cl] <= 1'b1;
-                    end else if (park_cancel_unpark[c][cl]) begin
-                        park_unpark_q[c][cl] <= 1'b0;
-                    end
                 end
             end
         end
     end
 
-    assign smt_o.found   = smt_found_q;
-    assign smt_o.core    = smt_core_q;
-    assign smt_o.cluster = smt_cluster_q;
-    assign smt_update_o  = init_q || (|fence_new) || (|park_commit) || (|unpark_commit);
-    assign park_o.hold   = park_hold_q;
-    assign park_o.parked = park_parked_q;
-    assign park_o.unpark = park_unpark_q;
-    assign park_o.fail   = park_fail_q;
+    assign smt_o.found     = smt_found_q;
+    assign smt_o.core      = smt_core_q;
+    assign smt_o.cluster   = smt_cluster_q;
+    assign smt_update_o    = init_q || (|fence_new) || (|park_commit) || (|unpark_commit);
     assign smt_recompute_o = recompute;
+    assign park_o.hold     = park_hold;
+    assign park_o.parked   = park_parked;
+    assign park_o.unpark   = park_unpark;
+    assign park_o.fail     = park_fail;
 
 `ifndef SYNTHESIS
     // Entries written before the last change of sub_cfg_i and not since: chosen
@@ -490,10 +377,10 @@ module bingo_hw_manager_slot_table #(
                     // A parked entry was chosen among the slots that were neither in
                     // HOLD nor PARKED at the time, so it is only checked for validity
                     // (below and here: another slot, never itself, never parked).
-                    if (park_parked_q[c][cl]) begin
+                    if (park_parked[c][cl]) begin
                         if (!smt_found_q[c][cl] ||
                             ((smt_core_q[c][cl] == CoreIdWidth'(c)) && (smt_cluster_q[c][cl] == ClusterIdWidth'(cl))) ||
-                            park_parked_q[smt_core_q[c][cl]][smt_cluster_q[c][cl]]) begin
+                            park_parked[smt_core_q[c][cl]][smt_cluster_q[c][cl]]) begin
                             $error("[BINGO_ASSERT] parked SMT entry core %0d cluster %0d: found %0b core %0d cluster %0d",
                                    c, cl, smt_found_q[c][cl], smt_core_q[c][cl], smt_cluster_q[c][cl]);
                         end
@@ -527,14 +414,15 @@ module bingo_hw_manager_slot_table #(
                         $error("[BINGO_ASSERT] SMT entry core %0d cluster %0d -> core %0d cluster %0d is fenced or of another type",
                                c, cl, smt_core_q[c][cl], smt_cluster_q[c][cl]);
                     end
+                    // Only the five combinations of bingo_hw_manager_park_fsm occur.
                     // Cleared on the edge that sees the fence, so a slot fenced since
                     // the previous edge must no longer be in HOLD or PARKED.
-                    if ((park_hold_q[c][cl] && park_parked_q[c][cl]) ||
-                        (park_unpark_q[c][cl] && !park_parked_q[c][cl]) ||
-                        (park_fail_q[c][cl] && (park_hold_q[c][cl] || park_parked_q[c][cl])) ||
-                        ((park_hold_q[c][cl] || park_parked_q[c][cl]) && fenced_seen_q[c][cl])) begin
+                    if ((park_hold[c][cl] && park_parked[c][cl]) ||
+                        (park_unpark[c][cl] && !park_parked[c][cl]) ||
+                        (park_fail[c][cl] && (park_hold[c][cl] || park_parked[c][cl])) ||
+                        ((park_hold[c][cl] || park_parked[c][cl]) && fenced_seen_q[c][cl])) begin
                         $error("[BINGO_ASSERT] core %0d cluster %0d park hold %0b parked %0b while fenced %0b",
-                               c, cl, park_hold_q[c][cl], park_parked_q[c][cl], slot_i.fenced[c][cl]);
+                               c, cl, park_hold[c][cl], park_parked[c][cl], slot_i.fenced[c][cl]);
                     end
                 end
             end
