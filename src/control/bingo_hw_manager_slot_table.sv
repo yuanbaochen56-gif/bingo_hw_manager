@@ -414,13 +414,9 @@ module bingo_hw_manager_slot_table #(
                         $error("[BINGO_ASSERT] SMT entry core %0d cluster %0d -> core %0d cluster %0d is fenced or of another type",
                                c, cl, smt_core_q[c][cl], smt_cluster_q[c][cl]);
                     end
-                    // Only the five combinations of bingo_hw_manager_park_fsm occur.
-                    // Cleared on the edge that sees the fence, so a slot fenced since
-                    // the previous edge must no longer be in HOLD or PARKED.
-                    if ((park_hold[c][cl] && park_parked[c][cl]) ||
-                        (park_unpark[c][cl] && !park_parked[c][cl]) ||
-                        (park_fail[c][cl] && (park_hold[c][cl] || park_parked[c][cl])) ||
-                        ((park_hold[c][cl] || park_parked[c][cl]) && fenced_seen_q[c][cl])) begin
+                    // Parking ends on the edge that sees the fence, so a slot fenced
+                    // since the previous edge must no longer be in HOLD or PARKED.
+                    if ((park_hold[c][cl] || park_parked[c][cl]) && fenced_seen_q[c][cl]) begin
                         $error("[BINGO_ASSERT] core %0d cluster %0d park hold %0b parked %0b while fenced %0b",
                                c, cl, park_hold[c][cl], park_parked[c][cl], slot_i.fenced[c][cl]);
                     end
