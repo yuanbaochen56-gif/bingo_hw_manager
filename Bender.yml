@@ -51,6 +51,7 @@ sources:
   - src/control/bingo_hw_manager_level_policy.sv           # Boost and derate requests of the slots to the PM
   - src/control/bingo_hw_manager_power_view.sv             # Idle and load view of the slots for the PM, recovery hold
   - src/control/bingo_hw_manager_park_fsm.sv               # Parking state of one slot
+  - src/control/bingo_hw_manager_slot_table_assert.sv      # Simulation-only invariants of the slot table
   - src/control/bingo_hw_manager_slot_table.sv             # Slot mapping table (substitutes) and core parking
   - src/control/bingo_hw_manager_ctrl.sv                   # Control plane: joins the submodules above
   - src/frontend/bingo_hw_manager_dep_matrix.sv            # Dependency Matrix Module
