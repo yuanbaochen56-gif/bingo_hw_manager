@@ -184,6 +184,7 @@ module bingo_hw_manager_ctrl
         .smt_recompute_i(smt_recompute),
         .cfg_i(cfg_i),
         .cluster_access_i(cluster_access_i),
+        .pm_enable_i(pm_i.enable),
         .pm_idle_o(view_o.idle),
         .rec_hold_o(view_o.rec_hold),
         .access_only_o(view_o.access_only),

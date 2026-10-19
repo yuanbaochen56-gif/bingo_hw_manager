@@ -14,7 +14,14 @@
 // idle for the PM once it has been idle for that many cycles, so a domain only
 // drops to the idle level after all its slots were idle that long. Short gaps
 // between tasks then keep the normal level and avoid the wake-up cost; 0 =
-// at once (the PM's own behaviour).
+// at once (the PM's own behaviour). The idle count only runs as far as the
+// delay: then, or at once with a delay of 0 or the idle PM off, it jumps to
+// all ones and stays there for the rest of the idle period, so it does not
+// switch on every idle cycle. With the delay and the PM enable unchanged
+// during an idle period the PM sees the same idle view as with a full count.
+// If they change while a slot is idle and its count is already all ones, the
+// slot stays idle: raising the delay (or turning the PM on) then applies from
+// the slot's next idle period, never waking an idle slot.
 // External access wake (cfg_i.access_hold, host-configured): a cluster whose
 // memory is accessed from outside (cluster_access_i, e.g. the host reading its
 // L1) runs on its own clock, so while it is accessed, and for that many cycles
@@ -53,6 +60,8 @@ module bingo_hw_manager_power_view
     // external access to a cluster's memory this cycle
     input  ctrl_cfg_t                            cfg_i,
     input  logic [NumClusters-1:0]               cluster_access_i,
+    // Power manager: idle PM on (else nothing reads the idle view)
+    input  logic                                 pm_enable_i,
 
     // Power manager: slots that do not keep their domain at the normal level
     output logic [NumCores-1:0][NumClusters-1:0] pm_idle_o,
@@ -129,15 +138,25 @@ module bingo_hw_manager_power_view
     end
     logic [NumCores-1:0][NumClusters-1:0]       slot_idle;
     logic [NumCores-1:0][NumClusters-1:0][31:0] idle_cnt_q;
+    logic                                       idle_count_en;
     assign slot_idle = queue_i.waiting | slot_i.fenced;
+    // Something to count: a delay, and a PM that reads the result
+    assign idle_count_en = pm_enable_i && (cfg_i.idle_delay != '0);
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             idle_cnt_q <= '0;
         end else begin
             for (int unsigned c = 0; c < NumCores; c++) begin
                 for (int unsigned cl = 0; cl < NumClusters; cl++) begin
-                    if (!slot_idle[c][cl])                    idle_cnt_q[c][cl] <= '0;
-                    else if (idle_cnt_q[c][cl] != '1)         idle_cnt_q[c][cl] <= idle_cnt_q[c][cl] + 32'd1;
+                    if (!slot_idle[c][cl]) begin
+                        if (idle_cnt_q[c][cl] != '0) idle_cnt_q[c][cl] <= '0;
+                    end else if (idle_cnt_q[c][cl] != '1) begin
+                        // Idle long enough (or nothing to count): all ones, then still
+                        if (!idle_count_en || (idle_cnt_q[c][cl] >= cfg_i.idle_delay))
+                            idle_cnt_q[c][cl] <= '1;
+                        else
+                            idle_cnt_q[c][cl] <= idle_cnt_q[c][cl] + 32'd1;
+                    end
                 end
             end
         end
