@@ -85,9 +85,10 @@ module bingo_hw_manager_park_fsm (
         end
     end
 
+    // The state changes rarely: written (and clocked) only then
     always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) state_q <= ParkNone;
-        else         state_q <= state_d;
+        if (!rst_ni)                 state_q <= ParkNone;
+        else if (state_d != state_q) state_q <= state_d;
     end
 
     assign hold_o   = (state_q == ParkHold);

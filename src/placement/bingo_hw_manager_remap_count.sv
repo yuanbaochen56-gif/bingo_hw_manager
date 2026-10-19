@@ -46,18 +46,24 @@ module bingo_hw_manager_remap_count #(
     logic [Width-1:0] remap_outstanding_q [NumCores][NumClusters];
     logic [Width-1:0] moved_in_d [NumCores][NumClusters][NumCores][NumClusters];
     logic [Width-1:0] moved_in_q [NumCores][NumClusters][NumCores][NumClusters];
+    // A foreign entry is pushed or popped somewhere: only then do the counts
+    // change, so the registers are written (and clocked) only then
+    logic             count_en;
 
     // Track tasks per logical core that sit in the checkout queue of another
     // physical core, in its own or another cluster.
     always_comb begin : update_remap_outstanding
         remap_outstanding_d = remap_outstanding_q;
+        count_en = 1'b0;
         for (int unsigned p = 0; p < NumCores; p++) begin
             for (int unsigned cl = 0; cl < NumClusters; cl++) begin
                 if (checkout_i.push[p][cl] && foreign_entry(checkout_i.push_desc[p][cl], p, cl)) begin
+                    count_en = 1'b1;
                     remap_outstanding_d[checkout_i.push_desc[p][cl].assigned_core_id][checkout_i.push_desc[p][cl].assigned_cluster_id] =
                         remap_outstanding_d[checkout_i.push_desc[p][cl].assigned_core_id][checkout_i.push_desc[p][cl].assigned_cluster_id] + 1'b1;
                 end
                 if (checkout_i.pop[p][cl] && foreign_entry(checkout_i.head[p][cl], p, cl)) begin
+                    count_en = 1'b1;
                     remap_outstanding_d[checkout_i.head[p][cl].assigned_core_id][checkout_i.head[p][cl].assigned_cluster_id] =
                         remap_outstanding_d[checkout_i.head[p][cl].assigned_core_id][checkout_i.head[p][cl].assigned_cluster_id] - 1'b1;
                 end
@@ -89,7 +95,7 @@ module bingo_hw_manager_remap_count #(
                         for (int unsigned c = 0; c < NumCores; c++)
                             for (int unsigned cl = 0; cl < NumClusters; cl++)
                                 moved_in_q[p][pcl][c][cl] <= '0;
-            end else begin
+            end else if (count_en) begin
                 moved_in_q <= moved_in_d;
             end
         end
@@ -112,7 +118,7 @@ module bingo_hw_manager_remap_count #(
                     remap_outstanding_q[c][cl] <= '0;
                 end
             end
-        end else begin
+        end else if (count_en) begin
             remap_outstanding_q <= remap_outstanding_d;
         end
     end

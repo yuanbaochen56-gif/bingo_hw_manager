@@ -77,29 +77,36 @@ module bingo_hw_manager_evlog_events
         return evlog_type_idx(core_type, NumSlots);
     endfunction
     // Last value of the level behind each of the first nine groups
-    logic [EvlogGroupsBeforeTypes-1:0][NumCores-1:0][NumClusters-1:0] seen_q;
+    logic [EvlogGroupsBeforeTypes-1:0][NumCores-1:0][NumClusters-1:0] seen_q, seen_d;
     logic [NumCores-1:0][NumClusters-1:0] rec_seen_q;
     logic [NumCores-1:0][NumClusters-1:0][2:0] reason_q;
 
+    always_comb begin
+        seen_d = seen_q;
+        seen_d[EvgSuspect]  = suspect_i;
+        seen_d[EvgClear]    = suspect_i;
+        seen_d[EvgFence]    = slot_i.fenced;
+        seen_d[EvgStuck]    = slot_i.stuck;
+        seen_d[EvgBlocked]  = blocked_i;
+        seen_d[EvgRisk]     = view_i.risk;
+        seen_d[EvgParked]   = park_i.parked;
+        seen_d[EvgParkFail] = park_i.fail;
+        seen_d[EvgRetired]  = slot_i.retired;
+    end
+
     // The watchdog commits fenced one edge before the existing top print.
     // Keep that edge's reason, without reading or changing its control.
+    // The levels rarely change: each register is written (and clocked) only
+    // on an edge where its input differs from it.
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             seen_q <= '0;
             reason_q <= '0;
             rec_seen_q <= '0;
         end else begin
-            seen_q[EvgSuspect]  <= suspect_i;
-            seen_q[EvgClear]    <= suspect_i;
-            seen_q[EvgFence]    <= slot_i.fenced;
-            seen_q[EvgStuck]    <= slot_i.stuck;
-            seen_q[EvgBlocked]  <= blocked_i;
-            seen_q[EvgRisk]     <= view_i.risk;
-            seen_q[EvgParked]   <= park_i.parked;
-            seen_q[EvgParkFail] <= park_i.fail;
-            seen_q[EvgRetired]  <= slot_i.retired;
-            rec_seen_q <= view_i.rec_hold;
-            reason_q   <= fence_reason_i;
+            if (seen_d != seen_q)                 seen_q     <= seen_d;
+            if (rec_seen_q != view_i.rec_hold)    rec_seen_q <= view_i.rec_hold;
+            if (reason_q != fence_reason_i)       reason_q   <= fence_reason_i;
         end
     end
 

@@ -70,7 +70,7 @@ module bingo_hw_manager_power_view
     // A fence writes the SMT first. On the following edge, load its current
     // live substitute, unless the logical slot has already retired. Include
     // affected dead entries when their previous substitute is fenced again.
-    logic [NumCores-1:0][NumClusters-1:0] rec_pending_q, rec_load;
+    logic [NumCores-1:0][NumClusters-1:0] rec_pending_q, rec_pending_d, rec_load;
     logic [NumCores-1:0][NumClusters-1:0][31:0] rec_hold_q, rec_hold_d;
     always_comb begin
         rec_load = '0;
@@ -95,12 +95,15 @@ module bingo_hw_manager_power_view
             end
         end
     end
+    // Fences are rare: the pending bits are written (and clocked) only when
+    // they change
+    assign rec_pending_d = smt_recompute_i & slot_i.fenced & ~slot_i.retired;
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             rec_pending_q <= '0;
             rec_hold_q <= '0;
         end else begin
-            rec_pending_q <= smt_recompute_i & slot_i.fenced & ~slot_i.retired;
+            if (rec_pending_d != rec_pending_q) rec_pending_q <= rec_pending_d;
             rec_hold_q <= rec_hold_d;
         end
     end

@@ -165,10 +165,12 @@ module bingo_hw_manager_evlog #(
             timestamp_q <= timestamp_q + 32'd1;
             clear_q <= clear_i;
             pop_q <= pop_i;
-            pending_q <= pending_d;
+            // Written (and clocked) only when they change: no event is pending
+            // and none is dropped on most edges
+            if (pending_d != pending_q) pending_q <= pending_d;
             age_q <= age_d;
             arg_q <= arg_d;
-            dropped_q <= dropped_d;
+            if (dropped_d != dropped_q) dropped_q <= dropped_d;
             if (clear_fire) begin
                 rd_q <= '0;
                 wr_q <= '0;

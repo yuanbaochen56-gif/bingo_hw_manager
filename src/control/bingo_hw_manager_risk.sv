@@ -47,7 +47,10 @@ module bingo_hw_manager_risk
             risk_cnt_q       <= '0;
             risk_q           <= '0;
         end else begin
-            risk_epoch_cnt_q <= ((cfg_i.risk_epoch == '0) || risk_epoch_end) ? '0 : risk_epoch_cnt_q + 1;
+            // Without epochs (0) the count stays at 0: written (and clocked)
+            // only while epochs run, or to clear it once
+            if ((cfg_i.risk_epoch != '0) || (risk_epoch_cnt_q != '0))
+                risk_epoch_cnt_q <= ((cfg_i.risk_epoch == '0) || risk_epoch_end) ? '0 : risk_epoch_cnt_q + 1;
             for (int unsigned c = 0; c < NumCores; c++) begin
                 for (int unsigned cl = 0; cl < NumClusters; cl++) begin
                     if (fenced_i[c][cl] || risk_clear_i[c][cl]) begin

@@ -57,9 +57,18 @@ module bingo_hw_manager_wd_tick
             end
         end
     end
+    // A slot at or below the normal level keeps its accumulator at 0: written
+    // (and clocked) only while its domain is slow, or to clear it once
     always_ff @(posedge clk_i or negedge rst_ni) begin
-        if (!rst_ni) tick_acc_q <= '0;
-        else         tick_acc_q <= tick_acc_d;
+        if (!rst_ni) begin
+            tick_acc_q <= '0;
+        end else begin
+            for (int unsigned c = 0; c < NumCores; c++) begin
+                for (int unsigned cl = 0; cl < NumClusters; cl++) begin
+                    if (slot_slow[c][cl] || (tick_acc_q[c][cl] != '0)) tick_acc_q[c][cl] <= tick_acc_d[c][cl];
+                end
+            end
+        end
     end
 
 endmodule

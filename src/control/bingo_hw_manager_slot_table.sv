@@ -310,7 +310,7 @@ module bingo_hw_manager_slot_table #(
             smt_cluster_q <= '0;
         end else begin
             init_q        <= 1'b0;
-            fenced_seen_q <= slot_i.fenced;
+            if (fenced_seen_q != slot_i.fenced) fenced_seen_q <= slot_i.fenced;
             for (int unsigned c = 0; c < NumCores; c++) begin
                 for (int unsigned cl = 0; cl < NumClusters; cl++) begin
                     case (smt_write[c][cl])

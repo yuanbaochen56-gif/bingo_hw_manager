@@ -178,26 +178,36 @@ module bingo_hw_manager_csr_port #(
     // A real exit reports bit 31 after its done write. It no longer polls,
     // but is idle for PM and boost. A new ready read starts the next offload,
     // including when a task is already available and the read never stalls.
+    logic [NumCores-1:0][NumClusters-1:0] ready_read, exit_beat, exited_d;
+    always_comb begin
+        exited_d = exited_q;
+        for (int core = 0; core < NumCores; core++) begin
+            for (int cluster = 0; cluster < NumClusters; cluster++) begin
+                ready_read[core][cluster] = csr_req_valid_i[core][cluster] && !csr_req_i[core][cluster].write &&
+                                            csr_req_i[core][cluster].addr[11:0] == CsrReady;
+                exit_beat[core][cluster] = heartbeat[core][cluster] &&
+                                           heartbeat_data_1d[core + cluster * NumCores][31];
+                if (ready_read[core][cluster])     exited_d[core][cluster] = 1'b0;
+                else if (exit_beat[core][cluster]) exited_d[core][cluster] = 1'b1;
+            end
+        end
+    end
+    // A polling core reads the ready queue on most edges, which leaves its bit
+    // at 0: the register is written (and clocked) only when a bit changes
     always_ff @(posedge clk_i or negedge rst_ni) begin
         if (!rst_ni) begin
             exited_q <= '0;
         end else begin
+            if (exited_d != exited_q) exited_q <= exited_d;
+`ifndef SYNTHESIS
             for (int core = 0; core < NumCores; core++) begin
                 for (int cluster = 0; cluster < NumClusters; cluster++) begin
-                    if (csr_req_valid_i[core][cluster] && !csr_req_i[core][cluster].write &&
-                        csr_req_i[core][cluster].addr[11:0] == CsrReady) begin
-                        exited_q[core][cluster] <= 1'b0;
-                    end else if (heartbeat[core][cluster] &&
-                                 heartbeat_data_1d[core + cluster * NumCores][31]) begin
-                        exited_q[core][cluster] <= 1'b1;
-`ifndef SYNTHESIS
-                        if (!exited_q[core][cluster])
-                            $display("[BINGO_EXIT] %0t chip=%0d core=%0d cluster=%0d",
-                                     $time, chip_id_i, core, cluster);
-`endif
-                    end
+                    if (!ready_read[core][cluster] && exit_beat[core][cluster] && !exited_q[core][cluster])
+                        $display("[BINGO_EXIT] %0t chip=%0d core=%0d cluster=%0d",
+                                 $time, chip_id_i, core, cluster);
                 end
             end
+`endif
         end
     end
 
