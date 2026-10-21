@@ -231,6 +231,7 @@ sources:
       - test/tb_bingo_hw_manager_park_sub_fence_last.sv   # parking: the substitute dies and none is left, the park fails
       - test/tb_bingo_hw_manager_park_target.sv           # parking: a core that runs another core's tasks cannot be parked
       - test/tb_bingo_hw_manager_park_mutual.sv           # parking: two cores asked at once never park onto each other
+      - test/tb_bingo_hw_manager_park_commit.sv           # parking: no commit in the cycle the entry is recomputed
       - test/tb_bingo_hw_manager_unpark.sv                # parking: move back after the tasks on the substitute retired
       - test/tb_bingo_hw_manager_unpark_cancel.sv         # parking: move back cancelled / immediate
       - test/tb_bingo_hw_manager_risk_park.sv             # fault precursors: late beats -> at risk -> parked, clear moves back

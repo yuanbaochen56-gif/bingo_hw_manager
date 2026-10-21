@@ -50,8 +50,10 @@ module bingo_hw_manager_park_fsm (
     typedef enum logic [2:0] {ParkNone, ParkHold, ParkParked, ParkUnpark, ParkFail} park_state_e;
     park_state_e state_q, state_d;
 
-    // Not in the cycle the slot is fenced: that table write belongs to the fence
-    assign commit_o        = (state_q == ParkHold) && !fenced_i && !target_i && drained_i && choice_ok_i;
+    // Not in a cycle the slot is fenced or its entry is recomputed: that table
+    // write belongs to the fence or the recompute. A park then waits a cycle and
+    // is decided on the new table (the slot may have become a target).
+    assign commit_o        = (state_q == ParkHold) && !fenced_i && !recompute_i && !target_i && drained_i && choice_ok_i;
     assign unpark_commit_o = (state_q == ParkUnpark) && !fenced_i && !recompute_i && !moved_i;
 
     always_comb begin
